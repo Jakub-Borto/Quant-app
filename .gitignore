@@ -1,0 +1,15 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Data (VERY IMPORTANT)
+data/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Optional (if you truly don't want them in repo)
+inspect.py
+tests.py

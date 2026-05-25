@@ -1,0 +1,60 @@
+IVB:
+- (DONE) Fix pnl points and ticks in ivb
+- (DONE) fix vp
+- (DONE) In the value area choose the the highest candle as the poc
+- more types of entries
+- consecutive absorption of candles
+- earlier entries
+- minimum risk threshold -> higher tp
+- trail sl
+- figure out a way to have a better tp
+
+To_do:
+- (DONE) make data transforming faster
+- (DONE) be able to modify vp, h line, v line
+- make skipping faster
+- different session openings for gc, cl
+
+
+
+Futures:
+RTY • E-mini Russell 2000 Index Futures
+M2K • Micro E-mini Russell 2000 Index Futures
+YM • E-mini Dow Jones Industrial Average Index Futures
+MYM • Micro E-mini Dow Jones Industrial Average Index Futures
+ZN • 10-Year T-Note Futures
+ZB • U.S. Treasury Bond Futures
+ZF • 5-Year T-Note Futures
+SR3 • Three-Month SOFR Futures
+CL • Crude Oil Futures
+QM • E-mini Crude Oil Futures
+NG • Henry Hub Natural Gas Futures
+GC • Gold Futures
+MGC • Micro Gold Futures
+SI • Silver Futures
+HG • Copper Futures
+ZC • Corn Futures
+ZS • Soybean Futures
+ZW • Chicago SRW Wheat Futures
+6E • Euro FX Futures
+6J • Japanese Yen Futures
+6B • British Pound Futures
+6C • Canadian Dollar Futures
+MES • Micro E-mini S&P 500 Index Futures
+MNQ • Micro E-mini Nasdaq-100 Index Futures
+ZT • 2-Year T-Note Futures
+RB • RBOB Gasoline Futures
+HO • NY Harbor ULSD Futures
+BTC • Bitcoin Futures
+ES • E-mini S&P 500 Futures
+NQ • E-mini Nasdaq-100 Futures
+
+Options:
+ES
+NQ
+OG
+LO
+OZN
+RTO
+LNE
+RTY
