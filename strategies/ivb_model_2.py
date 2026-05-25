@@ -19,6 +19,10 @@ PARAMS = {
     "absorption_mult":          2.0,    # wick level sell volume must be >= this x rolling avg
     "absorption_window":        20,     # rolling N bars for avg sell_per_tick baseline (RTH, post 09:35)
     "tick_size":                0.25,   # ES tick size
+    # --- consecutive absorption params ---
+    "consec_abs_n":             3,      # number of absorption candles required at same level
+    "consec_abs_mult":          1.5,    # absorption multiplier for consecutive absorption finder
+    "consec_abs_ticks":         5,      # ±ticks tolerance for grouping absorption levels
 }
 
 _OUTPUT_COLUMNS = [
@@ -435,6 +439,89 @@ def _find_entry_pure_absorption(
     return None, None, None, None, None
 
 
+def _find_entry_consecutive_absorption(
+    post_retest:   pd.DataFrame,
+    direction:     str,
+    ivb_high:      float,
+    ivb_low:       float,
+    poc:           float,
+    vah:           float,
+    val:           float,
+    sell_baseline: pd.Series,
+    buy_baseline:  pd.Series,
+    params:        dict,
+) -> tuple:
+    """
+    Returns (entry_ts, entry_price, invalidation_ts, absorption_ts, trade_type).
+
+    Scans post_retest bar by bar. For each absorption candle found, checks whether
+    n-1 prior absorption candles exist within ±consec_abs_ticks of its absorption
+    level. If so, enters on the open of the next bar. No confirmation candle required.
+
+    Uses consec_abs_mult instead of absorption_mult — expected to be lower since
+    repetition itself is the signal.
+    """
+    if post_retest.empty:
+        return None, None, None, None, None
+
+    if direction == "long":
+        invalid_whole = post_retest["close"] < val
+    else:
+        invalid_whole = post_retest["close"] > vah
+
+    n            = len(post_retest)
+    tick_size    = params["tick_size"]
+    level_tol    = params["consec_abs_ticks"] * tick_size
+    required_n   = params["consec_abs_n"]
+
+    # Override absorption_mult with the consecutive-specific multiplier
+    consec_params = {**params, "absorption_mult": params["consec_abs_mult"]}
+
+    # Running list of (absorption_level, bar_ts) for candles seen so far
+    seen: list[tuple[float, pd.Timestamp]] = []
+
+    for i in range(n):
+        bar = post_retest.iloc[i]
+        ts  = post_retest.index[i]
+
+        if invalid_whole.iloc[i]:
+            return None, None, ts, None, None
+
+        baseline = (
+            sell_baseline.get(ts, float("nan"))
+            if direction == "long"
+            else buy_baseline.get(ts, float("nan"))
+        )
+
+        if not _is_absorption_candle(bar, baseline, direction, consec_params):
+            continue
+
+        abs_level = float(bar["low"]) if direction == "long" else float(bar["high"])
+
+        # Record this absorption candle
+        seen.append((abs_level, ts))
+
+        # Count how many prior seen levels are within ±level_tol of this one
+        nearby = [lvl for lvl, _ in seen if abs(lvl - abs_level) <= level_tol]
+
+        if len(nearby) < required_n:
+            continue
+
+        # nth hit — enter on open of next bar
+        entry_bar_idx = i + 1
+        if entry_bar_idx >= n:
+            return None, None, None, None, None
+
+        if invalid_whole.iloc[entry_bar_idx]:
+            return None, None, post_retest.index[entry_bar_idx], None, None
+
+        entry_ts    = post_retest.index[entry_bar_idx]
+        entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
+        return entry_ts, entry_price, None, ts, "consecutive_absorption"
+
+    return None, None, None, None, None
+
+
 # ---------------------------------------------------------------------------
 # Entry dispatcher
 # ---------------------------------------------------------------------------
@@ -472,6 +559,7 @@ def _find_entry(
 
     candidates = [
         _find_entry_pure_absorption(**shared),
+        _find_entry_consecutive_absorption(**shared),
         # _find_entry_passive_order(**shared),  # future
         # _find_entry_cvd_confirm(**shared),     # future
     ]

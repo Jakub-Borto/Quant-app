@@ -190,23 +190,23 @@ def render_params(strategy) -> dict:
     visible = {k: v for k, v in strategy.PARAMS.items() if k not in HIDDEN_PARAMS}
 
     if not visible:
-        return dict(strategy.PARAMS)
+        return {}
 
     st.write("")
     st.subheader("Parameters")
     params = {}
-    param_cols = st.columns(len(visible))
+    items = list(visible.items())
+    chunk_size = 10
+    chunks = [items[i:i+chunk_size] for i in range(0, len(items), chunk_size)]
 
-    for i, (key, default) in enumerate(visible.items()):
-        with param_cols[i]:
-            if isinstance(default, float):
-                params[key] = st.number_input(
-                    key, value=default, step=0.1, format="%.2f"
-                )
-            else:
-                params[key] = st.number_input(
-                    key, value=default, step=1
-                )
+    for chunk in chunks:
+        param_cols = st.columns(len(chunk))
+        for i, (key, default) in enumerate(chunk):
+            with param_cols[i]:
+                if isinstance(default, float):
+                    params[key] = st.number_input(key, value=default, step=0.1, format="%.2f")
+                else:
+                    params[key] = st.number_input(key, value=default, step=1)
 
     return params
 
@@ -228,9 +228,7 @@ def execute_run(strategy, asset_type, asset, dataset,
     folder_path     = Path("data/parquet") / asset_type / asset / dataset
 
     # Inject hidden params before passing to strategy
-    for key in HIDDEN_PARAMS:
-        if key == "tick_size":
-            params["tick_size"] = asset_info["tick_size"]
+    params["tick_size"] = asset_info["tick_size"]
 
     with st.spinner("Running strategy..."):
         trades = strategy.run(
@@ -641,6 +639,8 @@ def render_trades_table(trades: pd.DataFrame, dataset: str, strategy_name: str,
     st.subheader("Trades")
     display_cols = ["date", "direction", "entry_time", "exit_time",
                     "entry_price", "exit_price", "exit_reason", "ticks"]
+    if "trade_type" in trades.columns:
+        display_cols.append("trade_type")
     st.dataframe(trades[display_cols], width='stretch')
 
     st.write("")
@@ -655,6 +655,7 @@ def render_trades_table(trades: pd.DataFrame, dataset: str, strategy_name: str,
                 st.info("Identical trades file already exists — not saved.")
             else:
                 st.success(f"Saved to {result}")
+
 
 def render():
     if "trades" not in st.session_state:
@@ -695,6 +696,24 @@ def render():
 
     if st.session_state.trades is not None:
         trades = st.session_state.trades
+
+        if "trade_type" in trades.columns:
+            unique_types = sorted(trades["trade_type"].dropna().unique().tolist())
+            if unique_types:
+                st.write("")
+                st.caption("Filter by trade type")
+                cols = st.columns(min(len(unique_types), 6))
+                selected_types = []
+                for i, tt in enumerate(unique_types):
+                    with cols[i % 6]:
+                        if st.checkbox(tt, value=True, key=f"filter_tt_{tt}"):
+                            selected_types.append(tt)
+                if not selected_types:
+                    st.warning("No trade types selected.")
+                    return
+                trades = trades[trades["trade_type"].isin(selected_types)]
+                trades = trades.copy()
+                trades["cumulative_ticks"] = trades["ticks"].cumsum()
 
         render_metrics(trades)
         selected       = render_equity_curve(trades)
