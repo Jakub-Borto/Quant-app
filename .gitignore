@@ -13,3 +13,5 @@ Thumbs.db
 # Optional (if you truly don't want them in repo)
 inspect.py
 tests.py
+
+github_notes.txt
