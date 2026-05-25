@@ -24,6 +24,7 @@ PARAMS = {
 _OUTPUT_COLUMNS = [
     "date",
     "direction",
+    "trade_type",
     "entry_time",
     "exit_time",
     "entry_price",
@@ -113,20 +114,17 @@ def _compute_ivb_profile(ib_bars: pd.DataFrame) -> tuple:
         smoothed.append(sum(volumes[lo:hi]) / (hi - lo))
 
     # --- Step 3: find local maxima ------------------------------------------
-    # A peak is where smoothed[i] > both neighbors
     raw_peaks = []
     for i in range(1, n - 1):
         if smoothed[i] > smoothed[i - 1] and smoothed[i] > smoothed[i + 1]:
             raw_peaks.append(i)
 
-    # Also consider endpoints if they dominate
     if smoothed[0] > smoothed[1]:
         raw_peaks.insert(0, 0)
     if smoothed[-1] > smoothed[-2]:
         raw_peaks.append(n - 1)
 
     if not raw_peaks:
-        # Flat profile — just use max
         raw_peaks = [int(max(range(n), key=lambda i: volumes[i]))]
 
     # --- Step 4: cluster peaks within 4 ticks, keep highest per cluster -----
@@ -143,10 +141,7 @@ def _compute_ivb_profile(ib_bars: pd.DataFrame) -> tuple:
             current = [idx]
     clusters.append(current)
 
-    # Best peak per cluster = highest smoothed volume
     cluster_peaks = [max(c, key=lambda i: smoothed[i]) for c in clusters]
-
-    # Top 5 by smoothed volume
     cluster_peaks = sorted(cluster_peaks, key=lambda i: smoothed[i], reverse=True)[:5]
 
     # --- Step 5: refine each peak to actual highest raw tick within ±3 ------
@@ -157,7 +152,6 @@ def _compute_ivb_profile(ib_bars: pd.DataFrame) -> tuple:
         best_idx = max(range(lo, hi), key=lambda i: volumes[i])
         poc_candidates.append(sorted_prices[best_idx])
 
-    # Deduplicate
     poc_candidates = list(dict.fromkeys(poc_candidates))
 
     # --- Step 6 & 7: expand VA from each candidate, pick tightest ----------
@@ -201,7 +195,7 @@ def _compute_ivb_profile(ib_bars: pd.DataFrame) -> tuple:
 
     if best_poc is None:
         return None, None, None
-    
+
     best_poc = max(
         (p for p in sorted_prices if best_val <= p <= best_vah),
         key=lambda p: levels[p]
@@ -346,7 +340,14 @@ def _detect_retest(
     return scan_start + int(retest_mask.argmax())
 
 
-def _find_entry(
+# ---------------------------------------------------------------------------
+# Entry sub-finders
+# Each returns: (entry_ts, entry_price, invalidation_ts, absorption_ts, trade_type)
+# entry_ts=None means no entry found.
+# invalidation_ts=None means no invalidation hit (scanned to end without entry).
+# ---------------------------------------------------------------------------
+
+def _find_entry_pure_absorption(
     post_retest:   pd.DataFrame,
     direction:     str,
     ivb_high:      float,
@@ -359,13 +360,11 @@ def _find_entry(
     params:        dict,
 ) -> tuple:
     """
-    Returns (entry_ts, entry_price, invalidation_ts, absorption_ts).
-    - entry_ts / entry_price: set on success, None otherwise
-    - invalidation_ts: set when whole trade idea is invalidated (for flip)
-    - absorption_ts: timestamp of the absorption candle that triggered entry
+    Returns (entry_ts, entry_price, invalidation_ts, absorption_ts, trade_type).
+    Looks for an absorption candle followed by a confirming entry candle.
     """
     if post_retest.empty:
-        return None, None, None, None
+        return None, None, None, None, None
 
     if direction == "long":
         invalid_whole = post_retest["close"] < val
@@ -379,7 +378,7 @@ def _find_entry(
         ts  = post_retest.index[i]
 
         if invalid_whole.iloc[i]:
-            return None, None, ts, None
+            return None, None, ts, None, None
 
         baseline = (
             sell_baseline.get(ts, float("nan"))
@@ -398,7 +397,7 @@ def _find_entry(
             next_bar = post_retest.iloc[j]
 
             if invalid_whole.iloc[j]:
-                return None, None, post_retest.index[j], None
+                return None, None, post_retest.index[j], None, None
 
             if direction == "long":
                 if float(next_bar["close"]) < absorption_level:
@@ -411,8 +410,8 @@ def _find_entry(
             if bar_range <= 0:
                 continue
 
-            body     = abs(float(next_bar["close"]) - float(next_bar["open"]))
-            body_ok  = (body / bar_range) >= params["body_threshold"]
+            body    = abs(float(next_bar["close"]) - float(next_bar["open"]))
+            body_ok = (body / bar_range) >= params["body_threshold"]
 
             if direction == "long":
                 delta_ok = float(next_bar["volume_delta_pct"]) >= params["delta_threshold"]
@@ -424,17 +423,77 @@ def _find_entry(
 
             entry_bar_idx = j + 1
             if entry_bar_idx >= n:
-                return None, None, None, None
+                return None, None, None, None, None
 
             if invalid_whole.iloc[entry_bar_idx]:
-                return None, None, post_retest.index[entry_bar_idx], None
+                return None, None, post_retest.index[entry_bar_idx], None, None
 
             entry_ts    = post_retest.index[entry_bar_idx]
             entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
-            return entry_ts, entry_price, None, absorption_ts
+            return entry_ts, entry_price, None, absorption_ts, "pure_absorption"
 
-    return None, None, None, None
+    return None, None, None, None, None
 
+
+# ---------------------------------------------------------------------------
+# Entry dispatcher
+# ---------------------------------------------------------------------------
+
+def _find_entry(
+    post_retest:   pd.DataFrame,
+    direction:     str,
+    ivb_high:      float,
+    ivb_low:       float,
+    poc:           float,
+    vah:           float,
+    val:           float,
+    sell_baseline: pd.Series,
+    buy_baseline:  pd.Series,
+    params:        dict,
+) -> tuple:
+    """
+    Calls all entry sub-finders and returns the one with the earliest entry_ts.
+    If no sub-finder finds an entry, returns the earliest invalidation_ts across all.
+
+    Returns: (entry_ts, entry_price, invalidation_ts, absorption_ts, trade_type)
+    """
+    shared = dict(
+        post_retest   = post_retest,
+        direction     = direction,
+        ivb_high      = ivb_high,
+        ivb_low       = ivb_low,
+        poc           = poc,
+        vah           = vah,
+        val           = val,
+        sell_baseline = sell_baseline,
+        buy_baseline  = buy_baseline,
+        params        = params,
+    )
+
+    candidates = [
+        _find_entry_pure_absorption(**shared),
+        # _find_entry_passive_order(**shared),  # future
+        # _find_entry_cvd_confirm(**shared),     # future
+    ]
+
+    # Separate hits from misses
+    entries       = [c for c in candidates if c[0] is not None]
+    invalidations = [c for c in candidates if c[0] is None and c[2] is not None]
+
+    if entries:
+        # Pick the earliest entry across all finders
+        return min(entries, key=lambda c: c[0])
+
+    if invalidations:
+        # Return the earliest invalidation so flip logic triggers as soon as possible
+        return min(invalidations, key=lambda c: c[2])
+
+    return None, None, None, None, None
+
+
+# ---------------------------------------------------------------------------
+# SL/TP and trade runner (unchanged)
+# ---------------------------------------------------------------------------
 
 def _compute_sl_tp(
     post_retest:  pd.DataFrame,
@@ -623,7 +682,7 @@ def _process_day(session: pd.DataFrame, params: dict):
             post_ib.iloc[retest_pos : retest_pos + params["entry_window"]]
         ])
 
-        entry_ts, entry_price, invalidation_ts, absorption_ts = _find_entry(
+        entry_ts, entry_price, invalidation_ts, absorption_ts, trade_type = _find_entry(
             post_retest   = post_retest,
             direction     = direction,
             ivb_high      = ivb_high,
@@ -684,7 +743,8 @@ def _process_day(session: pd.DataFrame, params: dict):
         params      = params,
     )
 
-    # Build notes — all timestamps as ISO strings for clean JSON serialization
+    trade["trade_type"] = trade_type
+
     trade["notes"] = json.dumps({
         "breakout_time":   str(breakout_ts),
         "retest_time":     str(retest_ts),
