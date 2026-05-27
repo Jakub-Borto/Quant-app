@@ -253,8 +253,10 @@ def compute_metrics(trades: pd.DataFrame) -> dict:
     losing    = trades[trades["ticks"] < 0]
     breakeven = trades[trades["ticks"] == 0]
 
-    avg_win  = winning["ticks"].mean() if len(winning) > 0 else 0
-    avg_loss = losing["ticks"].mean()  if len(losing)  > 0 else 0
+    avg_win  = winning["ticks"].mean() if len(winning) > 0 else 0.0
+    avg_loss = losing["ticks"].mean()  if len(losing)  > 0 else 0.0
+    win_rate  = len(winning) / len(trades)
+    loss_rate = len(losing)  / len(trades)
 
     gross_wins   = winning["ticks"].sum()
     gross_losses = abs(losing["ticks"].sum())
@@ -265,12 +267,25 @@ def compute_metrics(trades: pd.DataFrame) -> dict:
     else:
         profit_factor = 0.0
 
-    daily_pnl = trades.groupby("date")["ticks"].sum()
-    sharpe = (daily_pnl.mean() / daily_pnl.std()) * (252 ** 0.5) if daily_pnl.std() > 0 else 0.0
+    # Daily Sharpe — zero-fill business days (institutional standard)
+    all_dates = pd.bdate_range(trades["date"].min(), trades["date"].max())
+    daily_pnl = (
+        trades.groupby("date")["ticks"]
+        .sum()
+        .reindex(all_dates, fill_value=0)
+    )
+    daily_std    = daily_pnl.std(ddof=1)
+    sharpe_daily = (daily_pnl.mean() / daily_std) * (252 ** 0.5) if daily_std > 0 else 0.0
 
-    cumulative  = trades["cumulative_ticks"]
-    rolling_max = cumulative.cummax()
-    drawdown    = cumulative - rolling_max
+    # Trade Sharpe — per-trade consistency, annualized by actual trading days
+    trade_std      = trades["ticks"].std(ddof=1)
+    n_trading_days = trades["date"].nunique()
+    sharpe_trade   = (trades["ticks"].mean() / trade_std) * (n_trading_days ** 0.5) if trade_std > 0 else 0.0
+
+    # Equity curve / drawdown
+    cumulative   = trades["cumulative_ticks"]
+    rolling_max  = cumulative.cummax()
+    drawdown     = cumulative - rolling_max
     max_drawdown = drawdown.min()
 
     max_dd_idx     = drawdown.idxmin()
@@ -283,38 +298,75 @@ def compute_metrics(trades: pd.DataFrame) -> dict:
     total       = trades["ticks"].sum()
     global_peak = rolling_max.max()
 
-    if max_drawdown < 0 and total > 0:
-        recovery = f"{total / abs(max_drawdown):.2f}"
-    elif max_drawdown == 0 and total > 0:
-        recovery = "∞"
-    else:
-        recovery = "N/A"
+    calmar = total / abs(max_drawdown) if max_drawdown < 0 else float("inf")
 
+    # Planned RR — abs(tp - entry) / abs(sl - entry), all trades
+    if "entry_price" in trades.columns and "sl" in trades.columns and "tp" in trades.columns:
+        sl_dist    = (trades["entry_price"] - trades["sl"]).abs()
+        tp_dist    = (trades["tp"] - trades["entry_price"]).abs()
+        rr_series  = (tp_dist / sl_dist)[sl_dist > 0]
+        avg_rr     = rr_series.mean()
+        median_rr  = rr_series.median()
+    else:
+        avg_rr    = None
+        median_rr = None
+
+    # Consecutive wins / losses
+    results = (trades["ticks"] > 0).astype(int).tolist()
+    max_consec_wins = max_consec_losses = cur_wins = cur_losses = 0
+    for r in results:
+        if r == 1:
+            cur_wins  += 1
+            cur_losses = 0
+        else:
+            cur_losses += 1
+            cur_wins   = 0
+        max_consec_wins   = max(max_consec_wins,   cur_wins)
+        max_consec_losses = max(max_consec_losses, cur_losses)
+
+    # Trade duration
+    if "entry_time" in trades.columns and "exit_time" in trades.columns:
+        durations           = (trades["exit_time"] - trades["entry_time"]).dt.total_seconds() / 60
+        avg_duration_min    = durations.mean()
+        median_duration_min = durations.median()
+    else:
+        avg_duration_min    = None
+        median_duration_min = None
+
+    # Per-direction stats
     long_trades  = trades[trades["direction"] == "long"]
     short_trades = trades[trades["direction"] == "short"]
     long_winrate  = (long_trades["ticks"] > 0).mean()  if len(long_trades)  > 0 else 0.0
     short_winrate = (short_trades["ticks"] > 0).mean() if len(short_trades) > 0 else 0.0
 
     return {
-        "total_ticks":      total,
-        "avg_trade":        trades["ticks"].mean(),
-        "avg_win":          avg_win,
-        "avg_loss":         avg_loss,
-        "largest_win":      winning["ticks"].max() if len(winning) > 0 else 0,
-        "largest_loss":     losing["ticks"].min()  if len(losing)  > 0 else 0,
-        "total_trades":     len(trades),
-        "win_rate":         len(winning)   / len(trades),
-        "loss_rate":        len(losing)    / len(trades),
-        "breakeven_rate":   len(breakeven) / len(trades),
-        "sharpe":           sharpe,
-        "profit_factor":    profit_factor,
-        "max_drawdown":     max_drawdown,
-        "max_drawdown_pct": max_drawdown_pct,
-        "max_peak":         global_peak,
-        "recovery":         recovery,
-        "long_winrate":     long_winrate,
-        "short_winrate":    short_winrate,
+        "total_ticks":          total,
+        "avg_trade":            trades["ticks"].mean(),
+        "avg_win":              avg_win,
+        "avg_loss":             avg_loss,
+        "largest_win":          winning["ticks"].max() if len(winning) > 0 else 0,
+        "largest_loss":         losing["ticks"].min()  if len(losing)  > 0 else 0,
+        "avg_rr":               avg_rr,
+        "median_rr":            median_rr,
+        "total_trades":         len(trades),
+        "win_rate":             win_rate,
+        "loss_rate":            loss_rate,
+        "breakeven_rate":       len(breakeven) / len(trades),
+        "sharpe_daily":         sharpe_daily,
+        "sharpe_trade":         sharpe_trade,
+        "profit_factor":        profit_factor,
+        "calmar":               calmar,
+        "max_drawdown":         max_drawdown,
+        "max_drawdown_pct":     max_drawdown_pct,
+        "max_peak":             global_peak,
+        "max_consec_wins":      max_consec_wins,
+        "max_consec_losses":    max_consec_losses,
+        "avg_duration_min":     avg_duration_min,
+        "median_duration_min":  median_duration_min,
+        "long_winrate":         long_winrate,
+        "short_winrate":        short_winrate,
     }
+
 
 def render_metrics(trades: pd.DataFrame):
     st.write("")
@@ -322,36 +374,64 @@ def render_metrics(trades: pd.DataFrame):
 
     m = compute_metrics(trades)
 
-    pf_display      = "∞" if m["profit_factor"] == float("inf") else f"{m['profit_factor']:.2f}"
-    mdd_pct_display = f"{m['max_drawdown_pct']:.1f}%" if m["max_drawdown_pct"] is not None else "N/A"
+    pf_display         = "∞" if m["profit_factor"] == float("inf") else f"{m['profit_factor']:.2f}"
+    calmar_display     = "∞" if m["calmar"]        == float("inf") else f"{m['calmar']:.2f}"
+    mdd_pct_display    = f"{m['max_drawdown_pct']:.1f}%" if m["max_drawdown_pct"] is not None else "N/A"
+    avg_dur_display    = f"{m['avg_duration_min']:.0f}m"    if m["avg_duration_min"]    is not None else "N/A"
+    median_dur_display = f"{m['median_duration_min']:.0f}m" if m["median_duration_min"] is not None else "N/A"
+    avg_rr_display     = f"{m['avg_rr']:.2f}"    if m["avg_rr"]    is not None else "N/A"
+    median_rr_display  = f"{m['median_rr']:.2f}" if m["median_rr"] is not None else "N/A"
+    
+    '''
+    
+    
+    
+    '''
 
+    # Row 1 — Core P&L
     st.write("")
-    r1c1, r1c2, r1c3, r1c4, r1c5, r1c6 = st.columns(6)
-    r1c1.metric("Total Ticks",  f"{m['total_ticks']:.0f}")
-    r1c2.metric("Avg Trade",    f"{m['avg_trade']:.1f}")
-    r1c3.metric("Avg Win",      f"{m['avg_win']:.1f}")
-    r1c4.metric("Avg Loss",     f"{m['avg_loss']:.1f}")
-    r1c5.metric("Largest Win",  f"{m['largest_win']:.0f}")
-    r1c6.metric("Largest Loss", f"{m['largest_loss']:.0f}")
+    r1c1, r1c2, r1c3, r1c4, r1c5, r1c6, r1c7, r1c8 = st.columns(8)
+    r1c1.metric("Total Ticks",          f"{m['total_ticks']:.0f}")
+    r1c2.metric("Total Trades",         m["total_trades"])
+    r1c3.metric("Avg Trade/Expectancy", f"{m['avg_trade']:.2f}")
+    r1c4.metric("Avg Win",              f"{m['avg_win']:.1f}")
+    r1c5.metric("Avg Loss",             f"{m['avg_loss']:.1f}")
+    r1c6.metric("Largest Win",          f"{m['largest_win']:.0f}")
+    r1c7.metric("Largest Loss",         f"{m['largest_loss']:.0f}")
 
+    # Row 2 — Risk-adjusted
     st.write("")
-    r2c1, r2c2, r2c3, r2c4, r2c5, r2c6 = st.columns(6)
-    r2c1.metric("Total Trades",   m["total_trades"])
-    r2c2.metric("Win Rate",       f"{m['win_rate']:.1%}")
-    r2c3.metric("Loss Rate",      f"{m['loss_rate']:.1%}")
-    r2c4.metric("Breakeven Rate", f"{m['breakeven_rate']:.1%}")
-    r2c5.metric("Sharpe (ticks)", f"{m['sharpe']:.2f}")
-    r2c6.metric("Profit Factor",  pf_display)
+    r2c1, r2c2, r2c3, r2c4, r2c5, r2c6, r2c7, r2c8, r2c9 = st.columns(9)
+    r2c1.metric("Win Rate",         f"{m['win_rate']:.1%}")
+    r2c2.metric("Avg RR",           avg_rr_display)
+    r2c3.metric("Median RR",            median_rr_display)
+    r2c4.metric("Loss Rate",        f"{m['loss_rate']:.1%}")
+    r2c5.metric("Breakeven Rate",   f"{m['breakeven_rate']:.1%}")
+    r2c6.metric("Sharpe (daily)",   f"{m['sharpe_daily']:.2f}")
+    r2c7.metric("Sharpe (trade)",   f"{m['sharpe_trade']:.2f}")
+    r2c8.metric("Profit Factor",    pf_display)
+    r2c9.metric("Calmar",           calmar_display)
 
+    # Row 3 — Drawdown + streaks + duration
     st.write("")
-    r3c1, r3c2, r3c3, r3c4, r3c5, r3c6 = st.columns(6)
+    r3c1, r3c2, r3c3, r3c4, r3c5, r3c6, r3c7 = st.columns(7)
     r3c1.metric("Max Drawdown",    f"{m['max_drawdown']:.0f} ticks")
     r3c2.metric("Max Drawdown %",  mdd_pct_display)
     r3c3.metric("Max Peak",        f"{m['max_peak']:.0f} ticks")
-    r3c4.metric("Recovery Factor", m["recovery"])
-    r3c5.metric("Long Win Rate",   f"{m['long_winrate']:.1%}")
-    r3c6.metric("Short Win Rate",  f"{m['short_winrate']:.1%}")
+    r3c4.metric("Consec. Wins",    m["max_consec_wins"])
+    r3c5.metric("Consec. Losses",  m["max_consec_losses"])
+    r3c6.metric("Avg Duration",    avg_dur_display)
+    r3c7.metric("Median Duration", median_dur_display)
 
+    # Row 4 — Directional breakdown
+    st.write("")
+    r4c1, r4c2, r4c3, r4c4, _, _, _ = st.columns(7)
+    r4c1.metric("Long Win Rate",  f"{m['long_winrate']:.1%}")
+    r4c2.metric("Short Win Rate", f"{m['short_winrate']:.1%}")
+    r4c3.metric("Long Trades",    len(trades[trades["direction"] == "long"]))
+    r4c4.metric("Short Trades",   len(trades[trades["direction"] == "short"]))
+
+    # Exit breakdown
     st.write("")
     st.subheader("Exit Breakdown")
     exit_stats = trades.groupby("exit_reason")["ticks"].agg(
