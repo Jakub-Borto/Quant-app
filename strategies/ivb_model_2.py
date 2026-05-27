@@ -507,6 +507,9 @@ def _find_entry_consecutive_absorption(
         if len(nearby) < required_n:
             continue
 
+        # collect timestamps of all contributing absorption candles
+        nearby_ts = [t for lvl, t in seen if abs(lvl - abs_level) <= level_tol]
+
         # nth hit — enter on open of next bar
         entry_bar_idx = i + 1
         if entry_bar_idx >= n:
@@ -517,7 +520,7 @@ def _find_entry_consecutive_absorption(
 
         entry_ts    = post_retest.index[entry_bar_idx]
         entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
-        return entry_ts, entry_price, None, ts, "consecutive_absorption"
+        return entry_ts, entry_price, None, nearby_ts, "consecutive_absorption"
 
     return None, None, None, None, None
 
@@ -836,7 +839,7 @@ def _process_day(session: pd.DataFrame, params: dict):
     trade["notes"] = json.dumps({
         "breakout_time":   str(breakout_ts),
         "retest_time":     str(retest_ts),
-        "absorption_time": str(absorption_ts),
+        "absorption_time": [str(t) for t in absorption_ts] if isinstance(absorption_ts, list) else str(absorption_ts),
         "flip_count":      flip_count,
         "ivb_high":        ivb_high,
         "ivb_low":         ivb_low,

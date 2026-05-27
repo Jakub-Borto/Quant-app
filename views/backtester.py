@@ -569,6 +569,13 @@ def build_trade_figure(trade, chart_candles: pd.DataFrame,
 
     return fig
 
+def _is_timestamp(val) -> bool:
+    try:
+        pd.Timestamp(val)
+        return isinstance(val, str) and (":" in val or "-" in val)
+    except Exception:
+        return False
+
 @st.fragment
 def render_trade_detail(selected, trades: pd.DataFrame, chart_settings: dict):
     if not selected or not selected.selection.points:
@@ -604,16 +611,21 @@ def render_trade_detail(selected, trades: pd.DataFrame, chart_settings: dict):
     if "notes" in trade.index and pd.notna(trade["notes"]):
         try:
             notes = json.loads(trade["notes"])
-            n1, n2, n3, n4, n5, n6, n7 = st.columns(7)
-            n1.metric("Breakout",   pd.Timestamp(notes["breakout_time"]).strftime("%H:%M"))
-            n2.metric("Retest",     pd.Timestamp(notes["retest_time"]).strftime("%H:%M"))
-            n3.metric("Absorption", pd.Timestamp(notes["absorption_time"]).strftime("%H:%M"))
-            n4.metric("Flips",      notes["flip_count"])
-            n5.metric("POC",        f"{notes['poc']:.2f}")
-            n6.metric("VAH",        f"{notes['vah']:.2f}")
-            n7.metric("VAL",        f"{notes['val']:.2f}")
-        except Exception:
-            pass
+            cols = st.columns(len(notes))
+            for col, (key, val) in zip(cols, notes.items()):
+                if isinstance(val, list):
+                    display = ", ".join(
+                        pd.Timestamp(v).strftime("%H:%M")
+                        if _is_timestamp(v) else str(v)
+                        for v in val
+                    )
+                elif _is_timestamp(val):
+                    display = pd.Timestamp(val).strftime("%H:%M")
+                else:
+                    display = str(val)
+                col.metric(key, display)
+        except Exception as e:
+            st.warning(str(e))
 
     trade_date    = pd.Timestamp(trade["date"])
     session       = pd.read_parquet(folder_path / f"{trade_date.date().isoformat()}.parquet")
