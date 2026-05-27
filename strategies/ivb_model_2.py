@@ -377,7 +377,10 @@ def _find_entry_pure_absorption(
 
     n = len(post_retest)
 
-    for i in range(n):
+    if invalid_whole.iloc[0]:
+        return None, None, post_retest.index[0], None, None
+
+    for i in range(1, n):
         bar = post_retest.iloc[i]
         ts  = post_retest.index[i]
 
@@ -474,13 +477,16 @@ def _find_entry_consecutive_absorption(
     level_tol    = params["consec_abs_ticks"] * tick_size
     required_n   = params["consec_abs_n"]
 
+    if invalid_whole.iloc[0]:
+        return None, None, post_retest.index[0], None, None
+
     # Override absorption_mult with the consecutive-specific multiplier
     consec_params = {**params, "absorption_mult": params["consec_abs_mult"]}
 
     # Running list of (absorption_level, bar_ts) for candles seen so far
     seen: list[tuple[float, pd.Timestamp]] = []
 
-    for i in range(n):
+    for i in range(1, n):
         bar = post_retest.iloc[i]
         ts  = post_retest.index[i]
 
@@ -499,16 +505,26 @@ def _find_entry_consecutive_absorption(
         abs_level = float(bar["low"]) if direction == "long" else float(bar["high"])
 
         # Record this absorption candle
-        seen.append((abs_level, ts))
+        body_mid = (min(float(bar["open"]), float(bar["close"])) +
+            max(float(bar["open"]), float(bar["close"]))) / 2
+        seen.append((abs_level, body_mid, ts))
 
         # Count how many prior seen levels are within ±level_tol of this one
-        nearby = [lvl for lvl, _ in seen if abs(lvl - abs_level) <= level_tol]
+        nearby = [
+            (lvl, t) for lvl, bm, t in seen
+            if abs(lvl - abs_level) <= level_tol
+            and abs(bm - body_mid) <= level_tol
+        ]
 
         if len(nearby) < required_n:
             continue
 
         # collect timestamps of all contributing absorption candles
-        nearby_ts = [t for lvl, t in seen if abs(lvl - abs_level) <= level_tol]
+        nearby_ts = [
+            t for lvl, bm, t in seen
+            if abs(lvl - abs_level) <= level_tol
+            and abs(bm - body_mid) <= level_tol
+        ]
 
         # nth hit — enter on open of next bar
         entry_bar_idx = i + 1
