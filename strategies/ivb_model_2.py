@@ -3,6 +3,18 @@ import pandas as pd
 from pathlib import Path
 from datetime import time
 
+
+# FOR BACKTESTER TO SHOW IT NICELY
+PARAM_SECTIONS = {
+    "General":                  ["ib_minutes", "rr", "sl_type", "trade_timeout", "max_flips", "valid_entries"],
+    "Entry Windows":            ["retest_window", "entry_window", "entry_after_absorption"],
+    "Candle Filters":           ["delta_threshold", "body_threshold"],
+    "Absorption":               ["wick_threshold", "absorption_mult", "absorption_window"],
+    "Consecutive Absorption":   ["consec_abs_n", "consec_abs_mult", "consec_abs_ticks"],
+    "Two Bar Absorption":       ["two_bar_wick_ticks", "two_bar_abs_mult"],
+}
+
+
 PARAMS = {
     "ib_minutes":               30,     # IB range duration: 15, 30, or 60
     "delta_threshold":          30.0,   # minimum volume_delta_pct for entry candle
@@ -20,9 +32,14 @@ PARAMS = {
     "absorption_window":        20,     # rolling N bars for avg sell_per_tick baseline (RTH, post 09:35)
     "tick_size":                0.25,   # ES tick size
     # --- consecutive absorption params ---
-    "consec_abs_n":             3,      # number of absorption candles required at same level
-    "consec_abs_mult":          1.5,    # absorption multiplier for consecutive absorption finder
-    "consec_abs_ticks":         5,      # ±ticks tolerance for grouping absorption levels
+    "consec_abs_n":             2,      # number of absorption candles required at same level
+    "consec_abs_mult":          2.0,    # absorption multiplier for consecutive absorption finder
+    "consec_abs_ticks":         4,      # ±ticks tolerance for grouping absorption levels
+    # --- two bar absorption params ---
+    "two_bar_wick_ticks":       3,      # max wick size in ticks on defended side for both candles
+    "two_bar_abs_mult":         2.0,    # absorption multiplier for merged 2-bar candle
+    # --- which entries to look for ---
+    "valid_entries":            "111"
 }
 
 _OUTPUT_COLUMNS = [
@@ -377,10 +394,7 @@ def _find_entry_pure_absorption(
 
     n = len(post_retest)
 
-    if invalid_whole.iloc[0]:
-        return None, None, post_retest.index[0], None, None
-
-    for i in range(1, n):
+    for i in range(n):
         bar = post_retest.iloc[i]
         ts  = post_retest.index[i]
 
@@ -477,16 +491,13 @@ def _find_entry_consecutive_absorption(
     level_tol    = params["consec_abs_ticks"] * tick_size
     required_n   = params["consec_abs_n"]
 
-    if invalid_whole.iloc[0]:
-        return None, None, post_retest.index[0], None, None
-
     # Override absorption_mult with the consecutive-specific multiplier
     consec_params = {**params, "absorption_mult": params["consec_abs_mult"]}
 
     # Running list of (absorption_level, bar_ts) for candles seen so far
     seen: list[tuple[float, pd.Timestamp]] = []
 
-    for i in range(1, n):
+    for i in range(n):
         bar = post_retest.iloc[i]
         ts  = post_retest.index[i]
 
@@ -505,26 +516,13 @@ def _find_entry_consecutive_absorption(
         abs_level = float(bar["low"]) if direction == "long" else float(bar["high"])
 
         # Record this absorption candle
-        body_mid = (min(float(bar["open"]), float(bar["close"])) +
-            max(float(bar["open"]), float(bar["close"]))) / 2
-        seen.append((abs_level, body_mid, ts))
+        seen.append((abs_level, ts))
 
         # Count how many prior seen levels are within ±level_tol of this one
-        nearby = [
-            (lvl, t) for lvl, bm, t in seen
-            if abs(lvl - abs_level) <= level_tol
-            and abs(bm - body_mid) <= level_tol
-        ]
+        nearby = [lvl for lvl, _ in seen if abs(lvl - abs_level) <= level_tol]
 
         if len(nearby) < required_n:
             continue
-
-        # collect timestamps of all contributing absorption candles
-        nearby_ts = [
-            t for lvl, bm, t in seen
-            if abs(lvl - abs_level) <= level_tol
-            and abs(bm - body_mid) <= level_tol
-        ]
 
         # nth hit — enter on open of next bar
         entry_bar_idx = i + 1
@@ -536,7 +534,264 @@ def _find_entry_consecutive_absorption(
 
         entry_ts    = post_retest.index[entry_bar_idx]
         entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
-        return entry_ts, entry_price, None, nearby_ts, "consecutive_absorption"
+        return entry_ts, entry_price, None, ts, "consecutive_absorption"
+
+    return None, None, None, None, None
+
+
+def _merge_tick_volume(tv1: str, tv2: str) -> str:
+    """Merge two tick_volume JSON strings by summing volumes at each price level."""
+    merged = {}
+    for tv in (tv1, tv2):
+        if not tv or tv == "{}":
+            continue
+        try:
+            raw = json.loads(tv)
+        except Exception:
+            continue
+        for price_str, (buy_qty, sell_qty) in raw.items():
+            if price_str not in merged:
+                merged[price_str] = [0, 0]
+            merged[price_str][0] += buy_qty
+            merged[price_str][1] += sell_qty
+    return json.dumps({k: v for k, v in merged.items()})
+
+
+def _build_two_bar_baseline(
+    pre_bars:  pd.DataFrame,
+    direction: str,
+    params:    dict,
+) -> float:
+    """
+    Build baseline from merged 2-bar pairs ending at the last bar of pre_bars.
+    Window = absorption_window // 2 pairs.
+    Returns the mean of volume_per_tick across all valid pairs.
+    """
+    tick_size = params["tick_size"]
+    n_pairs   = params["absorption_window"] // 2
+
+    # Work backwards in pairs from the end of pre_bars
+    bars      = pre_bars.iloc[::-1].reset_index(drop=True)
+    n         = len(bars)
+    densities = []
+
+    for k in range(n_pairs):
+        i1 = k * 2
+        i2 = k * 2 + 1
+        if i2 >= n:
+            break
+
+        bar1 = bars.iloc[i1]
+        bar2 = bars.iloc[i2]
+
+        merged_high  = max(float(bar1["high"]),  float(bar2["high"]))
+        merged_low   = min(float(bar1["low"]),   float(bar2["low"]))
+        merged_range = merged_high - merged_low
+        range_ticks  = merged_range / tick_size
+
+        if range_ticks <= 0:
+            continue
+
+        if direction == "long":
+            volume = float(bar1["sell_volume"]) + float(bar2["sell_volume"])
+        else:
+            volume = float(bar1["buy_volume"])  + float(bar2["buy_volume"])
+
+        densities.append(volume / range_ticks)
+
+    if not densities:
+        return float("nan")
+
+    return sum(densities) / len(densities)
+
+
+def _find_entry_two_bar_absorption(
+    post_retest:   pd.DataFrame,
+    direction:     str,
+    ivb_high:      float,
+    ivb_low:       float,
+    poc:           float,
+    vah:           float,
+    val:           float,
+    sell_baseline: pd.Series,
+    buy_baseline:  pd.Series,
+    params:        dict,
+) -> tuple:
+    """
+    Returns (entry_ts, entry_price, invalidation_ts, absorption_ts, trade_type).
+
+    Pattern (long bias):
+      - Bar i:   bearish, small bottom wick (<= two_bar_wick_ticks)
+      - Bar i+1: bullish, small bottom wick (<= two_bar_wick_ticks), just positive delta
+    Pattern (short bias):
+      - Bar i:   bullish, small upper wick (<= two_bar_wick_ticks)
+      - Bar i+1: bearish, small upper wick (<= two_bar_wick_ticks), just negative delta
+
+    Merges both bars into a synthetic candle and checks absorption in the
+    defended wick against a baseline built from absorption_window // 2 merged pairs.
+
+    Then scans from bar i+1 (inclusive) up to entry_after_absorption bars for a
+    confirmation candle: correct direction + body_threshold + delta_threshold.
+    Enters on open of the bar after the confirmation candle.
+    """
+    if post_retest.empty:
+        return None, None, None, None, None
+
+    if direction == "long":
+        invalid_whole = post_retest["close"] < val
+    else:
+        invalid_whole = post_retest["close"] > vah
+
+    n             = len(post_retest)
+    tick_size     = params["tick_size"]
+    max_wick      = params["two_bar_wick_ticks"] * tick_size
+    required_mult = params["two_bar_abs_mult"]
+
+    # check breakout bar for invalidation only
+    if invalid_whole.iloc[0]:
+        return None, None, post_retest.index[0], None, None
+
+    for i in range(1, n - 1):
+        bar1 = post_retest.iloc[i]
+        bar2 = post_retest.iloc[i + 1]
+        ts1  = post_retest.index[i]
+        ts2  = post_retest.index[i + 1]
+
+        if invalid_whole.iloc[i] or invalid_whole.iloc[i + 1]:
+            return None, None, post_retest.index[i], None, None
+
+        # --- bar1 direction + small wick check ---
+        open1  = float(bar1["open"])
+        close1 = float(bar1["close"])
+        high1  = float(bar1["high"])
+        low1   = float(bar1["low"])
+
+        if direction == "long":
+            if close1 >= open1:             # must be bearish
+                continue
+            wick1 = min(open1, close1) - low1
+        else:
+            if close1 <= open1:             # must be bullish
+                continue
+            wick1 = high1 - max(open1, close1)
+
+        if wick1 > max_wick:
+            continue
+
+        # --- bar2 direction + small wick + just positive/negative delta ---
+        open2  = float(bar2["open"])
+        close2 = float(bar2["close"])
+        high2  = float(bar2["high"])
+        low2   = float(bar2["low"])
+
+        if direction == "long":
+            if close2 <= open2:             # must be bullish
+                continue
+            wick2    = min(open2, close2) - low2
+            delta_ok = float(bar2["volume_delta_pct"]) > 0
+        else:
+            if close2 >= open2:             # must be bearish
+                continue
+            wick2    = high2 - max(open2, close2)
+            delta_ok = float(bar2["volume_delta_pct"]) < 0
+
+        if wick2 > max_wick:
+            continue
+        if not delta_ok:
+            continue
+
+        # --- build merged synthetic candle ---
+        merged_open  = open1
+        merged_high  = max(high1, high2)
+        merged_low   = min(low1,  low2)
+        merged_close = close2
+        merged_tv    = _merge_tick_volume(
+            bar1.get("tick_volume", "{}"),
+            bar2.get("tick_volume", "{}"),
+        )
+
+        # --- build 2-bar baseline from bars before bar i ---
+        pre_bars = post_retest.iloc[1:i]   # excludes breakout bar (index 0)
+        baseline = _build_two_bar_baseline(pre_bars, direction, params)
+
+        if pd.isna(baseline) or baseline <= 0:
+            continue
+
+        required = baseline * required_mult
+
+        # --- check absorption in the defended wick of the merged candle ---
+        if direction == "long":
+            body_bottom = min(merged_open, merged_close)
+            wick_low    = merged_low
+            wick_high   = body_bottom
+        else:
+            body_top  = max(merged_open, merged_close)
+            wick_low  = body_top
+            wick_high = merged_high
+
+        if wick_high <= wick_low:
+            continue
+
+        try:
+            raw_tv = json.loads(merged_tv)
+        except Exception:
+            continue
+
+        absorbed = False
+        for price_str, (buy_qty, sell_qty) in raw_tv.items():
+            price = float(price_str)
+            if not (wick_low <= price <= wick_high):
+                continue
+            volume_at_level = sell_qty if direction == "long" else buy_qty
+            if volume_at_level >= required:
+                absorbed = True
+                break
+
+        if not absorbed:
+            continue
+
+        # --- scan for confirmation candle starting from bar2 (inclusive) ---
+        conf_scan_end = min(i + 1 + params["entry_after_absorption"], n)
+        for j in range(i + 1, conf_scan_end):
+            conf_bar   = post_retest.iloc[j]
+            conf_open  = float(conf_bar["open"])
+            conf_close = float(conf_bar["close"])
+            conf_high  = float(conf_bar["high"])
+            conf_low   = float(conf_bar["low"])
+            bar_range  = conf_high - conf_low
+
+            if invalid_whole.iloc[j]:
+                return None, None, post_retest.index[j], None, None
+
+            if bar_range <= 0:
+                continue
+
+            if direction == "long":
+                if conf_close <= conf_open:
+                    continue
+                delta_ok = float(conf_bar["volume_delta_pct"]) >= params["delta_threshold"]
+            else:
+                if conf_close >= conf_open:
+                    continue
+                delta_ok = float(conf_bar["volume_delta_pct"]) <= -params["delta_threshold"]
+
+            body    = abs(conf_close - conf_open)
+            body_ok = (body / bar_range) >= params["body_threshold"]
+
+            if not (body_ok and delta_ok):
+                continue
+
+            # entry on open of bar after confirmation
+            entry_bar_idx = j + 1
+            if entry_bar_idx >= n:
+                return None, None, None, None, None
+
+            if invalid_whole.iloc[entry_bar_idx]:
+                return None, None, post_retest.index[entry_bar_idx], None, None
+
+            entry_ts    = post_retest.index[entry_bar_idx]
+            entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
+            return entry_ts, entry_price, None, ts1, "two_bar_absorption"
 
     return None, None, None, None, None
 
@@ -576,11 +831,19 @@ def _find_entry(
         params        = params,
     )
 
+    finder_registry = [
+        _find_entry_pure_absorption,
+        _find_entry_consecutive_absorption,
+        _find_entry_two_bar_absorption,
+    ]
+
+    valid_entries = params.get("valid_entries", "111")
+    flags         = valid_entries.ljust(len(finder_registry), "0")
+
     candidates = [
-        _find_entry_pure_absorption(**shared),
-        _find_entry_consecutive_absorption(**shared),
-        # _find_entry_passive_order(**shared),  # future
-        # _find_entry_cvd_confirm(**shared),     # future
+        fn(**shared)
+        for fn, flag in zip(finder_registry, flags)
+        if flag == "1"
     ]
 
     # Separate hits from misses
@@ -855,7 +1118,7 @@ def _process_day(session: pd.DataFrame, params: dict):
     trade["notes"] = json.dumps({
         "breakout_time":   str(breakout_ts),
         "retest_time":     str(retest_ts),
-        "absorption_time": [str(t) for t in absorption_ts] if isinstance(absorption_ts, list) else str(absorption_ts),
+        "absorption_time": str(absorption_ts),
         "flip_count":      flip_count,
         "ivb_high":        ivb_high,
         "ivb_low":         ivb_low,
