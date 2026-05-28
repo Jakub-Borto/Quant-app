@@ -42,7 +42,7 @@ PARAMS = {
     # --- passive order + absorption params ---
     "passive_order_mult":       3.0,    # passive avg order size must be >= this x rolling baseline
     "passive_absorption_mult":  1.5,    # absorption mult for passive+absorption finder
-    # --- which entries to look for (1=on, 0=off): pure, consec, two_bar, passive) ---
+    # --- which entries to look for (1=on, 0=off): pure, consec, two_bar, passive ---
     "valid_entries":            "1111",
 }
 
@@ -248,6 +248,12 @@ def _build_rolling_baseline(rth_session: pd.DataFrame, params: dict):
 
 
 def _build_passive_baseline(rth_session: pd.DataFrame, direction: str, params: dict) -> pd.Series:
+    """
+    Rolling baseline of max(size/order_count) on the defended side per bar.
+    Long: passive buy orders below candle open.
+    Short: passive sell orders above candle open.
+    Only bars with valid passive data on the defended side contribute to the window.
+    """
     window = params["absorption_window"]
 
     valid = rth_session[rth_session.index.time >= time(9, 35)].copy()
@@ -279,8 +285,6 @@ def _build_passive_baseline(rth_session: pd.DataFrame, direction: str, params: d
         return best
 
     per_bar = valid.apply(max_avg_order_size, axis=1)
-
-    # rolling over valid (non-NaN) observations only
     sparse  = per_bar.dropna()
     rolling = sparse.rolling(window, min_periods=window).mean()
     return rolling.reindex(rth_session.index)
@@ -400,9 +404,10 @@ def _detect_retest(
 
 # ---------------------------------------------------------------------------
 # Entry sub-finders
-# Each returns: (entry_ts, entry_price, invalidation_ts, absorption_ts, trade_type)
+# Each returns: (entry_ts, entry_price, invalidation_ts, entry_notes, trade_type)
 # entry_ts=None means no entry found.
 # invalidation_ts=None means no invalidation hit (scanned to end without entry).
+# entry_notes is a dict — merged into trade notes in _process_day.
 # ---------------------------------------------------------------------------
 
 def _find_entry_pure_absorption(
@@ -452,6 +457,30 @@ def _find_entry_pure_absorption(
         if not _is_absorption_candle(bar, baseline, direction, params):
             continue
 
+         # find triggering price level for notes
+        trigger_price  = None
+        trigger_volume = None
+        _tv = bar.get("tick_volume", None)
+        if _tv and _tv != "{}":
+            try:
+                _raw = json.loads(_tv)
+                _req = baseline * params["absorption_mult"]
+                if direction == "long":
+                    _wl = float(bar["low"])
+                    _wh = min(float(bar["open"]), float(bar["close"]))
+                else:
+                    _wl = max(float(bar["open"]), float(bar["close"]))
+                    _wh = float(bar["high"])
+                for _ps, (_bq, _sq) in _raw.items():
+                    _p   = float(_ps)
+                    _vol = _sq if direction == "long" else _bq
+                    if _wl <= _p <= _wh and _vol >= _req:
+                        trigger_price  = _p
+                        trigger_volume = _vol
+                        break
+            except Exception:
+                pass
+
         absorption_ts    = ts
         absorption_level = float(bar["low"]) if direction == "long" else float(bar["high"])
 
@@ -493,7 +522,15 @@ def _find_entry_pure_absorption(
 
             entry_ts    = post_retest.index[entry_bar_idx]
             entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
-            return entry_ts, entry_price, None, absorption_ts, "pure_absorption"
+
+            entry_notes = {
+                "absorption_time": absorption_ts.strftime("%H:%M"),
+                "abs_baseline":    round(baseline, 2),
+                "trigger_price":   trigger_price,
+                "trigger_volume":  trigger_volume,
+            }
+
+            return entry_ts, entry_price, None, entry_notes, "pure_absorption"
 
     return None, None, None, None, None
 
@@ -515,7 +552,8 @@ def _find_entry_consecutive_absorption(
     """
     Scans post_retest bar by bar. For each absorption candle found, checks whether
     n-1 prior absorption candles exist within ±consec_abs_ticks of its absorption
-    level. If so, enters on the open of the next bar. No confirmation candle required.
+    level and body midpoint. If so, enters on the open of the next bar.
+    No confirmation candle required.
     """
     if post_retest.empty:
         return None, None, None, None, None
@@ -525,13 +563,14 @@ def _find_entry_consecutive_absorption(
     else:
         invalid_whole = post_retest["close"] > vah
 
-    n            = len(post_retest)
-    tick_size    = params["tick_size"]
-    level_tol    = params["consec_abs_ticks"] * tick_size
-    required_n   = params["consec_abs_n"]
+    n          = len(post_retest)
+    tick_size  = params["tick_size"]
+    level_tol  = params["consec_abs_ticks"] * tick_size
+    required_n = params["consec_abs_n"]
 
     consec_params = {**params, "absorption_mult": params["consec_abs_mult"]}
 
+    # (abs_level, body_mid, ts)
     seen: list[tuple[float, float, pd.Timestamp]] = []
 
     # check breakout bar for invalidation only
@@ -554,9 +593,35 @@ def _find_entry_consecutive_absorption(
         if not _is_absorption_candle(bar, baseline, direction, consec_params):
             continue
 
+        # find triggering price level for notes
+        trigger_price  = None
+        trigger_volume = None
+        _tv = bar.get("tick_volume", None)
+        if _tv and _tv != "{}":
+            try:
+                _raw = json.loads(_tv)
+                _req = baseline * consec_params["absorption_mult"]
+                if direction == "long":
+                    _wl = float(bar["low"])
+                    _wh = min(float(bar["open"]), float(bar["close"]))
+                else:
+                    _wl = max(float(bar["open"]), float(bar["close"]))
+                    _wh = float(bar["high"])
+                for _ps, (_bq, _sq) in _raw.items():
+                    _p   = float(_ps)
+                    _vol = _sq if direction == "long" else _bq
+                    if _wl <= _p <= _wh and _vol >= _req:
+                        trigger_price  = _p
+                        trigger_volume = _vol
+                        break
+            except Exception:
+                pass
+
         abs_level = float(bar["low"]) if direction == "long" else float(bar["high"])
-        body_mid  = (min(float(bar["open"]), float(bar["close"])) +
-                     max(float(bar["open"]), float(bar["close"]))) / 2
+        body_mid  = (
+            min(float(bar["open"]), float(bar["close"])) +
+            max(float(bar["open"]), float(bar["close"]))
+        ) / 2
 
         seen.append((abs_level, body_mid, ts))
 
@@ -576,10 +641,17 @@ def _find_entry_consecutive_absorption(
         if invalid_whole.iloc[entry_bar_idx]:
             return None, None, post_retest.index[entry_bar_idx], None, None
 
-        nearby_ts   = [t for _, t in nearby]
         entry_ts    = post_retest.index[entry_bar_idx]
         entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
-        return entry_ts, entry_price, None, nearby_ts, "consecutive_absorption"
+
+        entry_notes = {
+            "absorption_time": [t.strftime("%H:%M") for _, t in nearby],
+            "abs_baseline":    round(baseline, 2),
+            "trigger_price":   trigger_price,
+            "trigger_volume":  trigger_volume,
+        }
+
+        return entry_ts, entry_price, None, entry_notes, "consecutive_absorption"
 
     return None, None, None, None, None
 
@@ -702,7 +774,7 @@ def _find_entry_two_bar_absorption(
         if invalid_whole.iloc[i] or invalid_whole.iloc[i + 1]:
             return None, None, post_retest.index[i], None, None
 
-        # --- bar1 direction + small wick ---
+        # --- bar1: direction + small wick ---
         open1  = float(bar1["open"])
         close1 = float(bar1["close"])
         high1  = float(bar1["high"])
@@ -720,7 +792,7 @@ def _find_entry_two_bar_absorption(
         if wick1 > max_wick:
             continue
 
-        # --- bar2 direction + small wick + just positive/negative delta ---
+        # --- bar2: direction + small wick + just positive/negative delta ---
         open2  = float(bar2["open"])
         close2 = float(bar2["close"])
         high2  = float(bar2["high"])
@@ -752,7 +824,7 @@ def _find_entry_two_bar_absorption(
             bar2.get("tick_volume", "{}"),
         )
 
-        # --- build 2-bar baseline from bars before bar i ---
+        # --- 2-bar baseline from bars before bar i (excludes breakout bar at index 0) ---
         pre_bars = post_retest.iloc[1:i]
         baseline = _build_two_bar_baseline(pre_bars, direction, params)
 
@@ -761,7 +833,7 @@ def _find_entry_two_bar_absorption(
 
         required = baseline * required_mult
 
-        # --- check absorption in defended wick of merged candle ---
+        # --- absorption in defended wick of merged candle ---
         if direction == "long":
             body_bottom = min(merged_open, merged_close)
             wick_low    = merged_low
@@ -779,20 +851,25 @@ def _find_entry_two_bar_absorption(
         except Exception:
             continue
 
-        absorbed = False
+        absorbed             = False
+        trigger_price        = None
+        trigger_volume       = None
+
         for price_str, (buy_qty, sell_qty) in raw_tv.items():
             price = float(price_str)
             if not (wick_low <= price <= wick_high):
                 continue
             volume_at_level = sell_qty if direction == "long" else buy_qty
             if volume_at_level >= required:
-                absorbed = True
+                absorbed       = True
+                trigger_price  = price
+                trigger_volume = volume_at_level
                 break
 
         if not absorbed:
             continue
 
-        # --- scan for confirmation candle starting from bar2 (inclusive) ---
+        # --- confirmation candle scan starting from bar2 (inclusive) ---
         conf_scan_end = min(i + 1 + params["entry_after_absorption"], n)
         for j in range(i + 1, conf_scan_end):
             conf_bar   = post_retest.iloc[j]
@@ -832,7 +909,15 @@ def _find_entry_two_bar_absorption(
 
             entry_ts    = post_retest.index[entry_bar_idx]
             entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
-            return entry_ts, entry_price, None, [ts1, ts2], "two_bar_absorption"
+
+            entry_notes = {
+                "absorption_time": [ts1.strftime("%H:%M"), ts2.strftime("%H:%M")],
+                "two_bar_baseline":   round(baseline, 2),
+                "trigger_price":      trigger_price,
+                "trigger_volume":     trigger_volume,
+            }
+
+            return entry_ts, entry_price, None, entry_notes, "two_bar_absorption"
 
     return None, None, None, None, None
 
@@ -901,9 +986,12 @@ def _find_entry_passive_absorption(
         except Exception:
             continue
 
-        bar_open        = float(bar["open"])
-        required_po     = p_baseline * params["passive_order_mult"]
-        has_big_passive = False
+        bar_open              = float(bar["open"])
+        required_po           = p_baseline * params["passive_order_mult"]
+        has_big_passive       = False
+        passive_trigger_price = None
+        passive_trigger_size  = None
+        passive_trigger_count = None
 
         for price_str, (size, count) in raw_po.items():
             price = float(price_str)
@@ -914,7 +1002,10 @@ def _find_entry_passive_absorption(
             if direction == "short" and price <= bar_open:
                 continue
             if (size / count) >= required_po:
-                has_big_passive = True
+                has_big_passive       = True
+                passive_trigger_price = price
+                passive_trigger_size  = size
+                passive_trigger_count = count
                 break
 
         if not has_big_passive:
@@ -932,7 +1023,7 @@ def _find_entry_passive_absorption(
 
         absorption_ts = ts
 
-        # --- scan for confirmation candle ---
+        # --- confirmation candle scan ---
         conf_scan_end = min(i + 1 + params["entry_after_absorption"], n)
         for j in range(i + 1, conf_scan_end):
             conf_bar   = post_retest.iloc[j]
@@ -972,7 +1063,15 @@ def _find_entry_passive_absorption(
 
             entry_ts    = post_retest.index[entry_bar_idx]
             entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
-            return entry_ts, entry_price, None, absorption_ts, "passive_absorption"
+
+            entry_notes = {
+                "absorption_time": absorption_ts.strftime("%H:%M"),
+                "passive_price":   passive_trigger_price,
+                "passive_size":    passive_trigger_size,
+                "passive_count":   passive_trigger_count,
+            }
+
+            return entry_ts, entry_price, None, entry_notes, "passive_absorption"
 
     return None, None, None, None, None
 
@@ -999,7 +1098,7 @@ def _find_entry(
     Calls all entry sub-finders and returns the one with the earliest entry_ts.
     If no sub-finder finds an entry, returns the earliest invalidation_ts across all.
 
-    Returns: (entry_ts, entry_price, invalidation_ts, absorption_ts, trade_type)
+    Returns: (entry_ts, entry_price, invalidation_ts, entry_notes, trade_type)
     """
     shared = dict(
         post_retest            = post_retest,
@@ -1237,7 +1336,7 @@ def _process_day(session: pd.DataFrame, params: dict):
             post_ib.iloc[retest_pos : retest_pos + params["entry_window"]]
         ])
 
-        entry_ts, entry_price, invalidation_ts, absorption_ts, trade_type = _find_entry(
+        entry_ts, entry_price, invalidation_ts, entry_notes, trade_type = _find_entry(
             post_retest            = post_retest,
             direction              = direction,
             ivb_high               = ivb_high,
@@ -1302,24 +1401,21 @@ def _process_day(session: pd.DataFrame, params: dict):
 
     trade["trade_type"] = trade_type
 
-    abs_time = absorption_ts
-    if isinstance(abs_time, list):
-        abs_time = [t.strftime("%H:%M") if hasattr(t, "strftime") else str(t) for t in abs_time]
-    elif hasattr(abs_time, "strftime"):
-        abs_time = abs_time.strftime("%H:%M")
-    else:
-        abs_time = str(abs_time)
+    # --- build notes: process_day context + entry-specific notes ---
+    process_day_notes = {
+        "breakout_time": breakout_ts.strftime("%H:%M"),
+        "retest_time":   retest_ts.strftime("%H:%M"),
+        "flip_count":    flip_count,
+        "ivb_high":      ivb_high,
+        "ivb_low":       ivb_low,
+        "poc":           poc,
+        "vah":           vah,
+        "val":           val,
+    }
 
     trade["notes"] = json.dumps({
-        "breakout_time":   breakout_ts.strftime("%H:%M"),
-        "retest_time":     retest_ts.strftime("%H:%M"),
-        "absorption_time": abs_time,
-        "flip_count":      flip_count,
-        "ivb_high":        ivb_high,
-        "ivb_low":         ivb_low,
-        "poc":             poc,
-        "vah":             vah,
-        "val":             val,
+        **process_day_notes,
+        **(entry_notes or {}),
     })
 
     return trade
