@@ -16,78 +16,117 @@ ASSET_INFO = {
     "MNQ": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 0.50},
     "M2K": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 0.50},
     "MYM": {"tick_size": 1.00, "ticks_per_point": 1,   "dollars_per_tick": 0.50},
-
     # Rates
-    "ZN":  {"tick_size": 0.015625, "ticks_per_point": 64,  "dollars_per_tick": 15.625},  # 1/64
-    "ZB":  {"tick_size": 0.03125,  "ticks_per_point": 32,  "dollars_per_tick": 31.25},   # 1/32
-    "ZF":  {"tick_size": 0.0078125,"ticks_per_point": 128, "dollars_per_tick": 7.8125},  # 1/128
-    "ZT":  {"tick_size": 0.00390625,"ticks_per_point": 256, "dollars_per_tick": 7.8125},  # 1/128 — verify, ZT is quoted in 1/256 in some venues
-    "SR3": {"tick_size": 0.0025,   "ticks_per_point": 400, "dollars_per_tick": 6.25},
-
+    "ZN":  {"tick_size": 0.015625,   "ticks_per_point": 64,      "dollars_per_tick": 15.625},
+    "ZB":  {"tick_size": 0.03125,    "ticks_per_point": 32,      "dollars_per_tick": 31.25},
+    "ZF":  {"tick_size": 0.0078125,  "ticks_per_point": 128,     "dollars_per_tick": 7.8125},
+    "ZT":  {"tick_size": 0.00390625, "ticks_per_point": 256,     "dollars_per_tick": 7.8125},
+    "SR3": {"tick_size": 0.0025,     "ticks_per_point": 400,     "dollars_per_tick": 6.25},
     # Energy
-    "CL":  {"tick_size": 0.01, "ticks_per_point": 100, "dollars_per_tick": 10.00},
-    "QM":  {"tick_size": 0.025,"ticks_per_point": 40,  "dollars_per_tick": 12.50},
-    "NG":  {"tick_size": 0.001,"ticks_per_point": 1000,"dollars_per_tick": 10.00},
-    "RB":  {"tick_size": 0.0001,"ticks_per_point": 10000,"dollars_per_tick": 4.20},  # ~4.20 at 42000 gal contract — price-dependent, verify
-    "HO":  {"tick_size": 0.0001,"ticks_per_point": 10000,"dollars_per_tick": 4.20},  # same as RB
-
+    "CL":  {"tick_size": 0.01,   "ticks_per_point": 100,   "dollars_per_tick": 10.00},
+    "QM":  {"tick_size": 0.025,  "ticks_per_point": 40,    "dollars_per_tick": 12.50},
+    "NG":  {"tick_size": 0.001,  "ticks_per_point": 1000,  "dollars_per_tick": 10.00},
+    "RB":  {"tick_size": 0.0001, "ticks_per_point": 10000, "dollars_per_tick": 4.20},
+    "HO":  {"tick_size": 0.0001, "ticks_per_point": 10000, "dollars_per_tick": 4.20},
     # Metals
-    "GC":  {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 10.00},
-    "MGC": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 1.00},
-    "SI":  {"tick_size": 0.005,"ticks_per_point": 200, "dollars_per_tick": 25.00},
-    "HG":  {"tick_size": 0.0005,"ticks_per_point": 2000,"dollars_per_tick": 12.50},
-
+    "GC":  {"tick_size": 0.10,   "ticks_per_point": 10,   "dollars_per_tick": 10.00},
+    "MGC": {"tick_size": 0.10,   "ticks_per_point": 10,   "dollars_per_tick": 1.00},
+    "SI":  {"tick_size": 0.005,  "ticks_per_point": 200,  "dollars_per_tick": 25.00},
+    "HG":  {"tick_size": 0.0005, "ticks_per_point": 2000, "dollars_per_tick": 12.50},
     # Grains
-    "ZC":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50},
-    "ZS":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50},
-    "ZW":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50},
-
+    "ZC":  {"tick_size": 0.25, "ticks_per_point": 4, "dollars_per_tick": 12.50},
+    "ZS":  {"tick_size": 0.25, "ticks_per_point": 4, "dollars_per_tick": 12.50},
+    "ZW":  {"tick_size": 0.25, "ticks_per_point": 4, "dollars_per_tick": 12.50},
     # FX
-    "6E":  {"tick_size": 0.00005,"ticks_per_point": 20000,"dollars_per_tick": 6.25},
-    "6J":  {"tick_size": 0.0000005,"ticks_per_point": 2000000,"dollars_per_tick": 6.25},
-    "6B":  {"tick_size": 0.0001,"ticks_per_point": 10000,"dollars_per_tick": 6.25},
-    "6C":  {"tick_size": 0.00005,"ticks_per_point": 20000,"dollars_per_tick": 5.00},
-
+    "6E":  {"tick_size": 0.00005,    "ticks_per_point": 20000,   "dollars_per_tick": 6.25},
+    "6J":  {"tick_size": 0.0000005,  "ticks_per_point": 2000000, "dollars_per_tick": 6.25},
+    "6B":  {"tick_size": 0.0001,     "ticks_per_point": 10000,   "dollars_per_tick": 6.25},
+    "6C":  {"tick_size": 0.00005,    "ticks_per_point": 20000,   "dollars_per_tick": 5.00},
     # Crypto
     "BTC": {"tick_size": 5.00, "ticks_per_point": 0.2, "dollars_per_tick": 25.00},
 }
 
 HIDDEN_PARAMS = {"tick_size"}
 
-def save_trades(trades: pd.DataFrame, dataset: str, strategy: str, 
+
+# ── News / holiday classification ─────────────────────────────────────────────
+
+def load_day_classifications() -> dict[str, set]:
+    """
+    Returns {date_str: set_of_tags} where tags are 'high_impact' and/or 'holiday'.
+    date_str is ISO format YYYY-MM-DD for fast lookup.
+    """
+    path = Path("data/news_and_holidays/ff_usd_events.parquet")
+    if not path.exists():
+        return {}
+
+    df = pd.read_parquet(path)
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+
+    classifications: dict[str, set] = {}
+    for date, group in df.groupby("date"):
+        tags: set = set()
+        if (group["impact"] == "red").any():
+            tags.add("high_impact")
+        if (group["impact"] == "grey").any():
+            tags.add("holiday")
+        classifications[date.isoformat()] = tags
+
+    return classifications
+
+
+def tag_trades(trades: pd.DataFrame, day_classifications: dict) -> pd.DataFrame:
+    """
+    Adds a 'day_type' column: 'holiday', 'high_impact', or 'normal'.
+    Holiday takes priority over high_impact (a market holiday is a holiday).
+    """
+    def _tag(date) -> str:
+        key = pd.Timestamp(date).date().isoformat()
+        tags = day_classifications.get(key, set())
+        if "holiday" in tags:
+            return "holiday"
+        if "high_impact" in tags:
+            return "high_impact"
+        return "normal"
+
+    trades = trades.copy()
+    trades["day_type"] = trades["date"].apply(_tag)
+    return trades
+
+
+# ── Persistence ───────────────────────────────────────────────────────────────
+
+def save_trades(trades: pd.DataFrame, dataset: str, strategy: str,
                 start_date, end_date) -> str:
-    
     trades_path = Path("data/trades")
     trades_path.mkdir(parents=True, exist_ok=True)
-    
+
     base_name = f"{dataset}_{strategy}_{start_date}_{end_date}"
-    
-    # check existing files with same base name
-    existing = sorted(trades_path.glob(f"{base_name}*.parquet"))
-    
+    existing  = sorted(trades_path.glob(f"{base_name}*.parquet"))
+
     for f in existing:
-        existing_trades = pd.read_parquet(f)
-        if existing_trades.equals(trades):
-            return None  # identical file exists, skip
-    
-    # find next available name
-    if not existing:
-        output_path = trades_path / f"{base_name}.parquet"
-    else:
-        output_path = trades_path / f"{base_name}_{len(existing) + 1}.parquet"
-    
+        if pd.read_parquet(f).equals(trades):
+            return None
+
+    output_path = (
+        trades_path / f"{base_name}.parquet"
+        if not existing
+        else trades_path / f"{base_name}_{len(existing) + 1}.parquet"
+    )
     trades.to_parquet(output_path)
     return str(output_path)
+
+
+# ── Navigation ────────────────────────────────────────────────────────────────
 
 def go_page(page: str):
     st.session_state.page = page
     st.rerun()
 
+
+# ── Data scanning ─────────────────────────────────────────────────────────────
+
 def get_parquet_structure() -> dict:
-    """
-    Scans data/parquet and returns nested structure:
-    { type: { asset: [dataset_folder, ...] } }
-    """
     parquet_path = Path("data/parquet")
     structure = {}
     if not parquet_path.exists():
@@ -104,7 +143,8 @@ def get_parquet_structure() -> dict:
                 structure[type_dir.name][asset_dir.name] = datasets
     return structure
 
-def get_strategies():
+
+def get_strategies() -> list:
     strategies_path = Path("strategies")
     if not strategies_path.exists():
         return []
@@ -113,17 +153,18 @@ def get_strategies():
         if f.stem not in ["__init__", "base"]
     ])
 
+
 def load_strategy(name: str):
     path = Path("strategies") / f"{name}.py"
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-
     if not hasattr(module, "run"):
         raise ValueError(f"Strategy '{name}' has no run() function")
     if not callable(module.run):
         raise ValueError(f"Strategy '{name}'.run is not callable")
     return module
+
 
 def check_for_data_errors(structure: dict) -> bool:
     if not structure:
@@ -133,6 +174,9 @@ def check_for_data_errors(structure: dict) -> bool:
         st.error("No strategies found in strategies/")
         return True
     return False
+
+
+# ── UI controls ───────────────────────────────────────────────────────────────
 
 def render_controls(structure: dict, strategies: list):
     col1, col2 = st.columns(2)
@@ -156,7 +200,7 @@ def render_controls(structure: dict, strategies: list):
         strategy_name = st.selectbox("Strategy", strategies)
 
     with col2:
-        folder_path = Path("data/parquet") / asset_type / asset / dataset
+        folder_path     = Path("data/parquet") / asset_type / asset / dataset
         available_dates = sorted([
             pd.Timestamp(f.stem) for f in folder_path.glob("*.parquet")
             if f.stem[0].isdigit()
@@ -178,26 +222,25 @@ def render_controls(structure: dict, strategies: list):
                 key=f"end_date_{asset_type}_{asset}_{dataset}",
             )
         else:
-            start_date = None
-            end_date   = None
+            start_date = end_date = None
 
     return asset_type, asset, dataset, strategy_name, start_date, end_date
+
 
 def render_params(strategy) -> dict:
     if not hasattr(strategy, "PARAMS"):
         return {}
 
     visible = {k: v for k, v in strategy.PARAMS.items() if k not in HIDDEN_PARAMS}
-
     if not visible:
         return {}
 
     st.write("")
     st.subheader("Parameters")
-    params = {}
-    items = list(visible.items())
+    params     = {}
+    items      = list(visible.items())
     chunk_size = 10
-    chunks = [items[i:i+chunk_size] for i in range(0, len(items), chunk_size)]
+    chunks     = [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
 
     for chunk in chunks:
         param_cols = st.columns(len(chunk))
@@ -210,10 +253,13 @@ def render_params(strategy) -> dict:
 
     return params
 
+
+# ── Strategy execution ────────────────────────────────────────────────────────
+
 def execute_run(strategy, asset_type, asset, dataset,
                 start_date, end_date, params) -> bool:
-    st.session_state.trades       = None
-    st.session_state.folder_path  = None
+    st.session_state.trades      = None
+    st.session_state.folder_path = None
 
     if start_date > end_date:
         st.error("Start date must be before end date.")
@@ -227,7 +273,6 @@ def execute_run(strategy, asset_type, asset, dataset,
     ticks_per_point = asset_info["ticks_per_point"]
     folder_path     = Path("data/parquet") / asset_type / asset / dataset
 
-    # Inject hidden params before passing to strategy
     params["tick_size"] = asset_info["tick_size"]
 
     with st.spinner("Running strategy..."):
@@ -248,13 +293,16 @@ def execute_run(strategy, asset_type, asset, dataset,
     st.session_state.folder_path = folder_path
     return True
 
+
+# ── Metrics ───────────────────────────────────────────────────────────────────
+
 def compute_metrics(trades: pd.DataFrame) -> dict:
     winning   = trades[trades["ticks"] > 0]
     losing    = trades[trades["ticks"] < 0]
     breakeven = trades[trades["ticks"] == 0]
 
-    avg_win  = winning["ticks"].mean() if len(winning) > 0 else 0.0
-    avg_loss = losing["ticks"].mean()  if len(losing)  > 0 else 0.0
+    avg_win   = winning["ticks"].mean() if len(winning) > 0 else 0.0
+    avg_loss  = losing["ticks"].mean()  if len(losing)  > 0 else 0.0
     win_rate  = len(winning) / len(trades)
     loss_rate = len(losing)  / len(trades)
 
@@ -288,28 +336,22 @@ def compute_metrics(trades: pd.DataFrame) -> dict:
     drawdown     = cumulative - rolling_max
     max_drawdown = drawdown.min()
 
-    max_dd_idx     = drawdown.idxmin()
-    peak_at_max_dd = rolling_max.loc[max_dd_idx]
-    if peak_at_max_dd > 0:
-        max_drawdown_pct = (max_drawdown / peak_at_max_dd) * 100
-    else:
-        max_drawdown_pct = None
+    peak_at_max_dd = rolling_max.loc[drawdown.idxmin()]
+    max_drawdown_pct = (max_drawdown / peak_at_max_dd) * 100 if peak_at_max_dd > 0 else None
 
     total       = trades["ticks"].sum()
     global_peak = rolling_max.max()
+    calmar      = total / abs(max_drawdown) if max_drawdown < 0 else float("inf")
 
-    calmar = total / abs(max_drawdown) if max_drawdown < 0 else float("inf")
-
-    # Planned RR — abs(tp - entry) / abs(sl - entry), all trades
-    if "entry_price" in trades.columns and "sl" in trades.columns and "tp" in trades.columns:
-        sl_dist    = (trades["entry_price"] - trades["sl"]).abs()
-        tp_dist    = (trades["tp"] - trades["entry_price"]).abs()
-        rr_series  = (tp_dist / sl_dist)[sl_dist > 0]
-        avg_rr     = rr_series.mean()
-        median_rr  = rr_series.median()
+    # Planned RR — abs(tp - entry) / abs(sl - entry)
+    if all(c in trades.columns for c in ["entry_price", "sl", "tp"]):
+        sl_dist   = (trades["entry_price"] - trades["sl"]).abs()
+        tp_dist   = (trades["tp"] - trades["entry_price"]).abs()
+        rr_series = (tp_dist / sl_dist)[sl_dist > 0]
+        avg_rr    = rr_series.mean()
+        median_rr = rr_series.median()
     else:
-        avg_rr    = None
-        median_rr = None
+        avg_rr = median_rr = None
 
     # Consecutive wins / losses
     results = (trades["ticks"] > 0).astype(int).tolist()
@@ -330,14 +372,10 @@ def compute_metrics(trades: pd.DataFrame) -> dict:
         avg_duration_min    = durations.mean()
         median_duration_min = durations.median()
     else:
-        avg_duration_min    = None
-        median_duration_min = None
+        avg_duration_min = median_duration_min = None
 
-    # Per-direction stats
     long_trades  = trades[trades["direction"] == "long"]
     short_trades = trades[trades["direction"] == "short"]
-    long_winrate  = (long_trades["ticks"] > 0).mean()  if len(long_trades)  > 0 else 0.0
-    short_winrate = (short_trades["ticks"] > 0).mean() if len(short_trades) > 0 else 0.0
 
     return {
         "total_ticks":          total,
@@ -363,8 +401,10 @@ def compute_metrics(trades: pd.DataFrame) -> dict:
         "max_consec_losses":    max_consec_losses,
         "avg_duration_min":     avg_duration_min,
         "median_duration_min":  median_duration_min,
-        "long_winrate":         long_winrate,
-        "short_winrate":        short_winrate,
+        "long_trades":          len(long_trades),
+        "short_trades":         len(short_trades),
+        "long_winrate":         (long_trades["ticks"] > 0).mean()  if len(long_trades)  > 0 else 0.0,
+        "short_winrate":        (short_trades["ticks"] > 0).mean() if len(short_trades) > 0 else 0.0,
     }
 
 
@@ -381,12 +421,6 @@ def render_metrics(trades: pd.DataFrame):
     median_dur_display = f"{m['median_duration_min']:.0f}m" if m["median_duration_min"] is not None else "N/A"
     avg_rr_display     = f"{m['avg_rr']:.2f}"    if m["avg_rr"]    is not None else "N/A"
     median_rr_display  = f"{m['median_rr']:.2f}" if m["median_rr"] is not None else "N/A"
-    
-    '''
-    
-    
-    
-    '''
 
     # Row 1 — Core P&L
     st.write("")
@@ -398,19 +432,19 @@ def render_metrics(trades: pd.DataFrame):
     r1c5.metric("Avg Loss",             f"{m['avg_loss']:.1f}")
     r1c6.metric("Largest Win",          f"{m['largest_win']:.0f}")
     r1c7.metric("Largest Loss",         f"{m['largest_loss']:.0f}")
+    r1c8.metric("Avg RR",               avg_rr_display)
 
     # Row 2 — Risk-adjusted
     st.write("")
-    r2c1, r2c2, r2c3, r2c4, r2c5, r2c6, r2c7, r2c8, r2c9 = st.columns(9)
-    r2c1.metric("Win Rate",         f"{m['win_rate']:.1%}")
-    r2c2.metric("Avg RR",           avg_rr_display)
-    r2c3.metric("Median RR",            median_rr_display)
-    r2c4.metric("Loss Rate",        f"{m['loss_rate']:.1%}")
-    r2c5.metric("Breakeven Rate",   f"{m['breakeven_rate']:.1%}")
-    r2c6.metric("Sharpe (daily)",   f"{m['sharpe_daily']:.2f}")
-    r2c7.metric("Sharpe (trade)",   f"{m['sharpe_trade']:.2f}")
-    r2c8.metric("Profit Factor",    pf_display)
-    r2c9.metric("Calmar",           calmar_display)
+    r2c1, r2c2, r2c3, r2c4, r2c5, r2c6, r2c7, r2c8 = st.columns(8)
+    r2c1.metric("Median RR",        median_rr_display)
+    r2c2.metric("Win Rate",         f"{m['win_rate']:.1%}")
+    r2c3.metric("Loss Rate",        f"{m['loss_rate']:.1%}")
+    r2c4.metric("Breakeven Rate",   f"{m['breakeven_rate']:.1%}")
+    r2c5.metric("Sharpe (daily)",   f"{m['sharpe_daily']:.2f}")
+    r2c6.metric("Sharpe (trade)",   f"{m['sharpe_trade']:.2f}")
+    r2c7.metric("Profit Factor",    pf_display)
+    r2c8.metric("Calmar",           calmar_display)
 
     # Row 3 — Drawdown + streaks + duration
     st.write("")
@@ -423,26 +457,69 @@ def render_metrics(trades: pd.DataFrame):
     r3c6.metric("Avg Duration",    avg_dur_display)
     r3c7.metric("Median Duration", median_dur_display)
 
-    # Row 4 — Directional breakdown
+    # Row 4 — Directional
     st.write("")
     r4c1, r4c2, r4c3, r4c4, _, _, _ = st.columns(7)
     r4c1.metric("Long Win Rate",  f"{m['long_winrate']:.1%}")
     r4c2.metric("Short Win Rate", f"{m['short_winrate']:.1%}")
-    r4c3.metric("Long Trades",    len(trades[trades["direction"] == "long"]))
-    r4c4.metric("Short Trades",   len(trades[trades["direction"] == "short"]))
+    r4c3.metric("Long Trades",    m["long_trades"])
+    r4c4.metric("Short Trades",   m["short_trades"])
 
     # Exit breakdown
     st.write("")
     st.subheader("Exit Breakdown")
     exit_stats = trades.groupby("exit_reason")["ticks"].agg(
-        count="count",
-        avg="mean",
-        total="sum"
+        count="count", avg="mean", total="sum"
     ).reset_index()
     exit_stats.columns        = ["Exit Reason", "Count", "Avg Ticks", "Total Ticks"]
     exit_stats["Avg Ticks"]   = exit_stats["Avg Ticks"].round(1)
     exit_stats["Total Ticks"] = exit_stats["Total Ticks"].round(0).astype(int)
     st.dataframe(exit_stats, width='stretch', hide_index=True)
+
+
+def render_news_holiday_breakdown(trades: pd.DataFrame):
+    """
+    Always-visible section — computed from the trade_type-filtered trades
+    but unaffected by the day_type filter. Shows high_impact and holiday
+    exposure stats in two fixed rows.
+    """
+    if "day_type" not in trades.columns:
+        return
+
+    st.write("")
+    st.subheader("News & Holiday Exposure")
+
+    rows = []
+    for tag, label in [("high_impact", "High Impact News"), ("holiday", "Holiday")]:
+        subset  = trades[trades["day_type"] == tag]
+        n       = len(subset)
+        if n == 0:
+            rows.append({
+                "Day Type": label,
+                "Trades": 0,
+                "Wins": 0,
+                "Losses": 0,
+                "Win Rate": "N/A",
+                "Total Ticks": 0,
+                "Avg Ticks": "N/A",
+            })
+        else:
+            wins   = (subset["ticks"] > 0).sum()
+            losses = (subset["ticks"] < 0).sum()
+            rows.append({
+                "Day Type":    label,
+                "Trades":      n,
+                "Wins":        wins,
+                "Losses":      losses,
+                "Win Rate":    f"{wins / n:.1%}",
+                "Total Ticks": f"{subset['ticks'].sum():.0f}",
+                "Avg Ticks":   f"{subset['ticks'].mean():.1f}",
+            })
+
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
+
+
+# ── Equity curve ──────────────────────────────────────────────────────────────
 
 def render_equity_curve(trades: pd.DataFrame):
     st.write("")
@@ -465,20 +542,12 @@ def render_equity_curve(trades: pd.DataFrame):
         height=400,
     )
 
-    selected = st.plotly_chart(
-        fig,
-        width='stretch',
-        on_select="rerun",
-        key="equity_curve"
-    )
+    return st.plotly_chart(fig, width='stretch', on_select="rerun", key="equity_curve")
 
-    return selected
+
+# ── Chart view ────────────────────────────────────────────────────────────────
 
 def render_chart_view_controls() -> dict:
-    """
-    Renders chart view configuration controls.
-    Returns a dict with the user's chosen settings.
-    """
     st.write("")
     st.subheader("Chart View Settings")
 
@@ -494,33 +563,14 @@ def render_chart_view_controls() -> dict:
 
     with col2:
         if view_mode == "Candles before entry":
-            candles_before = st.number_input(
-                "Candles before entry",
-                value=30,
-                min_value=1,
-                max_value=390,
-                step=1,
-                key="chart_candles_before",
-            )
+            candles_before     = st.number_input("Candles before entry", value=30, min_value=1, max_value=390, step=1, key="chart_candles_before")
             session_start_time = None
         else:
-            candles_before = None
-            session_start_time = st.time_input(
-                "Session start time (NY)",
-                value=pd.Timestamp("09:30").time(),
-                key="chart_session_start",
-                step=60,
-            )
+            candles_before     = None
+            session_start_time = st.time_input("Session start time (NY)", value=pd.Timestamp("09:30").time(), key="chart_session_start", step=60)
 
     with col3:
-        candles_after = st.number_input(
-            "Candles after exit",
-            value=10,
-            min_value=0,
-            max_value=390,
-            step=1,
-            key="chart_candles_after",
-        )
+        candles_after = st.number_input("Candles after exit", value=10, min_value=0, max_value=390, step=1, key="chart_candles_after")
 
     return {
         "view_mode":          view_mode,
@@ -529,125 +579,67 @@ def render_chart_view_controls() -> dict:
         "candles_after":      candles_after,
     }
 
-def resolve_chart_window(
-    session:        pd.DataFrame,
-    entry_ts:       pd.Timestamp,
-    exit_ts:        pd.Timestamp,
-    chart_settings: dict,
-) -> pd.DataFrame:
-    """
-    Slices the session DataFrame to the configured chart window.
 
-    Two modes:
-      - "Candles before entry": start N bars before entry_ts
-      - "Fixed session time":   start at a fixed time (e.g. 09:30)
-
-    Always extends candles_after bars past the exit bar.
-    """
-    # Find exit position
+def resolve_chart_window(session: pd.DataFrame, entry_ts: pd.Timestamp,
+                         exit_ts: pd.Timestamp, chart_settings: dict) -> pd.DataFrame:
     exit_loc = session.index.searchsorted(exit_ts, side="right") - 1
     exit_loc = max(0, min(exit_loc, len(session) - 1))
     end_loc  = min(exit_loc + chart_settings["candles_after"], len(session) - 1)
 
     if chart_settings["view_mode"] == "Candles before entry":
-        entry_loc  = session.index.searchsorted(entry_ts, side="left")
-        entry_loc  = max(0, min(entry_loc, len(session) - 1))
-        start_loc  = max(0, entry_loc - chart_settings["candles_before"])
-
+        entry_loc = session.index.searchsorted(entry_ts, side="left")
+        entry_loc = max(0, min(entry_loc, len(session) - 1))
+        start_loc = max(0, entry_loc - chart_settings["candles_before"])
     else:
-        # Fixed session time — find first bar at or after the chosen time
-        target_time = chart_settings["session_start_time"]
-        time_mask   = session.index.time >= target_time
-        if time_mask.any():
-            start_loc = int(time_mask.argmax())
-        else:
-            # Fallback: start of session
-            start_loc = 0
+        time_mask = session.index.time >= chart_settings["session_start_time"]
+        start_loc = int(time_mask.argmax()) if time_mask.any() else 0
 
-    return session.iloc[start_loc : end_loc + 1]
+    return session.iloc[start_loc: end_loc + 1]
+
 
 def build_trade_figure(trade, chart_candles: pd.DataFrame,
                        entry_ts: str, exit_ts: str) -> go.Figure:
     fig = go.Figure()
 
-    # candlesticks
     fig.add_trace(go.Candlestick(
         x=chart_candles.index,
-        open=chart_candles["open"],
-        high=chart_candles["high"],
-        low=chart_candles["low"],
-        close=chart_candles["close"],
+        open=chart_candles["open"], high=chart_candles["high"],
+        low=chart_candles["low"],  close=chart_candles["close"],
         name="Price",
     ))
-
-    # entry line
-    fig.add_shape(
-        type="line",
-        x0=entry_ts, x1=exit_ts,
-        y0=trade["entry_price"], y1=trade["entry_price"],
-        line=dict(color="blue", width=1, dash="solid"),
-    )
-
-    # sl line + shaded risk zone
-    fig.add_shape(
-        type="line",
-        x0=entry_ts, x1=exit_ts,
-        y0=trade["sl"], y1=trade["sl"],
-        line=dict(color="red", width=1, dash="dash"),
-    )
-    fig.add_shape(
-        type="rect",
-        x0=entry_ts, x1=exit_ts,
-        y0=trade["sl"], y1=trade["entry_price"],
-        fillcolor="red", opacity=0.05, line_width=0,
-    )
-
-    # tp line + shaded reward zone
-    fig.add_shape(
-        type="line",
-        x0=entry_ts, x1=exit_ts,
-        y0=trade["tp"], y1=trade["tp"],
-        line=dict(color="green", width=1, dash="dash"),
-    )
-    fig.add_shape(
-        type="rect",
-        x0=entry_ts, x1=exit_ts,
-        y0=trade["entry_price"], y1=trade["tp"],
-        fillcolor="green", opacity=0.05, line_width=0,
-    )
-
-    # entry marker
+    fig.add_shape(type="line", x0=entry_ts, x1=exit_ts,
+                  y0=trade["entry_price"], y1=trade["entry_price"],
+                  line=dict(color="blue", width=1, dash="solid"))
+    fig.add_shape(type="line", x0=entry_ts, x1=exit_ts,
+                  y0=trade["sl"], y1=trade["sl"],
+                  line=dict(color="red", width=1, dash="dash"))
+    fig.add_shape(type="rect", x0=entry_ts, x1=exit_ts,
+                  y0=trade["sl"], y1=trade["entry_price"],
+                  fillcolor="red", opacity=0.05, line_width=0)
+    fig.add_shape(type="line", x0=entry_ts, x1=exit_ts,
+                  y0=trade["tp"], y1=trade["tp"],
+                  line=dict(color="green", width=1, dash="dash"))
+    fig.add_shape(type="rect", x0=entry_ts, x1=exit_ts,
+                  y0=trade["entry_price"], y1=trade["tp"],
+                  fillcolor="green", opacity=0.05, line_width=0)
     fig.add_trace(go.Scatter(
-        x=[entry_ts],
-        y=[trade["entry_price"]],
-        mode="markers",
-        marker=dict(
-            symbol="triangle-up" if trade["direction"] == "long" else "triangle-down",
-            size=14,
-            color="blue",
-        ),
+        x=[entry_ts], y=[trade["entry_price"]], mode="markers",
+        marker=dict(symbol="triangle-up" if trade["direction"] == "long" else "triangle-down",
+                    size=14, color="blue"),
         name="Entry",
     ))
-
-    # exit marker
     fig.add_trace(go.Scatter(
-        x=[exit_ts],
-        y=[trade["exit_price"]],
-        mode="markers",
+        x=[exit_ts], y=[trade["exit_price"]], mode="markers",
         marker=dict(symbol="x", size=14, color="orange"),
         name="Exit",
     ))
-
     fig.update_layout(
-        height=700,
-        xaxis_title="Time",
-        yaxis_title="Price",
-        xaxis_rangeslider_visible=False,
-        hovermode="x unified",
+        height=700, xaxis_title="Time", yaxis_title="Price",
+        xaxis_rangeslider_visible=False, hovermode="x unified",
         yaxis=dict(tickformat=",.2f"),
     )
-
     return fig
+
 
 def _is_timestamp(val) -> bool:
     try:
@@ -655,6 +647,7 @@ def _is_timestamp(val) -> bool:
         return isinstance(val, str) and (":" in val or "-" in val)
     except Exception:
         return False
+
 
 @st.fragment
 def render_trade_detail(selected, trades: pd.DataFrame, chart_settings: dict):
@@ -665,18 +658,18 @@ def render_trade_detail(selected, trades: pd.DataFrame, chart_settings: dict):
     trade = trades.iloc[idx]
 
     folder_path     = st.session_state.folder_path
-    asset           = folder_path.parts[-2]  # data/parquet/{type}/{asset}/{dataset}
+    asset           = folder_path.parts[-2]
     ticks_per_point = ASSET_INFO[asset]["ticks_per_point"]
 
     st.write("")
     st.divider()
     st.subheader(f"Trade Detail — {trade['date']}")
 
-    duration = trade["exit_time"] - trade["entry_time"]
-    hours    = int(duration.total_seconds() // 3600)
-    minutes  = int((duration.total_seconds() % 3600) // 60)
-    sl_ticks = abs(trade["entry_price"] - trade["sl"]) * ticks_per_point
-    tp_ticks = abs(trade["entry_price"] - trade["tp"]) * ticks_per_point
+    duration  = trade["exit_time"] - trade["entry_time"]
+    hours     = int(duration.total_seconds() // 3600)
+    minutes   = int((duration.total_seconds() % 3600) // 60)
+    sl_ticks  = abs(trade["entry_price"] - trade["sl"]) * ticks_per_point
+    tp_ticks  = abs(trade["entry_price"] - trade["tp"]) * ticks_per_point
     actual_rr = tp_ticks / sl_ticks if sl_ticks > 0 else 0
 
     c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
@@ -691,12 +684,11 @@ def render_trade_detail(selected, trades: pd.DataFrame, chart_settings: dict):
     if "notes" in trade.index and pd.notna(trade["notes"]):
         try:
             notes = json.loads(trade["notes"])
-            cols = st.columns(len(notes))
+            cols  = st.columns(len(notes))
             for col, (key, val) in zip(cols, notes.items()):
                 if isinstance(val, list):
                     display = ", ".join(
-                        pd.Timestamp(v).strftime("%H:%M")
-                        if _is_timestamp(v) else str(v)
+                        pd.Timestamp(v).strftime("%H:%M") if _is_timestamp(v) else str(v)
                         for v in val
                     )
                 elif _is_timestamp(val):
@@ -710,20 +702,15 @@ def render_trade_detail(selected, trades: pd.DataFrame, chart_settings: dict):
     trade_date    = pd.Timestamp(trade["date"])
     session       = pd.read_parquet(folder_path / f"{trade_date.date().isoformat()}.parquet")
     session       = session[session.index.date == trade_date.date()]
-    chart_candles = resolve_chart_window(
-        session        = session,
-        entry_ts       = trade["entry_time"],
-        exit_ts        = trade["exit_time"],
-        chart_settings = chart_settings,
-    )
-
-    entry_ts = str(trade["entry_time"])
-    exit_ts  = str(trade["exit_time"])
+    chart_candles = resolve_chart_window(session, trade["entry_time"], trade["exit_time"], chart_settings)
 
     st.plotly_chart(
-        build_trade_figure(trade, chart_candles, entry_ts, exit_ts),
+        build_trade_figure(trade, chart_candles, str(trade["entry_time"]), str(trade["exit_time"])),
         width='stretch',
     )
+
+
+# ── Trades table ──────────────────────────────────────────────────────────────
 
 def render_trades_table(trades: pd.DataFrame, dataset: str, strategy_name: str,
                         start_date, end_date):
@@ -733,21 +720,24 @@ def render_trades_table(trades: pd.DataFrame, dataset: str, strategy_name: str,
                     "entry_price", "exit_price", "exit_reason", "ticks"]
     if "trade_type" in trades.columns:
         display_cols.append("trade_type")
+    if "day_type" in trades.columns:
+        display_cols.append("day_type")
     st.dataframe(trades[display_cols], width='stretch')
 
     st.write("")
     _, _, save_col, _, _ = st.columns(5)
     with save_col:
         if st.button("Save Trades", width='stretch'):
-            result = save_trades(
-                trades, dataset, strategy_name,
-                start_date, end_date
-            )
+            # Strip day_type before saving — it's derived, not strategy output
+            save_cols = [c for c in trades.columns if c != "day_type"]
+            result    = save_trades(trades[save_cols], dataset, strategy_name, start_date, end_date)
             if result is None:
                 st.info("Identical trades file already exists — not saved.")
             else:
                 st.success(f"Saved to {result}")
 
+
+# ── Main render ───────────────────────────────────────────────────────────────
 
 def render():
     if "trades" not in st.session_state:
@@ -762,13 +752,11 @@ def render():
     st.write("")
 
     structure = get_parquet_structure()
-
     if check_for_data_errors(structure):
         return
 
     strategies = get_strategies()
-
-    result = render_controls(structure, strategies)
+    result     = render_controls(structure, strategies)
     asset_type, asset, dataset, strategy_name, start_date, end_date = result
 
     if asset_type is None:
@@ -783,49 +771,85 @@ def render():
         run = st.button("Run", type="primary", width='stretch')
 
     if run:
-        execute_run(strategy, asset_type, asset, dataset,
-                    start_date, end_date, params)
+        execute_run(strategy, asset_type, asset, dataset, start_date, end_date, params)
 
-    if st.session_state.trades is not None:
-        trades = st.session_state.trades
+    if st.session_state.trades is None:
+        return
 
-        if "trade_type" in trades.columns:
-            unique_types = sorted(trades["trade_type"].dropna().unique().tolist())
-            if unique_types:
-                st.write("")
-                st.caption("Filter by trade type")
-                cols = st.columns(min(len(unique_types), 6))
-                selected_types = []
-                for i, tt in enumerate(unique_types):
-                    with cols[i % 6]:
-                        if st.checkbox(tt, value=True, key=f"filter_tt_{tt}"):
-                            selected_types.append(tt)
-                if not selected_types:
-                    st.warning("No trade types selected.")
-                    return
-                trades = trades[trades["trade_type"].isin(selected_types)]
-                trades = trades.copy()
-                trades["cumulative_ticks"] = trades["ticks"].cumsum()
+    # ── Base trades from session state ────────────────────────────────────────
+    trades = st.session_state.trades
 
-        render_metrics(trades)
-        selected       = render_equity_curve(trades)
-        chart_settings = render_chart_view_controls()
-        render_trade_detail(selected, trades, chart_settings)
-        render_trades_table(trades, dataset, strategy_name, start_date, end_date)
+    # ── Tag every trade with day_type (always, before any filter) ─────────────
+    day_classifications = load_day_classifications()
+    trades = tag_trades(trades, day_classifications)
+
+    # ── Trade type filter ──────────────────────────────────────────────────────
+    if "trade_type" in trades.columns:
+        unique_types = sorted(trades["trade_type"].dropna().unique().tolist())
+        if unique_types:
+            st.write("")
+            st.caption("Filter by trade type")
+            cols           = st.columns(min(len(unique_types), 6))
+            selected_types = []
+            for i, tt in enumerate(unique_types):
+                with cols[i % 6]:
+                    if st.checkbox(tt, value=True, key=f"filter_tt_{tt}"):
+                        selected_types.append(tt)
+            if not selected_types:
+                st.warning("No trade types selected.")
+                return
+            trades = trades[trades["trade_type"].isin(selected_types)].copy()
+            trades["cumulative_ticks"] = trades["ticks"].cumsum()
+
+    # ── News & holiday breakdown — computed HERE, before day_type filter ───────
+    render_news_holiday_breakdown(trades)
+
+    # ── Day type filter ────────────────────────────────────────────────────────
+    st.write("")
+    st.caption("Filter by day type")
+    day_filter_cols = st.columns(3)
+    selected_day_types = []
+    for i, (tag, label) in enumerate([
+        ("normal",      "Normal Trading Days"),
+        ("high_impact", "High Impact News Days"),
+        ("holiday",     "Holidays"),
+    ]):
+        with day_filter_cols[i]:
+            if st.checkbox(label, value=True, key=f"filter_dt_{tag}"):
+                selected_day_types.append(tag)
+
+    if not selected_day_types:
+        st.warning("No day types selected.")
+        return
+
+    trades = trades[trades["day_type"].isin(selected_day_types)].copy()
+    trades["cumulative_ticks"] = trades["ticks"].cumsum()
+
+    if trades.empty:
+        st.warning("No trades match the selected filters.")
+        return
+
+    # ── Rest of the page uses filtered trades ─────────────────────────────────
+    render_metrics(trades)
+    selected       = render_equity_curve(trades)
+    chart_settings = render_chart_view_controls()
+    render_trade_detail(selected, trades, chart_settings)
+    render_trades_table(trades, dataset, strategy_name, start_date, end_date)
 
 
 '''
 Known limitations:
-- 252 annualization factor assumes daily trading. Fine for intraday on RTH days;
-  revisit if the strategy holds positions for weeks or trades on a non-daily cadence.
-- "direction must be lowercase 'long' or 'short'."
+- 252 annualization factor assumes daily trading. Fine for intraday on RTH days.
+- direction must be lowercase 'long' or 'short'.
+- day_type is derived at render time and stripped before saving trades.
+- Holiday takes priority over high_impact when both tags exist on the same date.
 
 Essential columns for analytics:
-  ticks          ← required by all three sizers
-  pnl_points     ← required by risk_based only
-  entry_price    ← required by risk_based only
-  sl             ← required by risk_based only
+  ticks          ← required by all sizers
+  pnl_points     ← required by risk_based sizer
+  entry_price    ← required by risk_based sizer + charts
+  sl             ← required by risk_based sizer + RR
+  tp             ← required by RR
   entry_time     ← required for charts
-  date           ← required for Sharpe
+  date           ← required for Sharpe + day classification
 '''
-
