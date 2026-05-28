@@ -227,6 +227,19 @@ def render_controls(structure: dict, strategies: list):
     return asset_type, asset, dataset, strategy_name, start_date, end_date
 
 
+def _render_param_widget(key: str, default):
+    if isinstance(default, bool):
+        return st.checkbox(key, value=default)
+    elif isinstance(default, float):
+        return st.number_input(key, value=default, step=0.1, format="%.2f")
+    elif isinstance(default, int):
+        return st.number_input(key, value=default, step=1)
+    elif isinstance(default, str):
+        return st.text_input(key, value=default)
+    else:
+        st.warning(f"Unsupported param type for '{key}': {type(default).__name__}")
+        return default
+
 def render_params(strategy) -> dict:
     if not hasattr(strategy, "PARAMS"):
         return {}
@@ -237,19 +250,38 @@ def render_params(strategy) -> dict:
 
     st.write("")
     st.subheader("Parameters")
-    params     = {}
-    items      = list(visible.items())
-    chunk_size = 10
-    chunks     = [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+    params = {}
 
-    for chunk in chunks:
-        param_cols = st.columns(len(chunk))
-        for i, (key, default) in enumerate(chunk):
-            with param_cols[i]:
-                if isinstance(default, float):
-                    params[key] = st.number_input(key, value=default, step=0.1, format="%.2f")
-                else:
-                    params[key] = st.number_input(key, value=default, step=1)
+    if hasattr(strategy, "PARAM_SECTIONS"):
+        rendered = set()
+
+        for section_label, keys in strategy.PARAM_SECTIONS.items():
+            section_keys = [k for k in keys if k in visible]
+            if not section_keys:
+                continue
+            st.caption(section_label)
+            cols = st.columns(len(section_keys))
+            for i, key in enumerate(section_keys):
+                with cols[i]:
+                    params[key] = _render_param_widget(key, visible[key])
+                rendered.add(key)
+
+        unassigned = [k for k in visible if k not in rendered]
+        if unassigned:
+            st.caption("Other")
+            cols = st.columns(len(unassigned))
+            for i, key in enumerate(unassigned):
+                with cols[i]:
+                    params[key] = _render_param_widget(key, visible[key])
+
+    else:
+        items  = list(visible.items())
+        chunks = [items[i:i + 10] for i in range(0, len(items), 10)]
+        for chunk in chunks:
+            cols = st.columns(len(chunk))
+            for i, (key, default) in enumerate(chunk):
+                with cols[i]:
+                    params[key] = _render_param_widget(key, default)
 
     return params
 
@@ -480,8 +512,8 @@ def render_metrics(trades: pd.DataFrame):
 def render_news_holiday_breakdown(trades: pd.DataFrame):
     """
     Always-visible section — computed from the trade_type-filtered trades
-    but unaffected by the day_type filter. Shows high_impact and holiday
-    exposure stats in two fixed rows.
+    but unaffected by the day_type filter. Shows breakdown for all three
+    day types: normal, high impact news, holiday.
     """
     if "day_type" not in trades.columns:
         return
@@ -490,18 +522,22 @@ def render_news_holiday_breakdown(trades: pd.DataFrame):
     st.subheader("News & Holiday Exposure")
 
     rows = []
-    for tag, label in [("high_impact", "High Impact News"), ("holiday", "Holiday")]:
-        subset  = trades[trades["day_type"] == tag]
-        n       = len(subset)
+    for tag, label in [
+        ("normal",      "Normal Days"),
+        ("high_impact", "High Impact News"),
+        ("holiday",     "Holiday"),
+    ]:
+        subset = trades[trades["day_type"] == tag]
+        n      = len(subset)
         if n == 0:
             rows.append({
-                "Day Type": label,
-                "Trades": 0,
-                "Wins": 0,
-                "Losses": 0,
-                "Win Rate": "N/A",
+                "Day Type":    label,
+                "Trades":      0,
+                "Wins":        0,
+                "Losses":      0,
+                "Win Rate":    "N/A",
                 "Total Ticks": 0,
-                "Avg Ticks": "N/A",
+                "Avg Ticks":   "N/A",
             })
         else:
             wins   = (subset["ticks"] > 0).sum()
