@@ -33,52 +33,14 @@ import polars as pl
 # ── Paths ──────────────────────────────────────────────────────────────────────
 THIS_DIR  = Path(__file__).parent
 INPUT_DIR = THIS_DIR / "data_usd"
-OUTPUT    = THIS_DIR / "data_usd" / "ff_usd_events.parquet"
+OUTPUT = THIS_DIR.parent / "data" / "news_and_holidays" / "ff_usd_events.parquet"
 
-# ── Impact keywords that appear in the pasted text ────────────────────────────
-# In the plain text copy, FF doesn't include color labels directly.
-# We infer impact from a known event list + "Bank Holiday" for grey.
-# Red = high impact USD events. Everything else with a time = orange/low (skipped).
-# You can extend RED_EVENTS with any event you want to treat as red.
+# ── Impact classification ──────────────────────────────────────────────────────
 
-RED_EVENTS = {
-    # Employment
-    "non-farm employment change", "nonfarm employment change",
-    "non-farm payrolls", "adp non-farm employment change",
-    "unemployment rate", "unemployment claims",
-    "jolt", "jolts",
-    # Inflation
-    "cpi", "core cpi", "cpi m/m", "cpi y/y", "core cpi m/m",
-    "pce", "core pce", "pce price index", "core pce price index",
-    "ppi", "core ppi", "ppi m/m",
-    # Growth
-    "gdp", "advance gdp", "prelim gdp", "final gdp",
-    "gdp q/q", "advance gdp q/q", "prelim gdp q/q", "final gdp q/q",
-    # Fed
-    "federal funds rate", "fomc statement", "fomc meeting minutes",
-    "fed announcement",
-    # Retail / Consumer
-    "retail sales", "core retail sales", "retail sales m/m", "core retail sales m/m",
-    "cb consumer confidence", "prelim uom consumer sentiment",
-    "uom consumer sentiment",
-    # Manufacturing / Services
-    "ism manufacturing pmi", "ism services pmi",
-    "philly fed manufacturing index",
-    # Housing
-    "existing home sales", "new home sales", "pending home sales",
-    "building permits", "housing starts",
-    # Trade
-    "trade balance",
-    # Durable goods
-    "durable goods orders", "core durable goods orders",
-    "core durable goods orders m/m", "durable goods orders m/m",
-    # Other major
-    "tic long-term purchases",
-}
 
 GREY_KEYWORDS = {"bank holiday", "holiday"}
 
-# These appear as grey on FF but have zero market impact — skip them
+# No market impact — skip entirely
 BLOCKLIST = {
     "daylight saving time", "daylight savings time", "dst",
     "clocks change", "clock change",
@@ -86,45 +48,33 @@ BLOCKLIST = {
 
 
 def classify_impact(event_name: str) -> str | None:
-    """Return 'red', 'grey', or None (skip)."""
     name_lower = event_name.lower().strip()
 
-    # Skip non-market noise
+    # Always block these — no market impact
     for kw in BLOCKLIST:
         if kw in name_lower:
             return None
 
-    # Grey: holidays
+    # Grey: bank holidays
     for kw in GREY_KEYWORDS:
         if kw in name_lower:
             return "grey"
 
-    # Red: known high-impact events
-    for kw in RED_EVENTS:
-        if kw in name_lower:
-            return "red"
-
-    return None  # skip orange/yellow/unknown
+    # Everything else is red — FF page is already filtered to red/grey only
+    return "red" 
 
 
-# ── Date parsing ───────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-# Matches day-of-week + month + day, optionally year
-# e.g. "Fri Jan 1", "Mon Feb 28", "Tue Mar 3, 2026"
-DATE_PATTERN = re.compile(
-    r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+"
-    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+"
-    r"(\d{1,2})(?:,?\s+(\d{4}))?",
-    re.IGNORECASE
-)
-
-# Time pattern: "8:30" or "14:16" or "All Day"
 TIME_PATTERN = re.compile(r"^\d{1,2}:\d{2}$")
+MONTHS = {"jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"}
+DAYS   = {"mon","tue","wed","thu","fri","sat","sun"}
 
-
-def _parse_date(day_str: str, month_str: str, year_str: str | None, ref_year: int) -> date:
-    year = int(year_str) if year_str else ref_year
-    return datetime.strptime(f"{month_str} {day_str} {year}", "%b %d %Y").date()
+SKIP_LINES = {
+    "date", "currency", "impact", "alerts", "detail",
+    "actual", "forecast", "previous", "graph",
+    "up next", "search events", "day 2", "all",
+}
 
 
 def _clean_time(raw: str) -> str:
@@ -143,106 +93,12 @@ def _clean_time(raw: str) -> str:
     return raw
 
 
-# ── Main parser ────────────────────────────────────────────────────────────────
-
-def parse_text_file(path: Path) -> list[dict]:
-    """
-    Parse a plain-text FF calendar paste.
-
-    The pasted text looks like:
-        Fri
-        Jan 1
-        All Day
-        USD
-        Bank Holiday
-
-        Mon
-        Jan 4
-        10:00
-        USD
-        ISM Manufacturing PMI
-        55.9  54.1  53.6
-    """
-    text = path.read_text(encoding="utf-8", errors="replace")
-    lines = [l.strip() for l in text.splitlines()]
-
-    # Infer year from filename first, then from text, fallback to current year
-    ref_year = _infer_year(path.name, text)
-
-    events = []
-    current_date = None
-    i = 0
-
-    MONTHS = {"jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"}
-    DAYS   = {"mon","tue","wed","thu","fri","sat","sun"}
-
-    while i < len(lines):
-        line = lines[i]
-
-        # ── Detect date line (day of week) ─────────────────────────────────
-        if line.lower()[:3] in DAYS:
-            # Next non-empty line should be "Jan 4" or "Jan 4, 2024"
-            j = i + 1
-            while j < len(lines) and not lines[j]:
-                j += 1
-            if j < len(lines):
-                next_line = lines[j].strip()
-                m = re.match(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:,?\s+(\d{4}))?", next_line, re.IGNORECASE)
-                if m:
-                    current_date = _parse_date(m.group(2), m.group(1), m.group(3), ref_year)
-                    i = j + 1
-                    continue
-            i += 1
-            continue
-
-        # ── Detect time line ───────────────────────────────────────────────
-        is_time = TIME_PATTERN.match(line) or line.lower() == "all day"
-        if is_time and current_date is not None:
-            time_str = _clean_time(line)
-
-            # Skip "USD" currency line
-            j = i + 1
-            while j < len(lines) and not lines[j]:
-                j += 1
-            if j < len(lines) and lines[j].strip().upper() == "USD":
-                j += 1
-
-            # Skip empty lines and icon/impact placeholders
-            while j < len(lines) and not lines[j]:
-                j += 1
-
-            # Next non-empty line = event name
-            if j < len(lines):
-                event_name = lines[j].strip()
-
-                # Skip header/noise lines
-                skip_patterns = ["date", "currency", "impact", "alerts", "detail",
-                                  "actual", "forecast", "previous", "graph",
-                                  "up next", "search events", "day 2", "all"]
-                if event_name.lower() in skip_patterns or not event_name:
-                    i += 1
-                    continue
-
-                impact = classify_impact(event_name)
-                if impact is not None:
-                    events.append({
-                        "date":        current_date,
-                        "time":        time_str,
-                        "event":       event_name,
-                        "impact":      impact,
-                        "source_file": path.name,
-                    })
-                i = j + 1
-                continue
-
-        i += 1
-
-    return events
+def _parse_date(day: str, month: str, year: str | None, ref_year: int) -> date:
+    y = int(year) if year else ref_year
+    return datetime.strptime(f"{month} {day} {y}", "%b %d %Y").date()
 
 
 def _infer_year(filename: str, text: str) -> int:
-    """Try to extract year from filename or text content."""
-    # e.g. "jan_feb_2024.txt" or "2024_q1.txt"
     m = re.search(r"(20\d{2})", filename)
     if m:
         return int(m.group(1))
@@ -252,7 +108,158 @@ def _infer_year(filename: str, text: str) -> int:
     return datetime.now().year
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
+MONTH_TO_NUM = {
+    "jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,
+    "jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12
+}
+
+def _validate_filename_vs_content(path: Path, text: str) -> bool:
+    """
+    Check that the year and month numbers in the filename match the date range
+    on the first line of the file.
+
+    Filename format: YYYY_MM_MM.txt  e.g. 2010_01_02.txt
+    First line format: "Jan 1, 2010 - Feb 28, 2010"
+    """
+    m = re.match(r"(\d{4})_(\d{2})_(\d{2})\.txt", path.name, re.IGNORECASE)
+    if not m:
+        return True  # non-standard filename — skip check
+
+    fn_year   = int(m.group(1))
+    fn_month1 = int(m.group(2))
+    fn_month2 = int(m.group(3))
+
+    # Parse first non-empty line e.g. "Jan 1, 2010 - Feb 28, 2010"
+    first_line = ""
+    for line in text.splitlines():
+        if line.strip():
+            first_line = line.strip()
+            break
+
+    months_found = re.findall(
+        r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)",
+        first_line, re.IGNORECASE
+    )
+    year_found = re.search(r"(20\d{2})", first_line)
+
+    if len(months_found) < 2 or not year_found:
+        print(f"  WARNING {path.name}: could not parse date range from first line: {first_line!r}")
+        return False
+
+    content_year   = int(year_found.group(1))
+    content_month1 = MONTH_TO_NUM[months_found[0].lower()]
+    content_month2 = MONTH_TO_NUM[months_found[1].lower()]
+
+    ok = True
+    if fn_year != content_year:
+        print(f"  WARNING {path.name}: filename says year {fn_year} but content says {content_year} — wrong file pasted?")
+        ok = False
+    if fn_month1 != content_month1 or fn_month2 != content_month2:
+        print(f"  WARNING {path.name}: filename says months {fn_month1:02d}/{fn_month2:02d} "
+              f"but content says {months_found[0]}/{months_found[1]} — wrong file pasted?")
+        ok = False
+
+    return ok
+
+
+def _next_nonempty(lines: list[str], i: int) -> tuple[int, str]:
+    """Return (index, line) of next non-empty line after i."""
+    j = i + 1
+    while j < len(lines) and not lines[j].strip():
+        j += 1
+    return (j, lines[j].strip()) if j < len(lines) else (j, "")
+
+
+# ── Parser ─────────────────────────────────────────────────────────────────────
+
+def parse_text_file(path: Path) -> list[dict]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = [l.strip() for l in text.splitlines()]
+    ref_year = _infer_year(path.name, text)
+    _validate_filename_vs_content(path, text)
+
+    events = []
+    current_date = None
+    current_time = None   # last seen time — reused by shared-time rows
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        if not line:
+            i += 1
+            continue
+
+        # ── Date header (day of week) ──────────────────────────────────────
+        if line.lower()[:3] in DAYS:
+            j, next_line = _next_nonempty(lines, i)
+            m = re.match(
+                r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:,?\s+(\d{4}))?",
+                next_line, re.IGNORECASE
+            )
+            if m:
+                current_date = _parse_date(m.group(2), m.group(1), m.group(3), ref_year)
+                current_time = None   # reset time on new day
+                i = j + 1
+                continue
+            i += 1
+            continue
+
+        # ── Time line ──────────────────────────────────────────────────────
+        is_time = TIME_PATTERN.match(line) or line.lower() == "all day"
+        if is_time and current_date is not None:
+            current_time = _clean_time(line)
+
+            # consume: optional empty lines, then "USD", then event name
+            j, next_line = _next_nonempty(lines, i)
+            if next_line.upper() == "USD":
+                j, next_line = _next_nonempty(lines, j)
+
+            event_name = next_line
+            if event_name and event_name.lower() not in SKIP_LINES:
+                impact = classify_impact(event_name)
+                if impact is not None:
+                    events.append({
+                        "date":        current_date,
+                        "time":        current_time,
+                        "event":       event_name,
+                        "impact":      impact,
+                        "source_file": path.name,
+                    })
+                else:
+                    print(f"  SKIPPED {current_date} | {event_name} | {path.name}")
+            i = j + 1
+            continue
+
+        # ── Shared-time row: bare "USD" line with no preceding time ────────
+        # FF omits the time when multiple events share the same slot.
+        # e.g. Non-Farm Employment Change at 8:30, then Unemployment Rate
+        # appears as just "USD\n\nUnemployment Rate" with no time.
+        if line.upper() == "USD" and current_date is not None and current_time is not None:
+            j, event_name = _next_nonempty(lines, i)
+            if event_name and event_name.lower() not in SKIP_LINES:
+                # Make sure it's not a time line (that would be a new event)
+                if not TIME_PATTERN.match(event_name) and event_name.lower() != "all day":
+                    impact = classify_impact(event_name)
+                    if impact is not None:
+                        events.append({
+                            "date":        current_date,
+                            "time":        current_time,
+                            "event":       event_name,
+                            "impact":      impact,
+                            "source_file": path.name,
+                        })
+                    else:
+                        print(f"  SKIPPED {current_date} | {event_name} | {path.name}")
+                    i = j + 1
+                    continue
+
+        i += 1
+
+    return events
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
     print("=" * 55)
@@ -266,10 +273,7 @@ def main():
         print(f"ERROR: {INPUT_DIR} not found.")
         sys.exit(1)
 
-    files = (
-        sorted(INPUT_DIR.glob("*.txt")) +
-        sorted(INPUT_DIR.glob("*.text"))
-    )
+    files = sorted(INPUT_DIR.glob("*.txt")) + sorted(INPUT_DIR.glob("*.text"))
 
     if not files:
         print(f"ERROR: No .txt files found in {INPUT_DIR}")
@@ -281,14 +285,14 @@ def main():
     all_events = []
     for f in files:
         events = parse_text_file(f)
-        red   = sum(1 for e in events if e["impact"] == "red")
-        grey  = sum(1 for e in events if e["impact"] == "grey")
+        red  = sum(1 for e in events if e["impact"] == "red")
+        grey = sum(1 for e in events if e["impact"] == "grey")
         print(f"  {f.name}")
         print(f"    → {red} red events, {grey} grey events")
         all_events.extend(events)
 
     if not all_events:
-        print("\nNo events found. Check that your .txt files contain pasted FF calendar text.")
+        print("\nNo events found.")
         sys.exit(1)
 
     df = (
