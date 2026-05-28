@@ -3,13 +3,14 @@ IVB:
 - (DONE) fix vp
 - (DONE) In the value area choose the the highest candle as the poc
 - more types of entries:
-    - consecutive absorption of candles
+    - (DONE) consecutive absorption of candles
     - passive order with smaller absorption multiplier
     - exhaustion
 - earlier entries
 - minimum risk threshold -> higher tp
 - trail sl
 - figure out a way to have a better tp
+- if a retest was outside of VA then dont look at at retest in VA (failed auction and bias to the other side?)
 
 IVB IDEAS:
 - OPEN QUESTION — direction reclaim after invalidation
