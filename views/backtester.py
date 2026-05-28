@@ -839,7 +839,6 @@ def render():
 
 '''
 Known limitations:
-- 252 annualization factor assumes daily trading. Fine for intraday on RTH days.
 - direction must be lowercase 'long' or 'short'.
 - day_type is derived at render time and stripped before saving trades.
 - Holiday takes priority over high_impact when both tags exist on the same date.
