@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from pathlib import Path
 import importlib.util
+import sys
 
 ASSET_INFO = {
     # Equity Index
@@ -169,14 +170,25 @@ def load_strategy(name: str):
     folder_path = Path("strategies") / name / "__init__.py"
 
     if flat_path.exists():
-        path = flat_path
+        path     = flat_path
+        is_pkg   = False
     elif folder_path.exists():
-        path = folder_path
+        path     = folder_path
+        is_pkg   = True
     else:
         raise FileNotFoundError(f"Strategy '{name}' not found")
 
-    spec   = importlib.util.spec_from_file_location(name, path)
+    if is_pkg:
+        spec = importlib.util.spec_from_file_location(
+            name,
+            path,
+            submodule_search_locations=[str(Path("strategies") / name)],
+        )
+    else:
+        spec = importlib.util.spec_from_file_location(name, path)
+
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module          # register so relative imports resolve
     spec.loader.exec_module(module)
 
     if not hasattr(module, "run"):
