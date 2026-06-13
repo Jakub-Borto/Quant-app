@@ -148,21 +148,42 @@ def get_strategies() -> list:
     strategies_path = Path("strategies")
     if not strategies_path.exists():
         return []
-    return sorted([
-        f.stem for f in strategies_path.glob("*.py")
-        if f.stem not in ["__init__", "base"]
-    ])
+
+    results = []
+
+    # flat .py files
+    for f in strategies_path.glob("*.py"):
+        if f.stem not in ["__init__", "base"]:
+            results.append(f.stem)
+
+    # folders with __init__.py
+    for f in strategies_path.iterdir():
+        if f.is_dir() and (f / "__init__.py").exists():
+            results.append(f.name)
+
+    return sorted(results)
 
 
 def load_strategy(name: str):
-    path = Path("strategies") / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
+    flat_path   = Path("strategies") / f"{name}.py"
+    folder_path = Path("strategies") / name / "__init__.py"
+
+    if flat_path.exists():
+        path = flat_path
+    elif folder_path.exists():
+        path = folder_path
+    else:
+        raise FileNotFoundError(f"Strategy '{name}' not found")
+
+    spec   = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
     if not hasattr(module, "run"):
         raise ValueError(f"Strategy '{name}' has no run() function")
     if not callable(module.run):
         raise ValueError(f"Strategy '{name}'.run is not callable")
+
     return module
 
 
