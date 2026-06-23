@@ -1,9 +1,29 @@
 import databento as db
 import pandas as pd
 from pathlib import Path
+from time import perf_counter
 import gc
 import numpy as np
 import orjson
+
+# Per-section timing to stdout (terminal running `streamlit run`). Flip to
+# False to silence.
+TIMING = True
+
+
+def _tlog(msg: str) -> None:
+    if TIMING:
+        print(f"[TIMING] {msg}", flush=True)
+
+
+def _print_breakdown(date_str: str, times: dict) -> None:
+    if not TIMING:
+        return
+    width = max(len(k) for k in times)
+    _tlog(f"{date_str} breakdown (load times printed above):")
+    for label, secs in times.items():
+        print(f"            {label:>{width}}  {secs:7.2f}s", flush=True)
+    print(f"            {'subtotal':>{width}}  {sum(times.values()):7.2f}s", flush=True)
 
 
 def _get_front_month(df: pd.DataFrame) -> tuple[str, bool]:
@@ -108,6 +128,7 @@ def _load_and_clean(path: Path) -> pd.DataFrame:
     Load a DBN file and apply all filters.
     Returns a clean DataFrame ready for session splicing.
     """
+    t0 = perf_counter()
     df = db.DBNStore.from_file(path).to_df()
     df = df.set_index("ts_event") if "ts_event" in df.columns else df
 
@@ -128,6 +149,7 @@ def _load_and_clean(path: Path) -> pd.DataFrame:
     df = df[~df["symbol"].str.contains("-")]
     df = df[df["side"].isin(["A", "B"])]
 
+    _tlog(f"load {Path(path).name}: {perf_counter() - t0:6.2f}s  ({len(df):,} rows)")
     return df
 
 
@@ -161,8 +183,13 @@ def build_candles(
         else:
             print(msg)
 
-    session_df = _build_session(previous_df, current_df)
+    times: dict = {}
 
+    t = perf_counter()
+    session_df = _build_session(previous_df, current_df)
+    times["build_session"] = perf_counter() - t
+
+    t = perf_counter()
     front_month, is_roll_day = _get_front_month(session_df)
     if front_month is None:
         log("No valid symbols found — skipping")
@@ -177,12 +204,15 @@ def build_candles(
         return None
 
     session_df.index = session_df.index.tz_convert("America/New_York")
+    times["front_month"] = perf_counter() - t
 
+    t = perf_counter()
     rth_mask = (
         (session_df.index.time >= pd.Timestamp("09:30").time()) &
         (session_df.index.time <= pd.Timestamp("16:00").time())
     )
     rth_bars = session_df[rth_mask]
+    times["rth_mask"] = perf_counter() - t
 
     if rth_bars.empty:
         log("No RTH bars found — skipping")
@@ -195,6 +225,7 @@ def build_candles(
         log(f"↷ Skipping {trade_date} — already processed")
         return None
 
+    t = perf_counter()
     session_df["buy_volume"]  = session_df["size"].where(session_df["side"] == "B", 0)
     session_df["sell_volume"] = session_df["size"].where(session_df["side"] == "A", 0)
 
@@ -236,25 +267,34 @@ def build_candles(
 
     candles["volume_delta_pct"] = pct.round(1)
     candles.loc[candles["volume"] == 0, "volume_delta_pct"] = 0.0
+    times["groupby_agg"] = perf_counter() - t
 
     # compute bar index once — integer arithmetic on ns is ~800x faster than tz-aware floor()
     ns         = session_df.index.view("int64")
     floored_ns = (ns // 60_000_000_000) * 60_000_000_000
     bars       = pd.DatetimeIndex(floored_ns, tz="UTC").tz_convert("America/New_York")
 
+    t = perf_counter()
     tick_vol = _build_tick_volume(session_df, bars)
     candles["tick_volume"] = tick_vol.reindex(candles.index).fillna("{}")
+    times["tick_volume"] = perf_counter() - t
 
+    t = perf_counter()
     passive = _build_passive_orders(session_df, candles["open"], bars)
     candles["passive_orders"] = passive.reindex(candles.index).fillna("{}")
+    times["passive_orders"] = perf_counter() - t
 
     for col in ["open", "high", "low", "close"]:
         candles[col] = candles[col].astype("float64")
     candles["volume_delta_pct"] = candles["volume_delta_pct"].astype("float64")
 
     output_folder_path.mkdir(parents=True, exist_ok=True)
+    t = perf_counter()
     candles.to_parquet(output_path)
+    times["write_parquet"] = perf_counter() - t
+
     log(f"✓ Saved {trade_date}")
+    _print_breakdown(trade_date, times)
     return candles
 
 
