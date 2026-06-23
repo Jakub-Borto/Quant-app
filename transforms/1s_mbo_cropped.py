@@ -145,28 +145,63 @@ def run_all(
     gc.collect()
 
 
-def _load_and_clean(path: Path) -> pd.DataFrame:
-    """Load a DBN MBO file and apply minimal filtering.
+_UNDEF_PRICE = np.iinfo(np.int64).max  # Databento sentinel for "no price"
 
-    Prices are left untouched — to_df() already returns float64 (e.g. 7025.0).
+
+def _instrument_symbols(store, unique_ids) -> dict:
+    """Resolve the ~12 instrument_ids in a file to their raw symbols once
+    (vs to_df mapping a symbol string onto every one of ~19M rows)."""
+    imap = db.common.symbology.InstrumentMap()
+    imap.insert_metadata(store.metadata)
+    date = pd.Timestamp(store.metadata.start, unit="ns").date()
+    out = {}
+    for iid in unique_ids:
+        try:
+            sym = imap.resolve(int(iid), date)
+        except Exception:
+            sym = None
+        out[int(iid)] = sym if sym is not None else str(int(iid))
+    return out
+
+
+def _load_and_clean(path: Path) -> pd.DataFrame:
+    """Load a DBN MBO file into the minimal frame the pipeline needs.
+
+    Uses to_ndarray() (raw decode ~1.3s) instead of to_df() (~31s): to_df spends
+    most of its time building a full pandas frame and mapping a symbol string
+    onto every ~19M rows. We resolve symbols once for the ~12 instrument_ids and
+    keep action/side/symbol as categoricals (int codes, not 19M Python strings).
+    price arrives as int64 fixed-point (1e-9) — divide to float and map the
+    undefined-price sentinel (action=R rows) to NaN, matching to_df.
     side=N rows are kept (action=R book-clears carry side=N / NaN price).
     """
     t0 = perf_counter()
-    df = db.DBNStore.from_file(str(path)).to_df()
+    store = db.DBNStore.from_file(str(path))
+    arr   = store.to_ndarray()
 
-    # to_df() indexes by ts_recv. Ensure tz-aware UTC.
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC")
-    else:
-        df.index = df.index.tz_convert("UTC")
+    idx = pd.DatetimeIndex(arr["ts_recv"].astype("int64"), tz="UTC")
 
-    df = df[["action", "side", "price", "size", "order_id", "symbol"]]
+    codes, uniq = pd.factorize(arr["instrument_id"])
+    id2sym = _instrument_symbols(store, uniq)
+    symbol = pd.Categorical.from_codes(codes, categories=[id2sym[int(u)] for u in uniq])
+
+    raw_px = arr["price"]
+    price  = np.where(raw_px == _UNDEF_PRICE, np.nan, raw_px.astype("float64") / PRICE_SCALE)
+
+    df = pd.DataFrame(
+        {
+            "action":   pd.Categorical(arr["action"].astype("U1")),
+            "side":     pd.Categorical(arr["side"].astype("U1")),
+            "price":    price,
+            "size":     arr["size"].astype(np.int32),
+            "order_id": arr["order_id"].astype(np.int64),
+            "symbol":   symbol,
+        },
+        index=idx,
+    )
 
     # Drop spreads / combos (e.g. ESM6-ESU6).
     df = df[~df["symbol"].str.contains("-", na=False)]
-
-    # Keep all sides — N rows are needed for action=R. Tighten dtypes only.
-    df = df.astype({"size": np.int32, "order_id": np.int64})
 
     _tlog(f"load {path.name}: {perf_counter() - t0:6.2f}s  ({len(df):,} rows)")
     return df
@@ -197,7 +232,7 @@ def _get_front_month(df: pd.DataFrame) -> tuple[str | None, bool]:
     """Front month = symbol with the most traded volume. Roll day = back month
     volume > 20% of front month volume."""
     trades = df[df["action"] == "T"]
-    vol_by_symbol = trades.groupby("symbol")["size"].sum()
+    vol_by_symbol = trades.groupby("symbol", observed=True)["size"].sum()
 
     if vol_by_symbol.empty:
         return None, False
@@ -235,7 +270,7 @@ def _process_day(
 
     tag = "ROLL" if is_roll_day else "START"
     tick = _tick_size(front_month)
-    log(f"[{tag}] {date_str}: front month {front_month} (tick {tick}, ±{N_TICKS} ticks)")
+    log(f"[{tag}] {date_str}: front month {front_month} (tick {tick}, +/-{N_TICKS} ticks)")
     if session_df.empty:
         log(f"[WARN] {date_str}: empty after front month filter")
         return
