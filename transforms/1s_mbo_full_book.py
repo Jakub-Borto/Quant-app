@@ -1,12 +1,14 @@
-# transforms/1s_mbo.py
+# transforms/1s_mbo_full_book.py
 #
 # Convert raw Databento MBO (L3) .dbn.zst files into enriched 1-second candle
-# Parquet files for a DOM heatmap renderer.
+# Parquet files for a DOM heatmap renderer. Emits the FULL resting book per
+# second (every price level). See 1s_mbo_cropped.py for the windowed variant.
 #
 # One output file = one Globex session = two input files (prev + curr day).
 # Trade-derived fields (OHLCV, volume, aggressor_volume) are vectorized.
-# Book-derived fields (best_bid/ask, depth max) come from one sequential L3
-# replay — _replay_book is the isolated kernel, swappable for Numba/Rust later.
+# Book-derived fields (best_bid/ask, bid_depth, ask_depth) come from one
+# sequential L3 replay implemented in Rust (heatmap_rs.replay_full); a pure
+# Python fallback (_replay_book_py) is used if the extension isn't built.
 
 from __future__ import annotations
 
@@ -20,9 +22,19 @@ import numpy as np
 import orjson
 import pandas as pd
 
+try:
+    import heatmap_rs
+    _HAS_RUST = True
+except ImportError:
+    _HAS_RUST = False
+
 PRICE_SCALE = 1_000_000_000
 NS_PER_SEC  = 1_000_000_000
 PARAMS = {}
+
+# Event encodings passed to the Rust kernel.
+_ACODE = {"A": 0, "C": 1, "M": 2, "F": 3, "R": 4, "T": 5}
+_SCODE = {"B": 0, "A": 1}
 
 # Per-section timing to stdout (terminal running `streamlit run`). Flip to
 # False to silence once we're done profiling.
@@ -360,19 +372,55 @@ def _build_aggressor_volume(df: pd.DataFrame) -> pd.Series:
     return pd.Series({k: orjson.dumps(v).decode() for k, v in result.items()})
 
 
-def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
-    """Single sequential L3 replay producing per-second book snapshots.
+def _encode_events(session_df: pd.DataFrame):
+    """Encode the event stream into the int arrays the Rust kernel consumes."""
+    acode = session_df["action"].map(_ACODE).fillna(6).astype(np.int8).to_numpy()
+    scode = session_df["side"].map(_SCODE).fillna(2).astype(np.int8).to_numpy()
+    prices  = session_df["price"].to_numpy(dtype=np.float64)
+    price_i = np.where(np.isnan(prices), 0, np.round(prices * PRICE_SCALE)).astype(np.int64)
+    size = session_df["size"].to_numpy(dtype=np.int64)
+    oid  = session_df["order_id"].to_numpy(dtype=np.int64)
+    sec  = (session_df.index.view("int64") // NS_PER_SEC).astype(np.int64)
+    return acode, scode, price_i, size, oid, sec
 
-    This is the isolated, swappable kernel (Numba/Rust later). It maintains an
-    aggregated depth ladder (price_i -> total resting qty) incrementally, and
+
+def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
+    """Sequential L3 replay → per-second full-book snapshots (Rust kernel).
+
+    Maintains an aggregated depth ladder (price_i -> total resting qty) and
     emits an end-of-second snapshot of the full book whenever the second rolls
     over — driven by ALL events, so every active second is captured (not just
-    trade seconds). A/C/M/F/R mutate the book; T and side=N rows do not (a trade
-    changes the book only via its F fills).
+    trade seconds). A/C/M/F/R mutate the book; T and side=N rows do not.
 
     Returns a DataFrame indexed by integer UTC epoch-second with best_bid,
     best_ask, bid_depth (full-book JSON), ask_depth (full-book JSON).
     """
+    if not _HAS_RUST:
+        return _replay_book_py(session_df)
+
+    t = perf_counter()
+    acode, scode, price_i, size, oid, sec = _encode_events(session_df)
+    prep = perf_counter() - t
+
+    t = perf_counter()
+    secs, bb, ba, bj, aj = heatmap_rs.replay_full(acode, scode, price_i, size, oid, sec)
+    rust = perf_counter() - t
+
+    _tlog(
+        f"replay_book(rust): prep={prep:5.2f}s  rust={rust:6.2f}s  "
+        f"(events={len(acode):,}, snapshots={len(secs):,})"
+    )
+
+    if not secs:
+        return pd.DataFrame(columns=["best_bid", "best_ask", "bid_depth", "ask_depth"])
+    return pd.DataFrame(
+        {"best_bid": bb, "best_ask": ba, "bid_depth": bj, "ask_depth": aj},
+        index=pd.Index(secs, dtype=np.int64),
+    )
+
+
+def _replay_book_py(session_df: pd.DataFrame) -> pd.DataFrame:
+    """Pure-Python fallback for _replay_book (used if heatmap_rs isn't built)."""
     t_prep = perf_counter()
     actions = session_df["action"].to_numpy()
     sides   = session_df["side"].to_numpy()
