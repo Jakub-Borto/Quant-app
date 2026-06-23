@@ -13,6 +13,7 @@ from __future__ import annotations
 import gc
 from collections import defaultdict
 from pathlib import Path
+from time import perf_counter
 
 import databento as db
 import numpy as np
@@ -22,6 +23,15 @@ import pandas as pd
 PRICE_SCALE = 1_000_000_000
 NS_PER_SEC  = 1_000_000_000
 PARAMS = {}
+
+# Per-section timing to stdout (terminal running `streamlit run`). Flip to
+# False to silence once we're done profiling.
+TIMING = True
+
+
+def _tlog(msg: str) -> None:
+    if TIMING:
+        print(f"[TIMING] {msg}", flush=True)
 
 
 def run_all(
@@ -91,6 +101,7 @@ def _load_and_clean(path: Path) -> pd.DataFrame:
     Prices are left untouched — to_df() already returns float64 (e.g. 7025.0).
     side=N rows are kept (action=R book-clears carry side=N / NaN price).
     """
+    t0 = perf_counter()
     df = db.DBNStore.from_file(str(path)).to_df()
 
     # to_df() indexes by ts_recv. Ensure tz-aware UTC.
@@ -107,6 +118,7 @@ def _load_and_clean(path: Path) -> pd.DataFrame:
     # Keep all sides — N rows are needed for action=R. Tighten dtypes only.
     df = df.astype({"size": np.int32, "order_id": np.int64})
 
+    _tlog(f"load {path.name}: {perf_counter() - t0:6.2f}s  ({len(df):,} rows)")
     return df
 
 
@@ -157,20 +169,25 @@ def _process_day(
     date_str: str,
     log,
 ) -> None:
+    times: dict[str, float] = {}
+
+    t = perf_counter()
     session_df, session_start, session_end = _build_session(prev_df, curr_df)
+    times["build_session"] = perf_counter() - t
     if session_df.empty:
         log(f"[WARN] {date_str}: empty session after splice")
         return
 
+    t = perf_counter()
     front_month, is_roll_day = _get_front_month(session_df)
     if front_month is None:
         log(f"[WARN] {date_str}: no valid symbols found")
         return
+    session_df = session_df[session_df["symbol"] == front_month]
+    times["front_month"] = perf_counter() - t
 
     tag = "ROLL" if is_roll_day else "START"
     log(f"[{tag}] {date_str}: front month {front_month}")
-
-    session_df = session_df[session_df["symbol"] == front_month]
     if session_df.empty:
         log(f"[WARN] {date_str}: empty after front month filter")
         return
@@ -178,14 +195,20 @@ def _process_day(
     log(f"[REPLAY] {date_str}: {len(session_df):,} MBO events")
 
     # Both halves are keyed by integer UTC epoch-second.
+    t = perf_counter()
     trades = _aggregate_trades(session_df)
-    book   = _replay_book(session_df)
+    times["aggregate_trades"] = perf_counter() - t
+
+    t = perf_counter()
+    book = _replay_book(session_df)
+    times["replay_book"] = perf_counter() - t
 
     # Full per-second grid: every second of the 23h window (= 82,800 in UTC).
     start_sec = int(session_start.value // NS_PER_SEC)
     n_sec     = int((session_end - session_start) // pd.Timedelta(seconds=1))
     grid      = np.arange(start_sec, start_sec + n_sec, dtype=np.int64)
 
+    t = perf_counter()
     bars = _merge_grid(grid, trades, book)
 
     # Integer UTC seconds -> tz-aware NY index (convert from UTC: no DST ambiguity).
@@ -195,10 +218,26 @@ def _process_day(
         .tz_convert("America/New_York")
     )
     bars.index.name = "timestamp"
+    times["merge_grid"] = perf_counter() - t
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
+    t = perf_counter()
     bars.to_parquet(out_file)
+    times["write_parquet"] = perf_counter() - t
+
     log(f"[DONE] {date_str}: {len(bars)} bars -> {out_file.name}")
+    _print_breakdown(date_str, times)
+
+
+def _print_breakdown(date_str: str, times: dict[str, float]) -> None:
+    """Print the per-day section breakdown (excl. file loads, timed separately)."""
+    if not TIMING:
+        return
+    width = max(len(k) for k in times)
+    _tlog(f"{date_str} breakdown (load times printed above):")
+    for label, secs in times.items():
+        print(f"            {label:>{width}}  {secs:7.2f}s", flush=True)
+    print(f"            {'subtotal':>{width}}  {sum(times.values()):7.2f}s", flush=True)
 
 
 def _merge_grid(
@@ -334,6 +373,7 @@ def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
     Returns a DataFrame indexed by integer UTC epoch-second with best_bid,
     best_ask, bid_depth (full-book JSON), ask_depth (full-book JSON).
     """
+    t_prep = perf_counter()
     actions = session_df["action"].to_numpy()
     sides   = session_df["side"].to_numpy()
     prices  = session_df["price"].to_numpy(dtype=np.float64)
@@ -352,6 +392,7 @@ def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
     oids_l    = oids.tolist()
     price_i_l = price_i_arr.tolist()
     sec_l     = sec_arr.tolist()
+    prep_time = perf_counter() - t_prep
 
     order_location: dict[int, list] = {}            # oid -> [side, price_i, size]
     agg_depth = {"B": defaultdict(int), "A": defaultdict(int)}
@@ -364,8 +405,12 @@ def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
     out_bid:  list = []
     out_ask:  list = []
 
+    snap_time = 0.0   # accumulated time inside _snapshot (≈ JSON serialization)
+
     def _snapshot(sec):
         # End-of-second snapshot of the full book.
+        nonlocal snap_time
+        ts = perf_counter()
         out_sec.append(sec)
         out_bbid.append(max(depth_b) / PRICE_SCALE if depth_b else np.nan)
         out_bask.append(min(depth_a) / PRICE_SCALE if depth_a else np.nan)
@@ -375,7 +420,9 @@ def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
         out_ask.append(orjson.dumps(
             {str(px / PRICE_SCALE): qty for px, qty in depth_a.items()}
         ).decode())
+        snap_time += perf_counter() - ts
 
+    t_loop = perf_counter()
     cur_sec = None
     n = len(actions_l)
     for i in range(n):
@@ -433,6 +480,13 @@ def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
 
     if cur_sec is not None:
         _snapshot(cur_sec)
+
+    loop_total = perf_counter() - t_loop
+    _tlog(
+        f"replay_book: prep={prep_time:5.2f}s  "
+        f"loop={loop_total - snap_time:6.2f}s  json={snap_time:6.2f}s  "
+        f"(events={n:,}, snapshots={len(out_sec):,})"
+    )
 
     if not out_sec:
         return pd.DataFrame(
