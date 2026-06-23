@@ -25,6 +25,8 @@ import databento as db
 import numpy as np
 import orjson
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 try:
     import heatmap_rs
@@ -305,7 +307,19 @@ def _process_day(
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     t = perf_counter()
-    bars.to_parquet(out_file)
+    # Write with file-level metadata: front-month contract + the crop settings used
+    # (so a renderer knows the window/tick that produced bid_depth/ask_depth).
+    table = pa.Table.from_pandas(bars)
+    meta = dict(table.schema.metadata or {})
+    meta[b"front_month"]    = str(front_month).encode()
+    meta[b"trade_date"]     = str(date_str).encode()
+    meta[b"is_roll_day"]    = str(bool(is_roll_day)).encode()
+    meta[b"tick_size"]      = str(tick).encode()
+    meta[b"n_ticks"]        = str(N_TICKS).encode()
+    meta[b"big_order_mult"] = str(BIG_ORDER_MULT).encode()
+    meta[b"baseline_window_min"] = str(BASELINE_WINDOW_MIN).encode()
+    table = table.replace_schema_metadata(meta)
+    pq.write_table(table, out_file)
     times["write_parquet"] = perf_counter() - t
 
     log(f"[DONE] {date_str}: {len(bars)} bars -> {out_file.name}")

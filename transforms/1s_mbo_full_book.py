@@ -21,6 +21,8 @@ import databento as db
 import numpy as np
 import orjson
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 try:
     import heatmap_rs
@@ -269,7 +271,15 @@ def _process_day(
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     t = perf_counter()
-    bars.to_parquet(out_file)
+    # Write with file-level metadata recording the front-month contract. from_pandas
+    # keeps the b'pandas' schema metadata so pd.read_parquet reconstructs the frame.
+    table = pa.Table.from_pandas(bars)
+    meta = dict(table.schema.metadata or {})
+    meta[b"front_month"] = str(front_month).encode()
+    meta[b"trade_date"]  = str(date_str).encode()
+    meta[b"is_roll_day"] = str(bool(is_roll_day)).encode()
+    table = table.replace_schema_metadata(meta)
+    pq.write_table(table, out_file)
     times["write_parquet"] = perf_counter() - t
 
     log(f"[DONE] {date_str}: {len(bars)} bars -> {out_file.name}")
