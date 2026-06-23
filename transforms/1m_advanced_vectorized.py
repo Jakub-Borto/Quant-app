@@ -69,9 +69,17 @@ def _build_tick_volume(session_df: pd.DataFrame, bars: pd.DatetimeIndex) -> pd.S
         if col not in grouped.columns:
             grouped[col] = 0
 
+    # Zip the grouped arrays instead of iterrows() (no per-row Series). Keep `bar`
+    # tz-aware (NOT .to_numpy(), which strips the tz); .tolist() yields native
+    # Python float/int for the price keys (np scalars aren't orjson-serializable).
+    bar_idx   = grouped.index.get_level_values("bar")
+    price_arr = grouped.index.get_level_values("price").to_numpy().tolist()
+    buy_arr   = grouped["B"].to_numpy().tolist()
+    sell_arr  = grouped["A"].to_numpy().tolist()
+
     result: dict = {}
-    for (bar, price), row in grouped.iterrows():
-        result.setdefault(bar, {})[price] = [int(row["B"]), int(row["A"])]
+    for bar, price, b, a in zip(bar_idx, price_arr, buy_arr, sell_arr):
+        result.setdefault(bar, {})[price] = [int(b), int(a)]
 
     return pd.Series({k: orjson.dumps(v, option=orjson.OPT_NON_STR_KEYS).decode() for k, v in result.items()})
 
@@ -99,54 +107,96 @@ def _build_passive_orders(session_df: pd.DataFrame, opens: pd.Series, bars: pd.D
     result: dict = {}
 
     # ── buy aggressors ────────────────────────────────────────────────────────
+    # Zip arrays instead of to_dict("records"); keep `bar` tz-aware via DatetimeIndex.
     buys = df[df["side"] == "B"]
     buys = buys[buys["ask_price_level"] > buys["bar_open"]]
     buys = buys.drop_duplicates(subset=["bar", "ask_price_level"])
 
-    for row in buys[["bar", "ask_price_level", "ask_size", "ask_count"]].to_dict("records"):
-        result.setdefault(row["bar"], {})[row["ask_price_level"]] = [
-            int(row["ask_size"]), int(row["ask_count"])
-        ]
+    for bar, level, sz, ct in zip(
+        pd.DatetimeIndex(buys["bar"]),
+        buys["ask_price_level"].to_numpy().tolist(),
+        buys["ask_size"].to_numpy().tolist(),
+        buys["ask_count"].to_numpy().tolist(),
+    ):
+        result.setdefault(bar, {})[level] = [int(sz), int(ct)]
 
     # ── sell aggressors ───────────────────────────────────────────────────────
     sells = df[df["side"] == "A"]
     sells = sells[sells["bid_price_level"] < sells["bar_open"]]
     sells = sells.drop_duplicates(subset=["bar", "bid_price_level"])
 
-    for row in sells[["bar", "bid_price_level", "bid_size", "bid_count"]].to_dict("records"):
-        bar      = row["bar"]
-        level    = row["bid_price_level"]
+    for bar, level, sz, ct in zip(
+        pd.DatetimeIndex(sells["bar"]),
+        sells["bid_price_level"].to_numpy().tolist(),
+        sells["bid_size"].to_numpy().tolist(),
+        sells["bid_count"].to_numpy().tolist(),
+    ):
         bar_dict = result.setdefault(bar, {})
         if level not in bar_dict:
-            bar_dict[level] = [int(row["bid_size"]), int(row["bid_count"])]
+            bar_dict[level] = [int(sz), int(ct)]
 
     return pd.Series({k: orjson.dumps(v, option=orjson.OPT_NON_STR_KEYS).decode() for k, v in result.items()})
 
 
+_UNDEF_PRICE = np.iinfo(np.int64).max  # Databento sentinel for "no price"
+
+
+def _instrument_symbols(store, unique_ids) -> dict:
+    """Resolve the handful of instrument_ids in a file to their raw symbols once
+    (vs to_df mapping a symbol string onto every row)."""
+    imap = db.common.symbology.InstrumentMap()
+    imap.insert_metadata(store.metadata)
+    date = pd.Timestamp(store.metadata.start, unit="ns").date()
+    out = {}
+    for iid in unique_ids:
+        try:
+            sym = imap.resolve(int(iid), date)
+        except Exception:
+            sym = None
+        out[int(iid)] = sym if sym is not None else str(int(iid))
+    return out
+
+
+def _px(raw: np.ndarray) -> np.ndarray:
+    """int64 fixed-point (1e-9) -> float price; undefined-price sentinel -> NaN."""
+    return np.where(raw == _UNDEF_PRICE, np.nan, raw.astype("float64") / 1e9)
+
+
 def _load_and_clean(path: Path) -> pd.DataFrame:
     """
-    Load a DBN file and apply all filters.
-    Returns a clean DataFrame ready for session splicing.
+    Load a DBN MBP-1/TBBO file and apply all filters.
+
+    Uses to_ndarray() (raw decode ~0.06s) instead of to_df() (~0.8s): to_df builds
+    a full pandas frame and maps a symbol string onto every row. We resolve symbols
+    once for the ~8 instrument_ids. Output is identical to the previous loader
+    (price/bid/ask = int64 fixed-point /1e9 with sentinel -> NaN; size/counts uint32).
     """
     t0 = perf_counter()
-    df = db.DBNStore.from_file(path).to_df()
-    df = df.set_index("ts_event") if "ts_event" in df.columns else df
+    store = db.DBNStore.from_file(str(path))
+    arr = store.to_ndarray()
 
-    KEEP = {
-        "side":      "side",
-        "price":     "price",
-        "size":      "size",
-        "bid_px_00": "bid_price_level",
-        "ask_px_00": "ask_price_level",
-        "bid_sz_00": "bid_size",
-        "ask_sz_00": "ask_size",
-        "bid_ct_00": "bid_count",
-        "ask_ct_00": "ask_count",
-        "symbol":    "symbol",
-    }
+    idx = pd.DatetimeIndex(arr["ts_event"].astype("int64"), tz="UTC")
+    codes, uniq = pd.factorize(arr["instrument_id"])
+    id2sym = _instrument_symbols(store, uniq)
+    sym_lookup = np.array([id2sym[int(u)] for u in uniq], dtype=object)
 
-    df = df[list(KEEP.keys())].rename(columns=KEEP)
-    df = df[~df["symbol"].str.contains("-")]
+    df = pd.DataFrame(
+        {
+            "side":            arr["side"].astype("U1").astype(object),
+            "price":           _px(arr["price"]),
+            "size":            arr["size"],
+            "bid_price_level": _px(arr["bid_px_00"]),
+            "ask_price_level": _px(arr["ask_px_00"]),
+            "bid_size":        arr["bid_sz_00"],
+            "ask_size":        arr["ask_sz_00"],
+            "bid_count":       arr["bid_ct_00"],
+            "ask_count":       arr["ask_ct_00"],
+            "symbol":          sym_lookup[codes],
+        },
+        index=idx,
+    )
+
+    df = df[~df["symbol"].str.contains("-", na=False)]
     df = df[df["side"].isin(["A", "B"])]
 
     _tlog(f"load {Path(path).name}: {perf_counter() - t0:6.2f}s  ({len(df):,} rows)")
@@ -207,18 +257,21 @@ def build_candles(
     times["front_month"] = perf_counter() - t
 
     t = perf_counter()
-    rth_mask = (
-        (session_df.index.time >= pd.Timestamp("09:30").time()) &
-        (session_df.index.time <= pd.Timestamp("16:00").time())
-    )
-    rth_bars = session_df[rth_mask]
+    # RTH date = the current session's calendar date (RTH 13:30-21:00 UTC sits in
+    # the curr UTC day, which equals the NY date). Derive it from a midpoint row,
+    # then check the 09:30-16:00 NY window with a vectorized absolute-timestamp
+    # comparison instead of the slow per-row `.time` accessor.
+    rth_date  = current_df.index[len(current_df) // 2].tz_convert("UTC").date()
+    rth_start = pd.Timestamp(f"{rth_date} 09:30", tz="America/New_York")
+    rth_end   = pd.Timestamp(f"{rth_date} 16:00", tz="America/New_York")
+    has_rth   = bool(((session_df.index >= rth_start) & (session_df.index <= rth_end)).any())
     times["rth_mask"] = perf_counter() - t
 
-    if rth_bars.empty:
+    if not has_rth:
         log("No RTH bars found — skipping")
         return None
 
-    trade_date  = rth_bars.index[0].date().isoformat()
+    trade_date  = rth_date.isoformat()
     output_path = output_folder_path / f"{trade_date}.parquet"
 
     if skip_existing and output_path.exists():
