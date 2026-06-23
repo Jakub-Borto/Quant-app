@@ -450,9 +450,17 @@ def _build_aggressor_volume(df: pd.DataFrame) -> pd.Series:
         if col not in grouped.columns:
             grouped[col] = 0
 
+    # Zip grouped arrays instead of iterrows() (no per-row Series). `bar` is an int
+    # epoch-second here (not tz-aware), so .to_numpy() is safe; .tolist() gives
+    # native Python scalars for str()/int().
+    bar_arr   = grouped.index.get_level_values("bar").to_numpy()
+    price_arr = grouped.index.get_level_values("price").to_numpy().tolist()
+    buy_arr   = grouped["B"].to_numpy().tolist()
+    sell_arr  = grouped["A"].to_numpy().tolist()
+
     result: dict = {}
-    for (bar, price), row in grouped.iterrows():
-        result.setdefault(bar, {})[str(price)] = [int(row["B"]), int(row["A"])]
+    for bar, price, b, a in zip(bar_arr, price_arr, buy_arr, sell_arr):
+        result.setdefault(bar, {})[str(price)] = [int(b), int(a)]
 
     return pd.Series({k: orjson.dumps(v).decode() for k, v in result.items()})
 
