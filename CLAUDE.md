@@ -7,8 +7,7 @@ Orientation for Claude Code working in this repo. A companion PDF
 
 A modular **intraday futures research platform** (Python + Streamlit) for 30+ instruments.
 It turns raw Databento market data into enriched candle datasets, runs vectorized backtests,
-applies position sizing, runs Monte-Carlo stress tests, and renders custom HTML5-Canvas charts
-(footprint / DOM heatmap + plain OHLCV).
+applies position sizing, and runs Monte-Carlo stress tests.
 
 Run it:
 
@@ -41,8 +40,7 @@ A strategy may also be a **package** (a folder with `__init__.py` exposing `run`
 
 ```
 app.py                     Streamlit entry point / router
-views/                     UI pages (home, data_formatter, backtester, analytics,
-                           footprint_chart, ohlcv_chart, monte_carlo)
+views/                     UI pages (home, data_formatter, backtester, analytics, monte_carlo)
 transforms/                raw DBN -> enriched parquet (the run_all plugins)
 strategies/                backtest strategies (single-file or package); base.py = helpers
 position_sizing/           fixed.py, kelly.py, risk_based.py
@@ -63,7 +61,6 @@ raw_dbn/  --(Data Formatter + a transform)-->  parquet/  (one YYYY-MM-DD.parquet
 parquet/  --(Backtester + a strategy)-------->  trades/{name}.parquet  (+ day_type from FF data)
 trades/   --(Analytics + a sizer)------------>  sized equity curve + $ metrics
 trades/   --(Monte Carlo + a sizer)---------->  equity_matrix -> fan chart + stats
-parquet/  --(Footprint / OHLCV charts)------->  rendered directly, no output
 ```
 
 Data is passed **as files on disk** between stages (parquet), and **as DataFrames** within a
