@@ -4,6 +4,7 @@ import pandas as pd
 
 PARAMS = {
     "fraction": 0.25,
+    "contract_increment": 1.0,  # 1.0 = whole contracts; set 0.1 for mini contracts
     "account_size": 100000.0,
     "dollars_per_tick": 12.50,
 }
@@ -12,6 +13,7 @@ def apply(trades: pd.DataFrame, params: dict) -> pd.DataFrame:
     trades = trades.copy()
 
     fraction = params["fraction"]
+    increment = params["contract_increment"]
     account_size = params["account_size"]
     dollars_per_tick = params["dollars_per_tick"]
 
@@ -30,6 +32,7 @@ def apply(trades: pd.DataFrame, params: dict) -> pd.DataFrame:
         # degenerate case: all wins or all losses, sizing undefined
         trades["trade_pnl"] = 0.0
         trades["equity"] = account_size
+        trades["contracts"] = 0.0
         trades.attrs["skipped_trades"] = len(trades)
         return trades
 
@@ -41,12 +44,14 @@ def apply(trades: pd.DataFrame, params: dict) -> pd.DataFrame:
     risk_per_contract = avg_loss * dollars_per_tick
 
     trade_pnl_list = []
+    size_list = []
     skipped = 0
     equity = account_size
 
     for _, trade in trades.iterrows():
         if risk_per_contract > 0:
-            size = math.floor((equity * kelly_pct) / risk_per_contract)
+            raw = (equity * kelly_pct) / risk_per_contract
+            size = round(math.floor(raw / increment) * increment, 1)
         else:
             size = 0
 
@@ -55,10 +60,12 @@ def apply(trades: pd.DataFrame, params: dict) -> pd.DataFrame:
 
         pnl = trade["ticks"] * dollars_per_tick * size
         trade_pnl_list.append(pnl)
+        size_list.append(size)
         equity += pnl
 
     trades["trade_pnl"] = trade_pnl_list
     trades["equity"] = account_size + pd.Series(trade_pnl_list).cumsum().values
+    trades["contracts"] = size_list  # per-trade size; shown on hover
     trades.attrs["skipped_trades"] = skipped
 
     return trades

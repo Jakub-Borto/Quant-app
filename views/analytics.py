@@ -366,13 +366,19 @@ def compute_analytics_metrics(trades: pd.DataFrame, label: str) -> dict:
 
 def _equity_trace(trades: pd.DataFrame, label: str) -> go.Scatter:
     """One equity-curve line, reused by both individual and combined figures."""
+    has_contracts = "contracts" in trades.columns
+    hover = f"{label}<br>%{{x}}<br>Equity: $%{{y:,.2f}}"
+    if has_contracts:
+        # e.g. 1.3 = 1 full contract + 3 mini contracts
+        hover += "<br>Contracts: %{customdata[0]:.1f}"
     return go.Scatter(
         x=trades["entry_time"],
         y=trades["equity"],
         mode="lines",
         name=label,
         line=dict(width=2),
-        hovertemplate=f"{label}<br>%{{x}}<br>Equity: $%{{y:,.2f}}<extra></extra>",
+        customdata=trades[["contracts"]] if has_contracts else None,
+        hovertemplate=hover + "<extra></extra>",
     )
 
 
