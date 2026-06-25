@@ -71,6 +71,20 @@ def build_passive_baseline(rth_session: pd.DataFrame, direction: str, params: di
     return rolling.reindex(rth_session.index)
 
 
+def build_cvd_change_baseline(cumulative_delta: pd.Series, params: dict) -> pd.Series:
+    """Rolling std of bar-to-bar CVD changes, reindexed to the session index.
+
+    `cumulative_delta` must already be aligned to rth_session.index. Mirrors the other
+    baselines: filter to >= 09:35, rolling(window, min_periods=window), NaN during warmup.
+    """
+    window = params["absorption_baseline_window"]
+
+    valid = cumulative_delta[cumulative_delta.index.time >= time(9, 35)]
+    std   = valid.diff().rolling(window, min_periods=window).std()
+
+    return std.reindex(cumulative_delta.index)
+
+
 def merge_tick_volume(tv1: str, tv2: str) -> str:
     """Merge two tick_volume JSON strings by summing volumes at each price level."""
     merged = {}

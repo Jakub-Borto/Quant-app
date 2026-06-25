@@ -9,13 +9,14 @@ PARAM_SECTIONS = {
     "Two Bar Absorption":       ["two_bar_wick_ticks", "two_bar_abs_mult"],
     "Passive Absorption (Size Only)": ["passive_size_order_mult", "passive_size_absorption_mult", "passive_size_wick_threshold"],
     "Passive Wall":             ["passive_wall_n", "passive_wall_mult", "passive_wall_ticks"],
+    "CVD Divergence":           ["cvd_indicators_folder", "cvd_pivot_k", "cvd_min_separation", "cvd_max_separation", "cvd_wick_tolerance_ticks", "cvd_min_score"],
     "Basic Risk Management":    ["rr", "sl_type"]
 }
 
 
 PARAMS = {
     "ib_minutes":                   30,     # IB range duration: 15, 30, or 60
-    "delta_threshold":              30.0,   # minimum volume_delta_pct for entry candle
+    "delta_threshold":              10.0,   # minimum volume_delta_pct for entry candle
     "body_threshold":               0.5,    # body must cover 50% of bar range
     "retest_window":                30,     # max bars to wait for retest after breakout
     "entry_window":                 15,     # bars to scan for entry after retest
@@ -43,8 +44,15 @@ PARAMS = {
     "passive_wall_n":               3,      # number of big passive orders required to form a wall
     "passive_wall_mult":            3.0,    # raw resting size >= this x rolling baseline to count as "big"
     "passive_wall_ticks":           5,      # ±ticks tolerance for clustering wall levels
-    # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive_size_only, passive_wall ---
-    "valid_entries":                "11111",
+    # --- cvd divergence (absorption) params ---
+    "cvd_indicators_folder":        "ES_1m_indicators",     # indicators dataset folder name (empty = finder disabled)
+    "cvd_pivot_k":                  2,      # bars on the left required to qualify a pivot (fractal)
+    "cvd_min_separation":           3,      # min bars between the two pivots
+    "cvd_max_separation":           20,     # max bars between the two pivots (older pivot stale beyond this)
+    "cvd_wick_tolerance_ticks":     2,      # tolerance (ticks) for lower/equal high (or higher/equal low)
+    "cvd_min_score":                0.3,    # z-score threshold for the CVD divergence
+    # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive_size_only, passive_wall, cvd_divergence_absorption ---
+    "valid_entries":                "111111",
     # --- which risk management script to use ---
     "risk_script":                  1,
     # --- basic risk management script ---

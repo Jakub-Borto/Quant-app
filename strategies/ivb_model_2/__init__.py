@@ -30,7 +30,9 @@ def run(
 ) -> pd.DataFrame:
     merged_params = {**PARAMS, **(params or {})}
 
-    files = sorted(Path(folder_path).glob("*.parquet"))
+    folder_path = Path(folder_path)
+
+    files = sorted(folder_path.glob("*.parquet"))
     files = [
         f for f in files
         if f.stem[0].isdigit()
@@ -40,6 +42,12 @@ def run(
     if not files:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
+    # --- resolve the CVD indicators folder (sibling dataset under same type/asset) ---
+    # candle folder_path is .../parquet/{type}/{asset}/{dataset}; the indicators live in a
+    # folder the user names. Empty param => CVD divergence finder disabled for the whole run.
+    cvd_folder_name   = merged_params.get("cvd_indicators_folder", "")
+    indicators_folder = folder_path.parent / cvd_folder_name if cvd_folder_name else None
+
     trades = []
     for f in files:
         session = pd.read_parquet(f)
@@ -47,7 +55,21 @@ def run(
             continue
         if session.index.tz is None:
             continue
-        trade = process_day(session, merged_params)
+
+        # per-day CVD: matching YYYY-MM-DD.parquet in the indicators folder; any problem
+        # (no folder, missing file, no column, bad read) => None => finder disabled this day.
+        cvd_raw = None
+        if indicators_folder is not None:
+            ind_file = indicators_folder / f.name
+            if ind_file.exists():
+                try:
+                    ind_df = pd.read_parquet(ind_file)
+                    if "cumulative_delta" in ind_df.columns:
+                        cvd_raw = ind_df["cumulative_delta"]
+                except Exception:
+                    cvd_raw = None
+
+        trade = process_day(session, merged_params, cvd_raw)
         if trade is not None:
             trade["date"] = pd.Timestamp(f.stem).date()
             trades.append(trade)

@@ -6,10 +6,11 @@ from datetime import time
 
 from .params     import PARAMS
 from .profile    import compute_ivb_profile
-from .baselines  import build_rolling_baseline, build_passive_baseline
+from .baselines  import build_rolling_baseline, build_passive_baseline, build_cvd_change_baseline
 from .entries    import FINDER_REGISTRY
 from .risk       import compute_sl_tp, run_trade
 
+print("\n\n\n---------------------------------------------------------------\n\n")
 
 # ---------------------------------------------------------------------------
 # Breakout / retest detection
@@ -79,6 +80,8 @@ def find_entry(
     buy_baseline:           pd.Series,
     passive_baseline_long:  pd.Series,
     passive_baseline_short: pd.Series,
+    cvd_series:             pd.Series,
+    cvd_change_std:         pd.Series,
     params:                 dict,
 ) -> tuple:
     """
@@ -99,6 +102,8 @@ def find_entry(
         buy_baseline           = buy_baseline,
         passive_baseline_long  = passive_baseline_long,
         passive_baseline_short = passive_baseline_short,
+        cvd_series             = cvd_series,
+        cvd_change_std         = cvd_change_std,
         params                 = params,
     )
 
@@ -127,7 +132,7 @@ def find_entry(
 # Day processor
 # ---------------------------------------------------------------------------
 
-def process_day(session: pd.DataFrame, params: dict):
+def process_day(session: pd.DataFrame, params: dict, cvd_raw: pd.Series = None):
     rth_session = session[
         (session.index.time >= time(9, 30)) &
         (session.index.time <  time(16, 0))
@@ -151,6 +156,14 @@ def process_day(session: pd.DataFrame, params: dict):
     sell_baseline, buy_baseline = build_rolling_baseline(rth_session, params)
     passive_baseline_long       = build_passive_baseline(rth_session, "long",  params)
     passive_baseline_short      = build_passive_baseline(rth_session, "short", params)
+
+    # CVD (cumulative_delta) + its bar-to-bar change std — day-level, like the baselines.
+    # None when no indicators were loaded => the cvd_divergence finder disables itself.
+    if cvd_raw is not None:
+        cvd_series     = cvd_raw.reindex(rth_session.index)
+        cvd_change_std = build_cvd_change_baseline(cvd_series, params)
+    else:
+        cvd_series = cvd_change_std = None
 
     post_ib = rth_session.iloc[params["ib_minutes"]:]
     if post_ib.empty:
@@ -198,6 +211,8 @@ def process_day(session: pd.DataFrame, params: dict):
             buy_baseline           = buy_baseline,
             passive_baseline_long  = passive_baseline_long,
             passive_baseline_short = passive_baseline_short,
+            cvd_series             = cvd_series,
+            cvd_change_std         = cvd_change_std,
             params                 = params,
         )
 

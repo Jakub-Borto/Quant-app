@@ -17,6 +17,8 @@ def find_entry(
     buy_baseline:           pd.Series,
     passive_baseline_long:  pd.Series,
     passive_baseline_short: pd.Series,
+    cvd_series:             pd.Series,
+    cvd_change_std:         pd.Series,
     params:                 dict,
 ) -> tuple:
     """Returns (entry_ts, entry_price, invalidation_ts, entry_notes, trade_type)."""
