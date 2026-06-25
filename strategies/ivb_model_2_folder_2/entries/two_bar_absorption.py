@@ -134,6 +134,10 @@ def find_entry(
         if wick_high <= wick_low:
             continue
 
+        # absorption must register in the defended half of the full merged candle
+        # (long: lower 50%, short: upper 50%), measured high->low
+        mid_price = (merged_low + merged_high) / 2.0
+
         try:
             raw_tv = json.loads(merged_tv)
         except Exception:
@@ -146,6 +150,10 @@ def find_entry(
         for price_str, (buy_qty, sell_qty) in raw_tv.items():
             price = float(price_str)
             if not (wick_low <= price <= wick_high):
+                continue
+            if direction == "long" and price > mid_price:
+                continue
+            if direction == "short" and price < mid_price:
                 continue
             volume_at_level = sell_qty if direction == "long" else buy_qty
             if volume_at_level >= required:
