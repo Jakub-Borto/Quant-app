@@ -4,11 +4,6 @@ import pandas as pd
 from pathlib import Path
 import gc
 
-'''
-ES  30  50
-NQ  10  20
-'''
-
 
 RTH_START         = pd.Timestamp("09:30").time()
 PRE_RTH_THRESHOLD = 10
