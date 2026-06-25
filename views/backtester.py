@@ -581,7 +581,7 @@ def render_news_holiday_breakdown(trades: pd.DataFrame):
                 "Wins":        wins,
                 "Losses":      losses,
                 "Win Rate":    f"{wins / n:.1%}",
-                "Total Ticks": f"{subset['ticks'].sum():.0f}",
+                "Total Ticks": int(round(subset["ticks"].sum())),
                 "Avg Ticks":   f"{subset['ticks'].mean():.1f}",
             })
 
