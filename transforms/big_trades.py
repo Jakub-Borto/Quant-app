@@ -4,15 +4,10 @@ import pandas as pd
 from pathlib import Path
 import gc
 
-'''
-ES  30  50
-NQ  10  20
-'''
-
 
 RTH_START         = pd.Timestamp("09:30").time()
-PRE_RTH_THRESHOLD = 30
-RTH_THRESHOLD     = 50
+PRE_RTH_THRESHOLD = 10
+RTH_THRESHOLD     = 10
 
 
 def _get_front_month(df: pd.DataFrame) -> str | None:

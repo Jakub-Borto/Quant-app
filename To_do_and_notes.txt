@@ -2,12 +2,30 @@ IVB:
 - (DONE) Fix pnl points and ticks in ivb
 - (DONE) fix vp
 - (DONE) In the value area choose the the highest candle as the poc
-- more types of entries
-- consecutive absorption of candles
+- more types of entries:
+    - (DONE) consecutive absorption of candles
+    - passive order with smaller absorption multiplier
+    - exhaustion
 - earlier entries
 - minimum risk threshold -> higher tp
 - trail sl
 - figure out a way to have a better tp
+- if a retest was outside of VA then dont look at at retest in VA (failed auction and bias to the other side?)
+
+IVB IDEAS:
+- OPEN QUESTION — direction reclaim after invalidation
+Current behaviour: long bias invalidated (close < VAL) → flip to short →
+if price then breaks IVB high again (close > ivb_high), the day is killed (return None).
+No re-entry on the original direction is allowed.
+
+Question: should a reclaim of IVB high after invalidation re-enable the long thesis?
+Options:
+    A) Keep current — once invalidated, original direction is dead for the day (conservative)
+    B) Allow re-entry long if price reclaims ivb_high — but this risks chasing
+     a choppy range-bound day with multiple false breakouts
+    C) Allow re-entry only if price reclaims ivb_high AND retests VAH cleanly again
+
+Revisit when sample size is larger and you can see how often this scenario occurs.
 
 To_do:
 - (DONE) make data transforming faster
@@ -57,4 +75,5 @@ LO
 OZN
 RTO
 LNE
-RTY
+OZC
+SR3

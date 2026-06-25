@@ -1,9 +1,31 @@
 import databento as db
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from pathlib import Path
+from time import perf_counter
 import gc
 import numpy as np
-import json
+import orjson
+
+# Per-section timing to stdout (terminal running `streamlit run`). Flip to
+# False to silence.
+TIMING = True
+
+
+def _tlog(msg: str) -> None:
+    if TIMING:
+        print(f"[TIMING] {msg}", flush=True)
+
+
+def _print_breakdown(date_str: str, times: dict) -> None:
+    if not TIMING:
+        return
+    width = max(len(k) for k in times)
+    _tlog(f"{date_str} breakdown (load times printed above):")
+    for label, secs in times.items():
+        print(f"            {label:>{width}}  {secs:7.2f}s", flush=True)
+    print(f"            {'subtotal':>{width}}  {sum(times.values()):7.2f}s", flush=True)
 
 
 def _get_front_month(df: pd.DataFrame) -> tuple[str, bool]:
@@ -17,142 +39,192 @@ def _get_front_month(df: pd.DataFrame) -> tuple[str, bool]:
         return None, False
 
     front_month = volume_by_symbol.idxmax()
-    
+
     sorted_volume = volume_by_symbol.sort_values(ascending=False)
     is_roll_day = False
     if len(sorted_volume) > 1:
         front_volume = sorted_volume.iloc[0]
         back_volume  = sorted_volume.iloc[1]
         is_roll_day  = back_volume > 0.2 * front_volume
-    
+
     return front_month, is_roll_day
 
 
-def _build_tick_volume(group: pd.DataFrame) -> dict:
-    buy  = group[group["side"] == "B"].groupby("price")["size"].sum()
-    sell = group[group["side"] == "A"].groupby("price")["size"].sum()
-    
-    prices = set(buy.index) | set(sell.index)
-    return {p: (int(buy.get(p, 0)), int(sell.get(p, 0))) for p in prices}
+def _build_tick_volume(session_df: pd.DataFrame, bars: pd.DatetimeIndex) -> pd.Series:
+    """
+    Build {price: [buy_qty, sell_qty]} per 1-minute bar.
+    bars: pre-computed floored index — shared with _build_passive_orders.
+    """
+    df = pd.DataFrame({
+        "bar":   bars,
+        "price": session_df["price"].values,
+        "side":  session_df["side"].values,
+        "size":  session_df["size"].values,
+    })
+
+    grouped = (
+        df.groupby(["bar", "price", "side"])["size"]
+        .sum()
+        .unstack(level="side", fill_value=0)
+    )
+    for col in ("B", "A"):
+        if col not in grouped.columns:
+            grouped[col] = 0
+
+    # Zip the grouped arrays instead of iterrows() (no per-row Series). Keep `bar`
+    # tz-aware (NOT .to_numpy(), which strips the tz); .tolist() yields native
+    # Python float/int for the price keys (np scalars aren't orjson-serializable).
+    bar_idx   = grouped.index.get_level_values("bar")
+    price_arr = grouped.index.get_level_values("price").to_numpy().tolist()
+    buy_arr   = grouped["B"].to_numpy().tolist()
+    sell_arr  = grouped["A"].to_numpy().tolist()
+
+    result: dict = {}
+    for bar, price, b, a in zip(bar_idx, price_arr, buy_arr, sell_arr):
+        result.setdefault(bar, {})[price] = [int(b), int(a)]
+
+    return pd.Series({k: orjson.dumps(v, option=orjson.OPT_NON_STR_KEYS).decode() for k, v in result.items()})
 
 
-def _build_passive_orders(group: pd.DataFrame, bar_open: float) -> dict:
-    passive_orders = {}
-    
-    buys = group[group["side"] == "B"][["ask_price_level", "ask_size", "ask_count"]]
-    buys = buys.drop_duplicates(subset="ask_price_level")
-    buys = buys[buys["ask_price_level"] > bar_open]
-    for _, row in buys.iterrows():
-        passive_orders[row["ask_price_level"]] = [int(row["ask_size"]), int(row["ask_count"])]
+def _build_passive_orders(session_df: pd.DataFrame, opens: pd.Series, bars: pd.DatetimeIndex) -> pd.Series:
+    """
+    Build resting bid/ask liquidity per 1-minute bar.
+    bars: pre-computed floored index — shared with _build_tick_volume.
 
-    sells = group[group["side"] == "A"][["bid_price_level", "bid_size", "bid_count"]]
-    sells = sells.drop_duplicates(subset="bid_price_level")
-    sells = sells[sells["bid_price_level"] < bar_open]
-    for _, row in sells.iterrows():
-        if row["bid_price_level"] not in passive_orders:
-            passive_orders[row["bid_price_level"]] = [int(row["bid_size"]), int(row["bid_count"])]
+    Buy aggressor  → ask levels above bar open (passive sellers overhead)
+    Sell aggressor → bid levels below bar open (passive buyers below)
+    """
+    df = pd.DataFrame({
+        "bar":             bars,
+        "side":            session_df["side"].values,
+        "ask_price_level": session_df["ask_price_level"].values,
+        "ask_size":        session_df["ask_size"].values,
+        "ask_count":       session_df["ask_count"].values,
+        "bid_price_level": session_df["bid_price_level"].values,
+        "bid_size":        session_df["bid_size"].values,
+        "bid_count":       session_df["bid_count"].values,
+    })
+    df["bar_open"] = df["bar"].map(opens)
 
-    return passive_orders
+    result: dict = {}
+
+    # ── buy aggressors ────────────────────────────────────────────────────────
+    # Zip arrays instead of to_dict("records"); keep `bar` tz-aware via DatetimeIndex.
+    buys = df[df["side"] == "B"]
+    buys = buys[buys["ask_price_level"] > buys["bar_open"]]
+    buys = buys.drop_duplicates(subset=["bar", "ask_price_level"])
+
+    for bar, level, sz, ct in zip(
+        pd.DatetimeIndex(buys["bar"]),
+        buys["ask_price_level"].to_numpy().tolist(),
+        buys["ask_size"].to_numpy().tolist(),
+        buys["ask_count"].to_numpy().tolist(),
+    ):
+        result.setdefault(bar, {})[level] = [int(sz), int(ct)]
+
+    # ── sell aggressors ───────────────────────────────────────────────────────
+    sells = df[df["side"] == "A"]
+    sells = sells[sells["bid_price_level"] < sells["bar_open"]]
+    sells = sells.drop_duplicates(subset=["bar", "bid_price_level"])
+
+    for bar, level, sz, ct in zip(
+        pd.DatetimeIndex(sells["bar"]),
+        sells["bid_price_level"].to_numpy().tolist(),
+        sells["bid_size"].to_numpy().tolist(),
+        sells["bid_count"].to_numpy().tolist(),
+    ):
+        bar_dict = result.setdefault(bar, {})
+        if level not in bar_dict:
+            bar_dict[level] = [int(sz), int(ct)]
+
+    return pd.Series({k: orjson.dumps(v, option=orjson.OPT_NON_STR_KEYS).decode() for k, v in result.items()})
 
 
-def _modify_and_join(previous_day_df: pd.DataFrame, current_day_df: pd.DataFrame) -> pd.DataFrame:
-    previous_day_df = previous_day_df.set_index("ts_event")
-    current_day_df = current_day_df.set_index("ts_event")
-    
-    KEEP = {
-        "side":      "side",
-        "price":     "price",
-        "size":      "size",
-        "bid_px_00": "bid_price_level",
-        "ask_px_00": "ask_price_level",
-        "bid_sz_00": "bid_size",
-        "ask_sz_00": "ask_size",
-        "bid_ct_00": "bid_count",
-        "ask_ct_00": "ask_count",
-        "symbol":    "symbol",
-    }
+_UNDEF_PRICE = np.iinfo(np.int64).max  # Databento sentinel for "no price"
 
-    previous_day_df = previous_day_df[list(KEEP.keys())].rename(columns=KEEP)
-    current_day_df  = current_day_df[list(KEEP.keys())].rename(columns=KEEP)
 
-    # filter out spreads — CME symbology only
-    previous_day_df = previous_day_df[~previous_day_df["symbol"].str.contains("-")]
-    current_day_df  = current_day_df[~current_day_df["symbol"].str.contains("-")]
+def _instrument_symbols(store, unique_ids) -> dict:
+    """Resolve the handful of instrument_ids in a file to their raw symbols once
+    (vs to_df mapping a symbol string onto every row)."""
+    imap = db.common.symbology.InstrumentMap()
+    imap.insert_metadata(store.metadata)
+    date = pd.Timestamp(store.metadata.start, unit="ns").date()
+    out = {}
+    for iid in unique_ids:
+        try:
+            sym = imap.resolve(int(iid), date)
+        except Exception:
+            sym = None
+        out[int(iid)] = sym if sym is not None else str(int(iid))
+    return out
 
-    previous_day_df = previous_day_df[previous_day_df["side"].isin(["A", "B"])]
-    current_day_df  = current_day_df[current_day_df["side"].isin(["A", "B"])]
-    
-    prev_date     = previous_day_df.index[0].date()
+
+def _px(raw: np.ndarray) -> np.ndarray:
+    """int64 fixed-point (1e-9) -> float price; undefined-price sentinel -> NaN."""
+    return np.where(raw == _UNDEF_PRICE, np.nan, raw.astype("float64") / 1e9)
+
+
+def _load_and_clean(path: Path) -> pd.DataFrame:
+    """
+    Load a DBN MBP-1/TBBO file and apply all filters.
+
+    Uses to_ndarray() (raw decode ~0.06s) instead of to_df() (~0.8s): to_df builds
+    a full pandas frame and maps a symbol string onto every row. We resolve symbols
+    once for the ~8 instrument_ids. Output is identical to the previous loader
+    (price/bid/ask = int64 fixed-point /1e9 with sentinel -> NaN; size/counts uint32).
+    """
+    t0 = perf_counter()
+    store = db.DBNStore.from_file(str(path))
+    arr = store.to_ndarray()
+
+    idx = pd.DatetimeIndex(arr["ts_event"].astype("int64"), tz="UTC")
+    codes, uniq = pd.factorize(arr["instrument_id"])
+    id2sym = _instrument_symbols(store, uniq)
+    sym_lookup = np.array([id2sym[int(u)] for u in uniq], dtype=object)
+
+    df = pd.DataFrame(
+        {
+            "side":            arr["side"].astype("U1").astype(object),
+            "price":           _px(arr["price"]),
+            "size":            arr["size"],
+            "bid_price_level": _px(arr["bid_px_00"]),
+            "ask_price_level": _px(arr["ask_px_00"]),
+            "bid_size":        arr["bid_sz_00"],
+            "ask_size":        arr["ask_sz_00"],
+            "bid_count":       arr["bid_ct_00"],
+            "ask_count":       arr["ask_ct_00"],
+            "symbol":          sym_lookup[codes],
+        },
+        index=idx,
+    )
+
+    df = df[~df["symbol"].str.contains("-", na=False)]
+    df = df[df["side"].isin(["A", "B"])]
+
+    _tlog(f"load {Path(path).name}: {perf_counter() - t0:6.2f}s  ({len(df):,} rows)")
+    return df
+
+
+def _build_session(previous_df: pd.DataFrame, current_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Splice previous + current into one 23-hour Globex session.
+    Session window: 22:00 UTC prev day → 21:00 UTC current day.
+    """
+    prev_date     = previous_df.index[0].date()
     session_start = pd.Timestamp(f"{prev_date} 22:00:00", tz="UTC")
     session_end   = session_start + pd.Timedelta(hours=23)
 
     session_df = pd.concat([
-        previous_day_df[previous_day_df.index >= session_start],
-        current_day_df[current_day_df.index  <  session_end]
-    ])
+        previous_df[previous_df.index >= session_start],
+        current_df[current_df.index  <  session_end],
+    ]).sort_index()
 
-    session_df = session_df.sort_index()
     return session_df
 
 
-def _ohlcv_bv_sv(session_df: pd.DataFrame) -> pd.DataFrame:
-    session_df["buy_volume"]  = session_df["size"].where(session_df["side"] == "B", 0)
-    session_df["sell_volume"] = session_df["size"].where(session_df["side"] == "A", 0)
-
-    candles = session_df.groupby(pd.Grouper(freq="1min")).agg(
-        open        = ("price",       "first"),
-        high        = ("price",       "max"),
-        low         = ("price",       "min"),
-        close       = ("price",       "last"),
-        volume      = ("size",        "sum"),
-        buy_volume  = ("buy_volume",  "sum"),
-        sell_volume = ("sell_volume", "sum"),
-    )
-    return candles
-
-
-def _fill_candle_gaps(candles: pd.DataFrame) -> pd.DataFrame:
-    candles["close"]  = candles["close"].ffill().bfill()
-    candles["open"]   = candles["open"].fillna(candles["close"])
-    candles["high"]   = candles["high"].fillna(candles["close"])
-    candles["low"]    = candles["low"].fillna(candles["close"])
-    candles[["volume", "buy_volume", "sell_volume"]] = (
-        candles[["volume", "buy_volume", "sell_volume"]].fillna(0)
-    )
-    return candles
-
-
-def _volume_delta_vdpct(candles: pd.DataFrame) -> pd.DataFrame:
-    candles["buy_volume"]   = candles["buy_volume"].astype("int32")
-    candles["sell_volume"]  = candles["sell_volume"].astype("int32")
-    candles["volume_delta"] = (candles["buy_volume"] - candles["sell_volume"]).astype("int32")
-
-    buy   = candles["buy_volume"].to_numpy()
-    sell  = candles["sell_volume"].to_numpy()
-    delta = candles["volume_delta"].to_numpy()
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        pct = np.where(
-            (buy == 0) | (sell == 0), 100.0,
-            np.where(buy  > sell, ( delta / sell) * 100,
-            np.where(sell > buy,  ( delta / buy)  * 100,
-            0.0))
-        )
-
-    candles["volume_delta_pct"] = pct.round(1)
-    candles.loc[candles["volume"] == 0, "volume_delta_pct"] = 0.0
-    return candles
-
-
-def _change_columns_type(candles: pd.DataFrame) -> pd.DataFrame:
-    for col in ["open", "high", "low", "close"]:
-        candles[col] = candles[col].astype("float32")
-    return candles
-
-
 def build_candles(
-        previous_day_path: Path,
-        current_day_path: Path,
+        previous_df: pd.DataFrame,
+        current_df: pd.DataFrame,
         output_folder_path: Path,
         skip_existing: bool = False,
         on_log: callable = None,
@@ -163,14 +235,13 @@ def build_candles(
         else:
             print(msg)
 
-    previous_day_df = db.DBNStore.from_file(previous_day_path).to_df()
-    current_day_df  = db.DBNStore.from_file(current_day_path).to_df()
+    times: dict = {}
 
-    session_df = _modify_and_join(previous_day_df, current_day_df)
+    t = perf_counter()
+    session_df = _build_session(previous_df, current_df)
+    times["build_session"] = perf_counter() - t
 
-    del previous_day_df, current_day_df
-    gc.collect()
-
+    t = perf_counter()
     front_month, is_roll_day = _get_front_month(session_df)
     if front_month is None:
         log("No valid symbols found — skipping")
@@ -185,47 +256,109 @@ def build_candles(
         return None
 
     session_df.index = session_df.index.tz_convert("America/New_York")
+    times["front_month"] = perf_counter() - t
 
+    t = perf_counter()
+    # RTH date = the current session's calendar date (RTH 13:30-21:00 UTC sits in
+    # the curr UTC day, which equals the NY date). Derive it from a midpoint row,
+    # then check the 09:30-16:00 NY window with a vectorized absolute-timestamp
+    # comparison instead of the slow per-row `.time` accessor.
+    rth_date  = current_df.index[len(current_df) // 2].tz_convert("UTC").date()
+    rth_start = pd.Timestamp(f"{rth_date} 09:30", tz="America/New_York")
+    rth_end   = pd.Timestamp(f"{rth_date} 16:00", tz="America/New_York")
+    has_rth   = bool(((session_df.index >= rth_start) & (session_df.index <= rth_end)).any())
+    times["rth_mask"] = perf_counter() - t
 
-    rth_mask = (
-        (session_df.index.time >= pd.Timestamp("09:30").time()) &
-        (session_df.index.time <= pd.Timestamp("16:00").time())
-    )
-    rth_bars = session_df[rth_mask]
-
-    if rth_bars.empty:
+    if not has_rth:
         log("No RTH bars found — skipping")
         return None
 
-    trade_date  = rth_bars.index[0].date().isoformat()
+    trade_date  = rth_date.isoformat()
     output_path = output_folder_path / f"{trade_date}.parquet"
 
     if skip_existing and output_path.exists():
         log(f"↷ Skipping {trade_date} — already processed")
         return None
 
-    candles = _ohlcv_bv_sv(session_df)
-    candles = _fill_candle_gaps(candles)
-    candles = _volume_delta_vdpct(candles)
+    t = perf_counter()
+    session_df["buy_volume"]  = session_df["size"].where(session_df["side"] == "B", 0)
+    session_df["sell_volume"] = session_df["size"].where(session_df["side"] == "A", 0)
 
-    tick_volume = session_df.groupby(pd.Grouper(freq="1min")).apply(_build_tick_volume)
-    candles["tick_volume"] = tick_volume.apply(lambda x: json.dumps(x) if x else "{}")
-
-    opens   = candles["open"]
-    passive = {}
-    for bar_time, group in session_df.groupby(pd.Grouper(freq="1min")):
-        if bar_time in opens.index:
-            passive[bar_time] = _build_passive_orders(group, float(opens[bar_time]))
-
-    candles["passive_orders"] = pd.Series(passive).apply(
-        lambda x: json.dumps(x) if x else "{}"
+    candles = session_df.groupby(pd.Grouper(freq="1min")).agg(
+        open        = ("price",       "first"),
+        high        = ("price",       "max"),
+        low         = ("price",       "min"),
+        close       = ("price",       "last"),
+        volume      = ("size",        "sum"),
+        buy_volume  = ("buy_volume",  "sum"),
+        sell_volume = ("sell_volume", "sum"),
     )
 
-    candles = _change_columns_type(candles)
+    # gap fill
+    candles["close"] = candles["close"].ffill().bfill()
+    candles["open"]  = candles["open"].fillna(candles["close"])
+    candles["high"]  = candles["high"].fillna(candles["close"])
+    candles["low"]   = candles["low"].fillna(candles["close"])
+    candles[["volume", "buy_volume", "sell_volume"]] = (
+        candles[["volume", "buy_volume", "sell_volume"]].fillna(0)
+    )
+
+    # volume delta
+    candles["buy_volume"]   = candles["buy_volume"].astype("int32")
+    candles["sell_volume"]  = candles["sell_volume"].astype("int32")
+    candles["volume_delta"] = (candles["buy_volume"] - candles["sell_volume"]).astype("int32")
+
+    buy   = candles["buy_volume"].to_numpy()
+    sell  = candles["sell_volume"].to_numpy()
+    delta = candles["volume_delta"].to_numpy()
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pct = np.where(
+            (buy == 0) | (sell == 0), 100.0,
+            np.where(buy  > sell, (delta / sell) * 100,
+            np.where(sell > buy,  (delta / buy)  * 100,
+            0.0))
+        )
+
+    candles["volume_delta_pct"] = pct.round(1)
+    candles.loc[candles["volume"] == 0, "volume_delta_pct"] = 0.0
+    times["groupby_agg"] = perf_counter() - t
+
+    # compute bar index once — integer arithmetic on ns is ~800x faster than tz-aware floor()
+    ns         = session_df.index.view("int64")
+    floored_ns = (ns // 60_000_000_000) * 60_000_000_000
+    bars       = pd.DatetimeIndex(floored_ns, tz="UTC").tz_convert("America/New_York")
+
+    t = perf_counter()
+    tick_vol = _build_tick_volume(session_df, bars)
+    candles["tick_volume"] = tick_vol.reindex(candles.index).fillna("{}")
+    times["tick_volume"] = perf_counter() - t
+
+    t = perf_counter()
+    passive = _build_passive_orders(session_df, candles["open"], bars)
+    candles["passive_orders"] = passive.reindex(candles.index).fillna("{}")
+    times["passive_orders"] = perf_counter() - t
+
+    for col in ["open", "high", "low", "close"]:
+        candles[col] = candles[col].astype("float64")
+    candles["volume_delta_pct"] = candles["volume_delta_pct"].astype("float64")
 
     output_folder_path.mkdir(parents=True, exist_ok=True)
-    candles.to_parquet(output_path)
+    t = perf_counter()
+    # Write with file-level metadata recording the front-month contract. Build via
+    # pyarrow so we can attach key-value metadata; from_pandas keeps the b'pandas'
+    # schema metadata so pd.read_parquet still reconstructs index/dtypes unchanged.
+    table = pa.Table.from_pandas(candles)
+    meta = dict(table.schema.metadata or {})
+    meta[b"front_month"] = str(front_month).encode()
+    meta[b"trade_date"]  = str(trade_date).encode()
+    meta[b"is_roll_day"] = str(bool(is_roll_day)).encode()
+    table = table.replace_schema_metadata(meta)
+    pq.write_table(table, output_path)
+    times["write_parquet"] = perf_counter() - t
+
     log(f"✓ Saved {trade_date}")
+    _print_breakdown(trade_date, times)
     return candles
 
 
@@ -247,18 +380,21 @@ def run_all(
 
     total = len(files) - 1
 
+    prev_df = _load_and_clean(files[0])
+
     for i in range(total):
-        previous_file = files[i]
-        current_file  = files[i + 1]
+        current_file = files[i + 1]
 
         def on_log(msg: str, _i=i):
             if on_progress:
                 on_progress(_i + 1, total, msg)
 
+        curr_df = _load_and_clean(current_file)
+
         try:
             build_candles(
-                previous_day_path  = previous_file,
-                current_day_path   = current_file,
+                previous_df        = prev_df,
+                current_df         = curr_df,
                 output_folder_path = output_path,
                 skip_existing      = skip_existing,
                 on_log             = on_log,
@@ -266,15 +402,23 @@ def run_all(
         except Exception as e:
             if on_progress:
                 on_progress(i + 1, total, f"ERROR {current_file.name}: {e}")
+            prev_df = curr_df
             continue
 
         if on_progress:
             on_progress(i + 1, total, "")
 
+        del prev_df
+        gc.collect()
+        prev_df = curr_df
+
+    del prev_df
+    gc.collect()
+
 
 '''
 Known limitations:
-- tick volume isn't 100% right. Multi-level fills recorded only at the reported price.
+- Tick volume accuracy: multi-level fills recorded only at the reported price.
 - If there is no trading between 22:00-24:00 in previous day then it will only
   return current day.
 '''
