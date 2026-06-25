@@ -308,20 +308,14 @@ def build_candles(
     candles["sell_volume"]  = candles["sell_volume"].astype("int32")
     candles["volume_delta"] = (candles["buy_volume"] - candles["sell_volume"]).astype("int32")
 
-    buy   = candles["buy_volume"].to_numpy()
-    sell  = candles["sell_volume"].to_numpy()
-    delta = candles["volume_delta"].to_numpy()
+    delta  = candles["volume_delta"].to_numpy()
+    volume = candles["volume"].to_numpy()
 
+    # delta as % of total bar volume (signed, bounded to ±100)
     with np.errstate(divide="ignore", invalid="ignore"):
-        pct = np.where(
-            (buy == 0) | (sell == 0), 100.0,
-            np.where(buy  > sell, (delta / sell) * 100,
-            np.where(sell > buy,  (delta / buy)  * 100,
-            0.0))
-        )
+        pct = np.where(volume > 0, (delta / volume) * 100, 0.0)
 
     candles["volume_delta_pct"] = pct.round(1)
-    candles.loc[candles["volume"] == 0, "volume_delta_pct"] = 0.0
     times["groupby_agg"] = perf_counter() - t
 
     # compute bar index once — integer arithmetic on ns is ~800x faster than tz-aware floor()

@@ -75,6 +75,8 @@ stage. The contract between stages is the parquet column schema, not Python impo
 - **`pnl_points`, not ticks.** Strategies output `pnl_points` only; the backtester converts to
   ticks via `ticks = pnl_points * ticks_per_point` from `ASSET_INFO`. Never store `ticks` in a strategy.
 - **OHLC is float64.**
+- **`volume_delta_pct`** is `volume_delta / volume * 100` — signed order-flow imbalance as a
+  percent of total bar volume, bounded to `±100`. Zero-volume bars = `0.0`.
 - **Enriched columns** (`tick_volume`, `passive_orders`) exist only for **ES/NQ** (Databento
   subscription window). Plain OHLCV exists for ~30 assets. Order-flow strategies need the enriched set.
 
