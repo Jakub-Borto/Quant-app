@@ -7,7 +7,8 @@ PARAM_SECTIONS = {
     "Absorption + Delta":       ["wick_threshold", "absorption_mult"],
     "Consecutive Absorption":   ["consec_abs_n", "consec_abs_mult", "consec_abs_ticks", "consec_wick_threshold"],
     "Two Bar Absorption":       ["two_bar_wick_ticks", "two_bar_abs_mult"],
-    "Passive Absorption":       ["passive_order_mult", "passive_absorption_mult", "passive_wick_threshold"],
+    "Passive Absorption (Size Only)": ["passive_size_order_mult", "passive_size_absorption_mult", "passive_size_wick_threshold"],
+    "Passive Wall":             ["passive_wall_n", "passive_wall_mult", "passive_wall_ticks"],
     "Basic Risk Management":    ["rr", "sl_type"]
 }
 
@@ -34,13 +35,17 @@ PARAMS = {
     # --- two bar absorption params ---
     "two_bar_wick_ticks":           3,      # max wick size in ticks on defended side for both candles
     "two_bar_abs_mult":             2.0,    # absorption multiplier for merged 2-bar candle
-    # --- passive order + absorption params ---
-    "passive_order_mult":           3.0,    # passive avg order size must be >= this x rolling baseline
-    "passive_absorption_mult":      1.5,    # absorption mult for passive+absorption finder
-    "passive_wick_threshold":       0.4,    # wick threshold independent of absorption + delta
-    # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive ---
-    "valid_entries":                "1111",
-    # --- which riska management script to use ---
+    # --- passive order (size only) + absorption params ---
+    "passive_size_order_mult":      3.0,    # raw resting size must be >= this x rolling baseline
+    "passive_size_absorption_mult": 1.5,    # absorption mult for size-only passive finder
+    "passive_size_wick_threshold":  0.4,    # wick threshold for size-only passive finder
+    # --- passive wall params ---
+    "passive_wall_n":               3,      # number of big passive orders required to form a wall
+    "passive_wall_mult":            3.0,    # raw resting size >= this x rolling baseline to count as "big"
+    "passive_wall_ticks":           5,      # ±ticks tolerance for clustering wall levels
+    # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive_size_only, passive_wall ---
+    "valid_entries":                "11111",
+    # --- which risk management script to use ---
     "risk_script":                  1,
     # --- basic risk management script ---
     "rr":                           1.0,    # fixed risk to reward ratio

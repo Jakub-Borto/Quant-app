@@ -1,4 +1,4 @@
-"""Passive absorption entry: big resting order + absorption on the same candle + confirmation."""
+"""Passive absorption (size only): big resting order by raw size + absorption + confirmation."""
 
 import json
 import pandas as pd
@@ -7,25 +7,26 @@ from ..absorption import is_absorption_candle
 
 
 def find_entry(
-    post_retest:            pd.DataFrame,
-    direction:              str,
-    ivb_high:               float,
-    ivb_low:                float,
-    poc:                    float,
-    vah:                    float,
-    val:                    float,
-    sell_baseline:          pd.Series,
-    buy_baseline:           pd.Series,
-    passive_baseline_long:  pd.Series,
-    passive_baseline_short: pd.Series,
-    params:                 dict,
+    post_retest:                pd.DataFrame,
+    direction:                  str,
+    ivb_high:                   float,
+    ivb_low:                    float,
+    poc:                        float,
+    vah:                        float,
+    val:                        float,
+    sell_baseline:              pd.Series,
+    buy_baseline:               pd.Series,
+    passive_baseline_long:      pd.Series,
+    passive_baseline_short:     pd.Series,
+    params:                     dict,
 ) -> tuple:
     """
-    Looks for a candle with both:
+    Like passive_absorption, but qualifies the resting order by raw total size only
+    (order count ignored). Looks for a candle with both:
       - A big passive order on the defended side:
-          Long: resting bid below candle open, size/count >= passive_baseline * passive_order_mult
-          Short: resting ask above candle open, size/count >= passive_baseline * passive_order_mult
-      - Absorption in the defended wick (using passive_absorption_mult)
+          Long: resting bid below candle open, size >= passive_baseline * passive_size_order_mult
+          Short: resting ask above candle open, size >= passive_baseline * passive_size_order_mult
+      - Absorption in the defended wick (using passive_size_absorption_mult / passive_size_wick_threshold)
 
     Both conditions must be on the same candle.
     Then scans up to entry_after_absorption bars for a confirmation candle:
@@ -48,8 +49,8 @@ def find_entry(
 
     passive_params = {
         **params,
-        "absorption_mult": params["passive_absorption_mult"],
-        "wick_threshold":  params["passive_wick_threshold"],
+        "absorption_mult": params["passive_size_absorption_mult"],
+        "wick_threshold":  params["passive_size_wick_threshold"],
     }
 
     # breakout bar (index 0): invalidation only
@@ -63,7 +64,7 @@ def find_entry(
         if invalid_whole.iloc[i]:
             return None, None, ts, None, None
 
-        # --- passive order check ---
+        # --- passive order check (raw size only) ---
         p_baseline = passive_baseline.get(ts, float("nan"))
         if pd.isna(p_baseline) or p_baseline <= 0:
             continue
@@ -77,7 +78,7 @@ def find_entry(
             continue
 
         bar_open              = float(bar["open"])
-        required_po           = p_baseline * params["passive_order_mult"]
+        required_po           = p_baseline * params["passive_size_order_mult"]
         has_big_passive       = False
         passive_trigger_price = None
         passive_trigger_size  = None
@@ -91,7 +92,7 @@ def find_entry(
                 continue
             if direction == "short" and price <= bar_open:
                 continue
-            if (size / count) >= required_po:
+            if size >= required_po:
                 has_big_passive       = True
                 passive_trigger_price = price
                 passive_trigger_size  = size
@@ -161,6 +162,6 @@ def find_entry(
                 "passive_count":   passive_trigger_count,
             }
 
-            return entry_ts, entry_price, None, entry_notes, "passive_absorption"
+            return entry_ts, entry_price, None, entry_notes, "passive_absorption_size_only"
 
     return None, None, None, None, None

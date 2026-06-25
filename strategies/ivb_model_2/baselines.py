@@ -31,7 +31,7 @@ def build_rolling_baseline(rth_session: pd.DataFrame, params: dict):
 
 def build_passive_baseline(rth_session: pd.DataFrame, direction: str, params: dict) -> pd.Series:
     """
-    Rolling baseline of max(size/order_count) on the defended side per bar.
+    Rolling baseline of the max raw resting size on the defended side per bar.
     Long: passive buy orders below candle open.
     Short: passive sell orders above candle open.
     Only bars with valid passive data on the defended side contribute to the window.
@@ -40,7 +40,7 @@ def build_passive_baseline(rth_session: pd.DataFrame, direction: str, params: di
 
     valid = rth_session[rth_session.index.time >= time(9, 35)].copy()
 
-    def max_avg_order_size(row):
+    def max_order_size(row):
         po = row.get("passive_orders", None)
         if not po or po == "{}":
             return float("nan")
@@ -60,13 +60,12 @@ def build_passive_baseline(rth_session: pd.DataFrame, direction: str, params: di
                 continue
             if direction == "short" and price <= bar_open:
                 continue
-            avg = size / count
-            if pd.isna(best) or avg > best:
-                best = avg
+            if pd.isna(best) or size > best:
+                best = size
 
         return best
 
-    per_bar = valid.apply(max_avg_order_size, axis=1)
+    per_bar = valid.apply(max_order_size, axis=1)
     sparse  = per_bar.dropna()
     rolling = sparse.rolling(window, min_periods=window).mean()
     return rolling.reindex(rth_session.index)
