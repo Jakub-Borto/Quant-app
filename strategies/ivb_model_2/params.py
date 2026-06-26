@@ -51,8 +51,8 @@ PARAMS = {
     "cvd_max_separation":           20,     # max bars between the two pivots (older pivot stale beyond this)
     "cvd_wick_tolerance_ticks":     2,      # tolerance (ticks) for lower/equal high (or higher/equal low)
     "cvd_min_score":                0.3,    # z-score threshold for the CVD divergence
-    # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive_size_only, passive_wall, cvd_divergence_absorption ---
-    "valid_entries":                "111111",
+    # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive_size_only, passive_wall, cvd_divergence_absorption, cvd_divergence_exhaustion ---
+    "valid_entries":                "1111111",
     # --- which risk management script to use ---
     "risk_script":                  1,
     # --- basic risk management script ---

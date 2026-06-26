@@ -10,7 +10,6 @@ from .baselines  import build_rolling_baseline, build_passive_baseline, build_cv
 from .entries    import FINDER_REGISTRY
 from .risk       import compute_sl_tp, run_trade
 
-print("\n\n\n---------------------------------------------------------------\n\n")
 
 # ---------------------------------------------------------------------------
 # Breakout / retest detection
