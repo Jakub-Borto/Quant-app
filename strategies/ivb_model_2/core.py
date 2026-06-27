@@ -8,7 +8,7 @@ from .params     import PARAMS
 from .profile    import compute_ivb_profile
 from .baselines  import build_rolling_baseline, build_passive_baseline, build_cvd_change_baseline
 from .entries    import FINDER_REGISTRY
-from .risk       import compute_sl_tp, run_trade
+from .risk       import RISK_REGISTRY
 
 
 # ---------------------------------------------------------------------------
@@ -238,30 +238,25 @@ def process_day(session: pd.DataFrame, params: dict, cvd_raw: pd.Series = None):
         if direction_found != direction:
             return None
 
-    sl, tp = compute_sl_tp(
-        post_retest = post_retest,
-        entry_ts    = entry_ts,
-        entry_price = entry_price,
-        direction   = direction,
-        val         = val,
-        vah         = vah,
-        params      = params,
-    )
-
-    if sl is None:
-        return None
-
+    # --- risk script dispatch (1-based risk_script -> RISK_REGISTRY) ---
+    levels     = {"val": val, "vah": vah, "poc": poc}
     post_entry = post_ib.loc[entry_ts:]
 
-    trade = run_trade(
+    idx     = params["risk_script"] - 1
+    risk_fn = RISK_REGISTRY[idx] if 0 <= idx < len(RISK_REGISTRY) else RISK_REGISTRY[0]
+
+    trade = risk_fn(
+        post_retest = post_retest,
         post_entry  = post_entry,
         entry_ts    = entry_ts,
         entry_price = entry_price,
         direction   = direction,
-        sl          = sl,
-        tp          = tp,
+        levels      = levels,
         params      = params,
     )
+
+    if trade is None:
+        return None
 
     trade["trade_type"] = trade_type
 

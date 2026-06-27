@@ -10,7 +10,8 @@ PARAM_SECTIONS = {
     "Passive Absorption (Size Only)": ["passive_size_order_mult", "passive_size_absorption_mult", "passive_size_wick_threshold"],
     "Passive Wall":             ["passive_wall_n", "passive_wall_mult", "passive_wall_ticks"],
     "CVD Divergence":           ["cvd_indicators_folder", "cvd_pivot_k", "cvd_min_separation", "cvd_max_separation", "cvd_wick_tolerance_ticks", "cvd_min_score"],
-    "Basic Risk Management":    ["rr", "sl_type"]
+    "Basic Risk Management":    ["rr", "sl_type"],
+    "Zone SL Risk":             ["zone_rr"]
 }
 
 
@@ -53,11 +54,13 @@ PARAMS = {
     "cvd_min_score":                0.3,    # z-score threshold for the CVD divergence
     # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive_size_only, passive_wall, cvd_divergence_absorption, cvd_divergence_exhaustion ---
     "valid_entries":                "1111111",
-    # --- which risk management script to use ---
+    # --- which risk management script to use: 1 = basic_risk, 2 = zone_sl_risk ---
     "risk_script":                  1,
     # --- basic risk management script ---
     "rr":                           1.0,    # fixed risk to reward ratio
     "sl_type":                      0,      # 0 = VAL, 1 = swing low
+    # --- zone SL risk script ---
+    "zone_rr":                      1.0,    # fixed risk to reward ratio for zone_sl_risk
 }
 
 OUTPUT_COLUMNS = [
