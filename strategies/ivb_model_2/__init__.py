@@ -42,11 +42,11 @@ def run(
     if not files:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
-    # --- resolve the CVD indicators folder (sibling dataset under same type/asset) ---
+    # --- resolve the indicators folder (sibling dataset under same type/asset) ---
     # candle folder_path is .../parquet/{type}/{asset}/{dataset}; the indicators live in a
-    # folder the user names. Empty param => CVD divergence finder disabled for the whole run.
-    cvd_folder_name   = merged_params.get("cvd_indicators_folder", "")
-    indicators_folder = folder_path.parent / cvd_folder_name if cvd_folder_name else None
+    # folder the user names. Empty param => no indicators (CVD entries + vwap risk disabled).
+    ind_folder_name   = merged_params.get("indicators_folder", "")
+    indicators_folder = folder_path.parent / ind_folder_name if ind_folder_name else None
 
     trades = []
     for f in files:
@@ -56,20 +56,18 @@ def run(
         if session.index.tz is None:
             continue
 
-        # per-day CVD: matching YYYY-MM-DD.parquet in the indicators folder; any problem
-        # (no folder, missing file, no column, bad read) => None => finder disabled this day.
-        cvd_raw = None
+        # per-day indicators: matching YYYY-MM-DD.parquet in the indicators folder. Any problem
+        # (no folder, missing file, bad read) => None => CVD entries + vwap risk disable this day.
+        ind_df = None
         if indicators_folder is not None:
             ind_file = indicators_folder / f.name
             if ind_file.exists():
                 try:
                     ind_df = pd.read_parquet(ind_file)
-                    if "cumulative_delta" in ind_df.columns:
-                        cvd_raw = ind_df["cumulative_delta"]
                 except Exception:
-                    cvd_raw = None
+                    ind_df = None
 
-        trade = process_day(session, merged_params, cvd_raw)
+        trade = process_day(session, merged_params, ind_df)
         if trade is not None:
             trade["date"] = pd.Timestamp(f.stem).date()
             trades.append(trade)

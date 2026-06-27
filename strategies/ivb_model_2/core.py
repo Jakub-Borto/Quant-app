@@ -131,7 +131,16 @@ def find_entry(
 # Day processor
 # ---------------------------------------------------------------------------
 
-def process_day(session: pd.DataFrame, params: dict, cvd_raw: pd.Series = None):
+# tick-vwap deviation band columns consumed by vwap_tp_risk (built per day when available)
+VWAP_BAND_COLUMNS = [
+    "vwap_tick_globex_std2_up", "vwap_tick_globex_std2_dn",
+    "vwap_tick_globex_std3_up", "vwap_tick_globex_std3_dn",
+    "vwap_tick_rth_std2_up",    "vwap_tick_rth_std2_dn",
+    "vwap_tick_rth_std3_up",    "vwap_tick_rth_std3_dn",
+]
+
+
+def process_day(session: pd.DataFrame, params: dict, ind_df: pd.DataFrame = None):
     rth_session = session[
         (session.index.time >= time(9, 30)) &
         (session.index.time <  time(16, 0))
@@ -158,11 +167,19 @@ def process_day(session: pd.DataFrame, params: dict, cvd_raw: pd.Series = None):
 
     # CVD (cumulative_delta) + its bar-to-bar change std — day-level, like the baselines.
     # None when no indicators were loaded => the cvd_divergence finder disables itself.
-    if cvd_raw is not None:
-        cvd_series     = cvd_raw.reindex(rth_session.index)
+    if ind_df is not None and "cumulative_delta" in ind_df.columns:
+        cvd_series     = ind_df["cumulative_delta"].reindex(rth_session.index)
         cvd_change_std = build_cvd_change_baseline(cvd_series, params)
     else:
         cvd_series = cvd_change_std = None
+
+    # VWAP deviation bands (tick-vwap, ±2σ/±3σ, globex+rth) for vwap_tp_risk, reindexed to the
+    # session like the other indicator series. None when indicators / band columns are absent.
+    if ind_df is not None:
+        present = [c for c in VWAP_BAND_COLUMNS if c in ind_df.columns]
+        vwap_bands = ind_df[present].reindex(rth_session.index) if present else None
+    else:
+        vwap_bands = None
 
     post_ib = rth_session.iloc[params["ib_minutes"]:]
     if post_ib.empty:
@@ -239,7 +256,7 @@ def process_day(session: pd.DataFrame, params: dict, cvd_raw: pd.Series = None):
             return None
 
     # --- risk script dispatch (1-based risk_script -> RISK_REGISTRY) ---
-    levels     = {"val": val, "vah": vah, "poc": poc}
+    levels     = {"val": val, "vah": vah, "poc": poc, "vwap_bands": vwap_bands}
     post_entry = post_ib.loc[entry_ts:]
 
     idx     = params["risk_script"] - 1
@@ -272,9 +289,14 @@ def process_day(session: pd.DataFrame, params: dict, cvd_raw: pd.Series = None):
         "val":           val,
     }
 
+    # a risk script may attach its own note fields via trade["risk_notes"] (popped here so it
+    # never becomes a stray column); scripts that don't set it leave notes byte-identical.
+    risk_notes = trade.pop("risk_notes", None)
+
     trade["notes"] = json.dumps({
         **process_day_notes,
         **(entry_notes or {}),
+        **(risk_notes or {}),
     })
 
     return trade
