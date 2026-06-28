@@ -4,7 +4,6 @@ import json
 import pandas as pd
 from datetime import time
 
-from .params     import PARAMS
 from .profile    import compute_ivb_profile
 from .baselines  import build_rolling_baseline, build_passive_baseline, build_cvd_change_baseline
 from .entries    import FINDER_REGISTRY

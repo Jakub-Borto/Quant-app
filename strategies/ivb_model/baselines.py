@@ -1,8 +1,12 @@
-"""Rolling baselines for absorption detection and merged-candle helpers."""
+"""Day-level rolling baselines for absorption / passive / CVD-change grading."""
 
 import json
 import pandas as pd
 from datetime import time
+
+# Skip the first 5 minutes of RTH before baselining — the 09:30 open bar(s) are abnormally heavy
+# and would distort the rolling volume-per-tick averages. Shared by all baselines below.
+BASELINE_WARMUP_START = time(9, 35)
 
 
 def build_rolling_baseline(rth_session: pd.DataFrame, params: dict):
@@ -13,7 +17,7 @@ def build_rolling_baseline(rth_session: pd.DataFrame, params: dict):
     tick_size = params["tick_size"]
     window    = params["absorption_baseline_window"]
 
-    valid = rth_session[rth_session.index.time >= time(9, 35)].copy()
+    valid = rth_session[rth_session.index.time >= BASELINE_WARMUP_START].copy()
 
     range_ticks = ((valid["high"] - valid["low"]) / tick_size).replace(0, float("nan"))
 
@@ -38,7 +42,7 @@ def build_passive_baseline(rth_session: pd.DataFrame, direction: str, params: di
     """
     window = params["absorption_baseline_window"]
 
-    valid = rth_session[rth_session.index.time >= time(9, 35)].copy()
+    valid = rth_session[rth_session.index.time >= BASELINE_WARMUP_START].copy()
 
     def max_order_size(row):
         po = row.get("passive_orders", None)
@@ -75,71 +79,12 @@ def build_cvd_change_baseline(cumulative_delta: pd.Series, params: dict) -> pd.S
     """Rolling std of bar-to-bar CVD changes, reindexed to the session index.
 
     `cumulative_delta` must already be aligned to rth_session.index. Mirrors the other
-    baselines: filter to >= 09:35, rolling(window, min_periods=window), NaN during warmup.
+    baselines: filter to >= BASELINE_WARMUP_START, rolling(window, min_periods=window),
+    NaN during warmup.
     """
     window = params["absorption_baseline_window"]
 
-    valid = cumulative_delta[cumulative_delta.index.time >= time(9, 35)]
+    valid = cumulative_delta[cumulative_delta.index.time >= BASELINE_WARMUP_START]
     std   = valid.diff().rolling(window, min_periods=window).std()
 
     return std.reindex(cumulative_delta.index)
-
-
-def merge_tick_volume(tv1: str, tv2: str) -> str:
-    """Merge two tick_volume JSON strings by summing volumes at each price level."""
-    merged = {}
-    for tv in (tv1, tv2):
-        if not tv or tv == "{}":
-            continue
-        try:
-            raw = json.loads(tv)
-        except Exception:
-            continue
-        for price_str, (buy_qty, sell_qty) in raw.items():
-            if price_str not in merged:
-                merged[price_str] = [0, 0]
-            merged[price_str][0] += buy_qty
-            merged[price_str][1] += sell_qty
-    return json.dumps({k: v for k, v in merged.items()})
-
-
-def build_two_bar_baseline(pre_bars: pd.DataFrame, direction: str, params: dict) -> float:
-    """
-    Build baseline from merged 2-bar pairs ending at the last bar of pre_bars.
-    Window = absorption_window // 2 pairs. Anchored backwards from the pattern bars.
-    """
-    tick_size = params["tick_size"]
-    n_pairs   = params["absorption_baseline_window"] // 2
-
-    bars = pre_bars.iloc[::-1].reset_index(drop=True)
-    n    = len(bars)
-    densities = []
-
-    for k in range(n_pairs):
-        i1 = k * 2
-        i2 = k * 2 + 1
-        if i2 >= n:
-            break
-
-        bar1 = bars.iloc[i1]
-        bar2 = bars.iloc[i2]
-
-        merged_high  = max(float(bar1["high"]),  float(bar2["high"]))
-        merged_low   = min(float(bar1["low"]),   float(bar2["low"]))
-        merged_range = merged_high - merged_low
-        range_ticks  = merged_range / tick_size
-
-        if range_ticks <= 0:
-            continue
-
-        if direction == "long":
-            volume = float(bar1["sell_volume"]) + float(bar2["sell_volume"])
-        else:
-            volume = float(bar1["buy_volume"])  + float(bar2["buy_volume"])
-
-        densities.append(volume / range_ticks)
-
-    if not densities:
-        return float("nan")
-
-    return sum(densities) / len(densities)

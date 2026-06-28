@@ -1,39 +1,61 @@
-"""Stop-loss / take-profit placement and the trade runner (fill simulation)."""
+"""VWAP-target risk script: switchable SL + VWAP deviation-band TP (now or trailing).
+
+risk_script: 3. Self-contained. The SL is chosen by `sl_placement` (VAL/VAH or the zone-pullback
+logic, owned here as _zone_sl) and stays fixed for the whole trade. The TP is a tick-vwap
+deviation band (±2σ/±3σ, globex or rth) read from the indicators parquet, used either frozen at
+entry ("now") or trailed bar-by-bar ("trailing"). Both fill simulators (_run_trade and the
+trailing variant _run_trade_trailing) are owned here too — no shared module, no cross-script imports.
+
+INDICATORS REQUIRED: if the VWAP bands are unavailable for the day (no indicators / missing
+columns / NaN at entry), this script returns None (no trade) — the whole trade is skipped because
+the TP cannot be computed.
+
+exit_reason stays tp / sl / eod (+ tp_timeout / sl_timeout). Which TP was chosen is recorded in
+the trade notes via risk_notes: tp_type = "tp_vwap_2" | "tp_vwap_3" | "1:1".
+"""
 
 import pandas as pd
 
 
-def compute_sl_tp(
-    post_retest:  pd.DataFrame,
-    entry_ts:     pd.Timestamp,
-    entry_price:  float,
-    direction:    str,
-    val:          float,
-    vah:          float,
-    params:       dict,
-) -> tuple:
-    """Returns (sl, tp). (None, None) if risk is non-positive."""
-    if params["sl_type"] == 0:
-        sl = val if direction == "long" else vah
+def _zone_sl(post_retest, entry_ts, direction, levels):
+    """Pick the stop from the pullback window's extremes vs the VAL/POC/VAH zones."""
+    poc = levels["poc"]
+    vah = levels["vah"]
+    val = levels["val"]
+
+    # --- SL window: drop the breakout bar (index 0), keep retest .. bar before entry ---
+    # entry is taken at the entry bar's OPEN, so that bar's low/close are future data => excluded.
+    window = post_retest.iloc[1:]
+    window = window[window.index < entry_ts]
+
+    # degenerate: nothing to measure => fall back to the basic VAL/VAH stop
+    if window.empty:
+        return val if direction == "long" else vah
+
+    if direction == "long":
+        lowest_close = float(window["close"].min())   # where the pullback bottomed (by close)
+        lowest_low   = float(window["low"].min())      # how far the wick reached
+
+        if poc <= lowest_close <= vah:                 # bottomed in the UPPER zone
+            return poc if lowest_low >= poc else lowest_low
+        elif val <= lowest_close < poc:                # bottomed in the LOWER zone
+            return val if lowest_low >= val else lowest_low
+        else:                                          # shouldn't occur (pullback re-enters VA)
+            return val
+
     else:
-        bars_to_entry = post_retest.loc[:entry_ts]
-        if bars_to_entry.empty:
-            sl = val if direction == "long" else vah
-        else:
-            sl = float(bars_to_entry["low"].min())  if direction == "long" \
-            else float(bars_to_entry["high"].max())
+        highest_close = float(window["close"].max())   # where the pullback topped (by close)
+        highest_high  = float(window["high"].max())     # how far the wick reached
 
-    risk = abs(entry_price - sl)
-    if risk <= 0:
-        return None, None
-
-    tp = entry_price + risk * params["rr"] if direction == "long" \
-    else entry_price - risk * params["rr"]
-
-    return sl, tp
+        if val <= highest_close <= poc:                # topped in the LOWER zone
+            return poc if highest_high <= poc else highest_high
+        elif poc < highest_close <= vah:               # topped in the UPPER zone
+            return vah if highest_high <= vah else highest_high
+        else:                                          # shouldn't occur (pullback re-enters VA)
+            return vah
 
 
-def run_trade(
+def _run_trade(
     post_entry:   pd.DataFrame,
     entry_ts:     pd.Timestamp,
     entry_price:  float,
@@ -131,7 +153,7 @@ def run_trade(
         return make_trade(post_timeout.index[sl_pos2], new_sl, "sl_timeout", new_sl, new_tp)
 
 
-def run_trade_trailing(
+def _run_trade_trailing(
     post_entry:   pd.DataFrame,
     entry_ts:     pd.Timestamp,
     entry_price:  float,
@@ -140,11 +162,11 @@ def run_trade_trailing(
     band_series:  pd.Series,
     params:       dict,
 ) -> dict:
-    """Like run_trade, but the TP trails a per-bar band (band_series) instead of a fixed price.
+    """Like _run_trade, but the TP trails a per-bar band (band_series) instead of a fixed price.
 
     SL is fixed. Same-bar race is PESSIMISTIC: if SL and the trailing TP both trigger on one bar,
     the SL wins (loss). Bars with a NaN band value can only trigger the SL. The timeout / EOD tail
-    mirrors run_trade exactly (breakeven TP + swing SL after timeout).
+    mirrors _run_trade exactly (breakeven TP + swing SL after timeout).
     """
     timeout     = params["trade_timeout"]
     pre_timeout = post_entry.iloc[:timeout]
@@ -198,7 +220,7 @@ def run_trade_trailing(
             tp_at_exit = exit_price
         return make_trade(exit_ts, exit_price, "eod", sl, tp_at_exit)
 
-    # --- timeout tail: mirror run_trade (breakeven TP + swing SL) ---
+    # --- timeout tail: mirror _run_trade (breakeven TP + swing SL) ---
     timeout_close = float(pre_timeout.iloc[-1]["close"])
     in_profit     = (timeout_close > entry_price) if direction == "long" \
                else (timeout_close < entry_price)
@@ -246,3 +268,88 @@ def run_trade_trailing(
         return make_trade(post_timeout.index[tp_pos2], new_tp, "tp_timeout", new_sl, new_tp)
     else:
         return make_trade(post_timeout.index[sl_pos2], new_sl, "sl_timeout", new_sl, new_tp)
+
+
+def run(post_retest, post_entry, entry_ts, entry_price, direction, levels, params):
+    """Returns the standard trade dict (with risk_notes), or None."""
+    # --- indicators required: no VWAP bands => no trade ---
+    vwap_bands = levels.get("vwap_bands")
+    if vwap_bands is None:
+        return None
+
+    # --- SL placement (fixed for the whole trade) ---
+    if params["sl_placement"] == 1:
+        sl = levels["val"] if direction == "long" else levels["vah"]
+    else:
+        sl = _zone_sl(post_retest, entry_ts, direction, levels)
+
+    risk = abs(entry_price - sl)
+    if risk <= 0:
+        return None
+
+    # --- band selection: pick the σ2 and σ3 columns for this session + direction ---
+    session = params["vwap_session"]
+    ud      = "up" if direction == "long" else "dn"
+    col2    = f"vwap_tick_{session}_std2_{ud}"
+    col3    = f"vwap_tick_{session}_std3_{ud}"
+
+    if col2 not in vwap_bands.columns or col3 not in vwap_bands.columns:
+        return None
+
+    band2_e = vwap_bands[col2].get(entry_ts, float("nan"))
+    band3_e = vwap_bands[col3].get(entry_ts, float("nan"))
+    if pd.isna(band2_e) or pd.isna(band3_e):
+        return None
+
+    # --- entry-time escalation: if price already sits past the target band ---
+    if direction == "long":
+        past2 = entry_price >= band2_e
+        past3 = entry_price >= band3_e
+    else:
+        past2 = entry_price <= band2_e
+        past3 = entry_price <= band3_e
+
+    eff_std  = params["vwap_std"]
+    fallback = False
+    if eff_std == 2:
+        if past3:
+            fallback = True       # past 3σ too => plain 1:1
+        elif past2:
+            eff_std = 3           # past 2σ only => bump target to 3σ
+    else:  # eff_std == 3
+        if past3:
+            fallback = True
+
+    escalated = fallback or (eff_std != params["vwap_std"])
+
+    # --- TP + execution ---
+    if fallback:
+        tp = entry_price + risk if direction == "long" else entry_price - risk
+        trade   = _run_trade(post_entry, entry_ts, entry_price, direction, sl, tp, params)
+        tp_type = "1:1"
+    else:
+        col_eff = col3 if eff_std == 3 else col2
+        tp_type = f"tp_vwap_{eff_std}"
+
+        if params["vwap_tp_mode"] == "trailing":
+            trade = _run_trade_trailing(post_entry, entry_ts, entry_price, direction,
+                                        sl, vwap_bands[col_eff], params)
+        else:  # "now": freeze the band value at entry
+            tp    = float(vwap_bands[col_eff].get(entry_ts, float("nan")))
+            trade = _run_trade(post_entry, entry_ts, entry_price, direction, sl, tp, params)
+
+    if trade is None:
+        return None
+
+    trade["risk_notes"] = {
+        "tp_type":   tp_type,
+        "escalated": bool(escalated),
+    }
+
+    return trade
+
+
+'''
+- if the poc is to close to vah/val then set the sl somewhere else
+- if we are at the other side of vwap maybe target the 2nd std 2025-04-29
+'''

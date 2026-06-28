@@ -8,10 +8,10 @@ The backtester loads this package via __init__.py and expects:
 Internal layout:
   params.py      PARAMS, PARAM_SECTIONS, OUTPUT_COLUMNS
   profile.py     compute_ivb_profile
-  baselines.py   rolling / passive / two-bar baselines + tick volume merge
+  baselines.py   rolling / passive / cvd-change day-level baselines
   absorption.py  shared absorption grading + trigger extraction
-  entries/       one module per entry type, registered in FINDER_REGISTRY
-  risk/          compute_sl_tp, run_trade (+ trailing placeholder)
+  entries/       one module per entry type (7), registered in FINDER_REGISTRY
+  risk/          self-contained risk scripts in RISK_REGISTRY (selected by risk_script)
   core.py        breakout/retest detection, entry dispatcher, process_day
 """
 
