@@ -95,3 +95,9 @@ def run(post_retest, post_entry, entry_ts, entry_price, direction, levels, param
     }
 
     return trade
+
+
+'''
+- if the poc is to close to vah/val then set the sl somewhere else
+- if we are at the other side of vwap maybe target the 2nd std 2025-04-29
+'''
