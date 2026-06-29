@@ -83,10 +83,10 @@ ASSET_INFO = {
     "NQ":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 5.00,    "commissions_per_contract": 2.88},
     "RTY": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 5.00,    "commissions_per_contract": 2.88},
     "YM":  {"tick_size": 1.00, "ticks_per_point": 1,   "dollars_per_tick": 5.00,    "commissions_per_contract": 2.88},
-    "MES": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 1.25,    "commissions_per_contract": 0.95},
-    "MNQ": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95},
-    "M2K": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95},
-    "MYM": {"tick_size": 1.00, "ticks_per_point": 1,   "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95},
+    "MES": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 1.25,    "commissions_per_contract": 0.95, "parent": "ES"},
+    "MNQ": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95, "parent": "NQ"},
+    "M2K": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95, "parent": "RTY"},
+    "MYM": {"tick_size": 1.00, "ticks_per_point": 1,   "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95, "parent": "YM"},
 
     # Rates
     "ZN":  {"tick_size": 0.015625, "ticks_per_point": 64,  "dollars_per_tick": 15.625,   "commissions_per_contract": 2.30},  # 1/64
@@ -104,7 +104,7 @@ ASSET_INFO = {
 
     # Metals
     "GC":  {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 10.00,   "commissions_per_contract": 3.10},
-    "MGC": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 1.00,    "commissions_per_contract": 1.20},
+    "MGC": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 1.00,    "commissions_per_contract": 1.20, "parent": "GC"},
     "SI":  {"tick_size": 0.005,"ticks_per_point": 200, "dollars_per_tick": 25.00,   "commissions_per_contract": 3.10},
     "HG":  {"tick_size": 0.0005,"ticks_per_point": 2000,"dollars_per_tick": 12.50,  "commissions_per_contract": 3.10},
 
@@ -138,6 +138,32 @@ def get_dollars_per_tick(trades_filename: str) -> float:
     if asset not in ASSET_INFO:
         raise ValueError(f"Unknown asset '{asset}' derived from filename '{trades_filename}'. Add it to ASSET_INFO.")
     return ASSET_INFO[asset]["dollars_per_tick"]
+
+
+def _micro_child(asset: str) -> str | None:
+    """Return the micro ticker whose `parent` is `asset`, or None. An asset is
+    'microable' iff such a child exists — that's the only decomposition flag."""
+    for ticker, info in ASSET_INFO.items():
+        if info.get("parent") == asset:
+            return ticker
+    return None
+
+
+def get_commission_info(trades_filename: str) -> tuple[float | None, float | None]:
+    """
+    (full_commission, micro_commission) for the file's asset, mirroring
+    get_dollars_per_tick. `full` is None if the asset has no
+    commissions_per_contract key (graceful degradation → caller bills 0 +
+    warns). `micro` is the child's commission when a micro child exists, else
+    None (non-microable).
+    """
+    asset = trades_filename.split("_")[0]
+    info  = ASSET_INFO.get(asset, {})
+    full  = info.get("commissions_per_contract")
+
+    child = _micro_child(asset)
+    micro = ASSET_INFO[child].get("commissions_per_contract") if child else None
+    return full, micro
 
 # ===========================================================================
 # Filesystem discovery
@@ -259,35 +285,16 @@ def run_instance(trades_file: str, sizer_name: str, params: dict) -> pd.DataFram
 # sizer (trade_pnl, equity). Do NOT use the `ticks` column here — that's the
 # raw backtester output before sizing.
 
-def _empty_metrics_row(label: str, skipped: int = 0) -> dict:
-    """Default metrics row when a run has no trades — keeps the table shape stable."""
-    return {
-        "Label": label,
-        "Total ($)": 0.0,
-        "Final Equity ($)": 0.0,
-        "Max Drawdown ($)": 0.0,
-        "Max Drawdown (%)": 0.0,
-        "Max Peak ($)": 0.0,
-        "Sharpe": 0.0,
-        "Sharpe (trade)": 0.0,
-        "Calmar": 0.0,
-        "Win Rate": 0.0,
-        "Profit Factor": 0.0,
-        "Total Trades": 0,
-        "Skipped Trades": skipped,
-    }
-
-
 def _taken_subset(trades: pd.DataFrame) -> pd.DataFrame:
     """
-    The "taken" trades — rows the sizer actually allocated to (size > 0).
+    The "taken" trades — rows the sizer actually allocated to (contracts > 0).
 
-    Skipped trades are size-0 rows the sizer leaves in the frame; counting them
-    as non-wins distorts win rate. Fallback: if there's no `size` column, treat
-    every row as taken.
+    Skipped trades are contracts-0 rows the sizer leaves in the frame; counting
+    them as non-wins distorts win rate. Fallback: if there's no `contracts`
+    column, treat every row as taken.
     """
-    if "size" in trades.columns:
-        return trades[trades["size"] > 0]
+    if "contracts" in trades.columns:
+        return trades[trades["contracts"] > 0]
     return trades
 
 
@@ -394,134 +401,220 @@ def _win_rate_and_profit_factor(pnl: pd.Series) -> tuple[float, float]:
     return win_rate, profit_factor
 
 
-def compute_analytics_metrics(trades: pd.DataFrame, label: str) -> dict:
+# ===========================================================================
+# Cost model — commission + slippage, deducted in dollar space AFTER the sizer
+# ===========================================================================
+# Costs are post-hoc dollar deductions on the sizer's gross `trade_pnl`. They
+# never run inside a sizer. The `contracts` column (1.3 = 1 full + 3 micro)
+# drives both: commission decomposes full vs micro (commission is per-contract,
+# not proportional); slippage is proportional so it scales with `contracts`
+# directly. Slippage is classified on the GROSS sign, before any deduction.
+
+def compute_cost_series(trades: pd.DataFrame, filename: str, n: int,
+                        label: str = "") -> dict:
     """
-    Compute the full metrics row for a single sized run.
-
-    Every value in this dict becomes a column in the comparison table, so
-    adding new metrics is just a matter of extending this function and the
-    empty-row template above.
+    Return {"commission": Series, "slippage": Series, "warnings": [str]} aligned
+    to `trades.index`. Skipped trades (contracts == 0) cost 0 automatically.
     """
-    skipped = int(trades.attrs.get("skipped_trades", 0))
+    warnings: list[str] = []
+    zero = pd.Series(0.0, index=trades.index)
 
-    # Guard clause — if the sizer produced no usable output, return the
-    # empty-row template so the comparison table still has a row for this
-    # instance instead of silently dropping it.
-    if trades.empty or "trade_pnl" not in trades.columns or "equity" not in trades.columns:
-        return _empty_metrics_row(label, skipped)
+    if trades.empty or "contracts" not in trades.columns or "trade_pnl" not in trades.columns:
+        return {"commission": zero, "slippage": zero.copy(), "warnings": warnings}
 
-    pnl = trades["trade_pnl"]
-    equity = trades["equity"]
+    asset = filename.split("_")[0]
+    tag   = f"{label} ({asset})" if label else asset
 
-    # Win rate / profit factor / trade count exclude skipped (size-0) trades so
-    # the table agrees with the per-instance block (Part D-bis).
-    taken = _taken_subset(trades)
-    max_dd_dollars, max_dd_pct = _max_drawdown(equity)
-    win_rate, profit_factor = _win_rate_and_profit_factor(taken["trade_pnl"])
-    sharpe = _annualized_sharpe(trades)
+    try:
+        dpt = get_dollars_per_tick(filename)
+    except ValueError as e:
+        warnings.append(str(e))
+        return {"commission": zero, "slippage": zero.copy(), "warnings": warnings}
+
+    contracts = trades["contracts"].astype(float)
+    gross     = trades["trade_pnl"]
+    full_comm, micro_comm = get_commission_info(filename)
+
+    # ── Commission (full/micro decomposition; ×2 = entry + exit) ──────────────
+    if full_comm is None:
+        commission = zero.copy()
+        warnings.append(f"{tag}: no commissions_per_contract — commission billed as $0.")
+    else:
+        full_count = np.floor(contracts)
+        if micro_comm is not None:
+            micro_count = np.round((contracts - full_count) * 10)   # round(), never int() — float dust
+            commission  = (full_count * full_comm + micro_count * micro_comm) * 2
+        else:
+            if ((contracts - full_count).abs() > 1e-9).any():
+                warnings.append(f"{tag}: fractional contracts on a non-microable asset — likely a sizer bug; using round().")
+            commission = np.round(contracts) * full_comm * 2
+        commission = pd.Series(np.asarray(commission, dtype=float), index=trades.index)
+
+    # ── Slippage (proportional; classified on GROSS sign) ─────────────────────
+    slip_ticks = pd.Series(
+        np.where(gross > 0, n, np.where(gross < 0, 2 * n, n)),
+        index=trades.index,
+    ).astype(float)
+    slippage = pd.Series(np.asarray(slip_ticks * dpt * contracts, dtype=float), index=trades.index)
+
+    return {"commission": commission, "slippage": slippage, "warnings": warnings}
+
+
+def enrich_run(run: dict, account_size: float, n: int) -> dict:
+    """
+    Augment a run with cost artifacts. Adds:
+      - curves: ordered {label: (pnl_series, equity_series)} for the four curves
+      - net_trades: copy of the sized frame with trade_pnl/equity set to NET
+      - gross_total, cost_drag (= gross_total − net_total), warnings
+    Computed at render time so the slippage slider / account size update the
+    curves without re-running the sizer.
+    """
+    trades = run["trades"]
+    costs  = compute_cost_series(trades, run["trades_file"], n, run["label"])
+
+    has_pnl = (not trades.empty) and ("trade_pnl" in trades.columns)
+    gross   = trades["trade_pnl"] if has_pnl else pd.Series(dtype=float)
+    comm, slip = costs["commission"], costs["slippage"]
+
+    pnl_net = gross - comm - slip
+
+    def _equity(series: pd.Series) -> pd.Series:
+        return account_size + series.cumsum()
+
+    curves = {
+        "Gross":         (gross,         _equity(gross)),
+        "+ Commissions": (gross - comm,  _equity(gross - comm)),
+        "+ Slippage":    (gross - slip,  _equity(gross - slip)),
+        "+ Both (net)":  (pnl_net,       _equity(pnl_net)),
+    }
+
+    net_trades = trades.copy()
+    if has_pnl:
+        net_trades["trade_pnl"] = pnl_net
+        net_trades["equity"]    = _equity(pnl_net)
+
+    gross_total = float(gross.sum())   if len(gross)   else 0.0
+    net_total   = float(pnl_net.sum()) if len(pnl_net) else 0.0
 
     return {
-        "Label": label,
-        "Total ($)": round(float(pnl.sum()), 2),
-        "Final Equity ($)": round(float(equity.iloc[-1]), 2),
-        "Max Drawdown ($)": round(max_dd_dollars, 2),
-        "Max Drawdown (%)": round(max_dd_pct, 2),
-        "Max Peak ($)": round(float(equity.cummax().max()), 2),
-        "Sharpe": round(sharpe, 2),
-        "Sharpe (trade)": round(_sharpe_trade(trades), 2),
-        "Calmar": (
-            round(_calmar(float(pnl.sum()), max_dd_dollars), 2)
-            if np.isfinite(_calmar(float(pnl.sum()), max_dd_dollars)) else float("inf")
-        ),
-        "Win Rate": round(win_rate, 4),
-        "Profit Factor": (
-            round(profit_factor, 2) if np.isfinite(profit_factor) else float("inf")
-        ),
-        "Total Trades": int(len(taken)),
-        "Skipped Trades": skipped,
+        **run,
+        "net_trades":  net_trades,
+        "curves":      curves,
+        "gross_total": gross_total,
+        "cost_drag":   gross_total - net_total,
+        "warnings":    costs["warnings"],
     }
 
 
-def compute_instance_block(trades: pd.DataFrame) -> dict:
-    """
-    Full dollar-space metrics for one sized run, rendered below its equity
-    curve (Part D). Operates on the sizer's `trade_pnl` / `equity` columns —
-    never `ticks`. Every value is empty/None-safe.
-    """
-    skipped = int(trades.attrs.get("skipped_trades", 0))
+# ── Metric registry — single source of truth for selector, blocks, table ──────
+# Each entry: (key, label, formatter). The formatter turns a raw value into the
+# string shown in per-instance st.metric tiles; the comparison table stores the
+# rounded raw value (so it stays sortable). Add a metric here and it appears in
+# the multiselect, the per-instance grid, and the table automatically.
 
-    empty = {
-        "final_equity": 0.0, "avg_trade": 0.0, "avg_win": 0.0, "avg_loss": 0.0,
-        "largest_win": 0.0, "largest_loss": 0.0,
-        "sharpe_daily": 0.0, "sharpe_trade": 0.0, "profit_factor": 0.0, "calmar": 0.0,
-        "max_dd_dollars": 0.0, "max_dd_pct": 0.0, "max_peak": 0.0,
-        "total_trades": 0, "win_rate": 0.0, "skipped": skipped,
-    }
-    if trades.empty or "trade_pnl" not in trades.columns or "equity" not in trades.columns:
-        return empty
+def _fmt_money(x):  return f"${x:,.2f}"
+def _fmt_ratio(x):  return "∞" if x == float("inf") else f"{x:.2f}"
+def _fmt_pct(x):    return f"{x:.1%}"          # win rate is a 0–1 fraction
+def _fmt_pct_pts(x):return f"{x:.2f}%"         # max-dd % is already in percent
+def _fmt_int(x):    return f"{int(x)}"
 
-    pnl    = trades["trade_pnl"]
-    equity = trades["equity"]
-    taken  = _taken_subset(trades)
+METRIC_REGISTRY = [
+    ("final_equity",  "Final Equity ($)", _fmt_money),
+    ("total",         "Total ($)",        _fmt_money),
+    ("avg_trade",     "Avg Trade ($)",    _fmt_money),
+    ("avg_win",       "Avg Win ($)",      _fmt_money),
+    ("avg_loss",      "Avg Loss ($)",     _fmt_money),
+    ("largest_win",   "Largest Win ($)",  _fmt_money),
+    ("largest_loss",  "Largest Loss ($)", _fmt_money),
+    ("sharpe_daily",  "Sharpe (daily)",   _fmt_ratio),
+    ("sharpe_trade",  "Sharpe (trade)",   _fmt_ratio),
+    ("profit_factor", "Profit Factor",    _fmt_ratio),
+    ("calmar",        "Calmar",           _fmt_ratio),
+    ("max_dd_dollars","Max Drawdown ($)", _fmt_money),
+    ("max_dd_pct",    "Max Drawdown (%)", _fmt_pct_pts),
+    ("max_peak",      "Max Peak ($)",     _fmt_money),
+    ("total_trades",  "Total Trades",     _fmt_int),
+    ("win_rate",      "Win Rate",         _fmt_pct),
+    ("skipped",       "Skipped Trades",   _fmt_int),
+    ("cost_drag",     "Cost Drag ($)",    _fmt_money),
+]
+
+# Convenience lookups.
+_KEY_TO_LABEL     = {key: label for key, label, _f in METRIC_REGISTRY}
+_KEY_TO_FORMATTER = {key: fmt for key, _label, fmt in METRIC_REGISTRY}
+
+# The four equity curves the statistics can be computed on. The user picks one;
+# the chart always shows all four. DEFAULT_CURVE = net (the cost-adjusted truth).
+CURVE_LABELS  = ["Gross", "+ Commissions", "+ Slippage", "+ Both (net)"]
+DEFAULT_CURVE = "+ Both (net)"
+
+
+def _empty_metric_values(skipped: int = 0) -> dict:
+    """Zero-filled values for every registry key — empty/all-skipped instances."""
+    vals = {key: 0.0 for key, _l, _f in METRIC_REGISTRY}
+    vals["total_trades"] = 0
+    vals["skipped"]      = skipped
+    return vals
+
+
+def compute_metric_values(view: pd.DataFrame, gross_total: float) -> dict:
+    """
+    Raw value for every registry key, computed on a single curve's view frame
+    (`trade_pnl`/`equity` set to the chosen curve — gross / +comm / +slip / net).
+    `cost_drag = gross_total − curve_total` (0 for the gross curve, full Σcosts
+    for net). Taken set (contracts > 0) drives total_trades / win_rate /
+    profit_factor. Empty/zero-safe.
+    """
+    skipped = int(view.attrs.get("skipped_trades", 0))
+
+    if view.empty or "trade_pnl" not in view.columns or "equity" not in view.columns:
+        vals = _empty_metric_values(skipped)
+        vals["cost_drag"] = round(float(gross_total), 2)   # no curve total → full drag
+        return vals
+
+    pnl    = view["trade_pnl"]
+    equity = view["equity"]
+    taken  = _taken_subset(view)
 
     wins   = pnl[pnl > 0]
     losses = pnl[pnl < 0]
 
     max_dd_dollars, max_dd_pct = _max_drawdown(equity)
     win_rate, profit_factor    = _win_rate_and_profit_factor(taken["trade_pnl"])
+    curve_total = float(pnl.sum())
 
     return {
-        "final_equity":  float(equity.iloc[-1]),
-        "avg_trade":     float(pnl.mean()),
-        "avg_win":       float(wins.mean())   if len(wins)   > 0 else 0.0,
-        "avg_loss":      float(losses.mean()) if len(losses) > 0 else 0.0,
-        "largest_win":   float(pnl.max()),
-        "largest_loss":  float(pnl.min()),
-        "sharpe_daily":  _annualized_sharpe(trades),
-        "sharpe_trade":  _sharpe_trade(trades),
-        "profit_factor": profit_factor,
-        "calmar":        _calmar(float(pnl.sum()), max_dd_dollars),
-        "max_dd_dollars": max_dd_dollars,
-        "max_dd_pct":    max_dd_pct,
-        "max_peak":      float(equity.cummax().max()),
-        "total_trades":  int(len(taken)),
-        "win_rate":      win_rate,
-        "skipped":       skipped,
+        "final_equity":   round(float(equity.iloc[-1]), 2),
+        "total":          round(curve_total, 2),
+        "avg_trade":      round(float(pnl.mean()), 2),
+        "avg_win":        round(float(wins.mean()), 2)   if len(wins)   else 0.0,
+        "avg_loss":       round(float(losses.mean()), 2) if len(losses) else 0.0,
+        "largest_win":    round(float(pnl.max()), 2),
+        "largest_loss":   round(float(pnl.min()), 2),
+        "sharpe_daily":   round(_annualized_sharpe(view), 2),
+        "sharpe_trade":   round(_sharpe_trade(view), 2),
+        "profit_factor":  (round(profit_factor, 2) if np.isfinite(profit_factor) else float("inf")),
+        "calmar":         (round(_calmar(curve_total, max_dd_dollars), 2)
+                           if np.isfinite(_calmar(curve_total, max_dd_dollars)) else float("inf")),
+        "max_dd_dollars": round(max_dd_dollars, 2),
+        "max_dd_pct":     round(max_dd_pct, 2),
+        "max_peak":       round(float(equity.cummax().max()), 2),
+        "total_trades":   int(len(taken)),
+        "win_rate":       round(win_rate, 4),
+        "skipped":        skipped,
+        "cost_drag":      round(float(gross_total) - curve_total, 2),
     }
 
 
-def render_instance_metrics_block(trades: pd.DataFrame) -> None:
-    """Render the Part D four-row metrics block for one instance."""
-    b = compute_instance_block(trades)
-
-    def _money(x):  return f"${x:,.2f}"
-    pf  = "∞" if b["profit_factor"] == float("inf") else f"{b['profit_factor']:.2f}"
-    cal = "∞" if b["calmar"]        == float("inf") else f"{b['calmar']:.2f}"
-
-    st.metric("Final Equity ($)", _money(b["final_equity"]))
-
-    r1 = st.columns(5)
-    r1[0].metric("Avg Trade ($)",   _money(b["avg_trade"]))
-    r1[1].metric("Avg Win ($)",     _money(b["avg_win"]))
-    r1[2].metric("Avg Loss ($)",    _money(b["avg_loss"]))
-    r1[3].metric("Largest Win ($)", _money(b["largest_win"]))
-    r1[4].metric("Largest Loss ($)", _money(b["largest_loss"]))
-
-    r2 = st.columns(4)
-    r2[0].metric("Sharpe (daily)", f"{b['sharpe_daily']:.2f}")
-    r2[1].metric("Sharpe (trade)", f"{b['sharpe_trade']:.2f}")
-    r2[2].metric("Profit Factor",  pf)
-    r2[3].metric("Calmar",         cal)
-
-    r3 = st.columns(3)
-    r3[0].metric("Max Drawdown ($)", _money(b["max_dd_dollars"]))
-    r3[1].metric("Max Drawdown (%)", f"{b['max_dd_pct']:.2f}%")
-    r3[2].metric("Max Peak ($)",     _money(b["max_peak"]))
-
-    r4 = st.columns(3)
-    r4[0].metric("Total Trades",   b["total_trades"])
-    r4[1].metric("Win Rate",       f"{b['win_rate']:.1%}")
-    r4[2].metric("Skipped Trades", b["skipped"])
+def render_instance_metrics_block(values: dict, cols_per_row: int = 5) -> None:
+    """Grid of ALL registry metrics (registry order), chunked into rows of
+    `cols_per_row`. Values come from whichever curve the user selected."""
+    keys = [k for k, _l, _f in METRIC_REGISTRY]
+    for i in range(0, len(keys), cols_per_row):
+        chunk = keys[i:i + cols_per_row]
+        cols  = st.columns(cols_per_row)
+        for col, key in zip(cols, chunk):
+            col.metric(_KEY_TO_LABEL[key], _KEY_TO_FORMATTER[key](values[key]))
 
 
 # ===========================================================================
@@ -570,21 +663,45 @@ def _apply_equity_layout(fig: go.Figure, account_size: float, show_legend: bool)
     fig.update_layout(**layout)
 
 
-def equity_curve_figure(trades: pd.DataFrame, label: str, account_size: float) -> go.Figure:
-    """Single-run equity curve."""
+# Distinct styling so the gross-vs-net cost drag reads at a glance.
+_CURVE_STYLE = {
+    "Gross":         dict(width=2,   color="#1f77b4"),
+    "+ Commissions": dict(width=1.5, color="#ff7f0e", dash="dot"),
+    "+ Slippage":    dict(width=1.5, color="#9467bd", dash="dash"),
+    "+ Both (net)":  dict(width=2.5, color="#2ca02c"),
+}
+
+
+def instance_cost_figure(run: dict, account_size: float) -> go.Figure:
+    """Four labelled equity curves (gross / +comm / +slip / net) for one run."""
+    trades        = run["trades"]
+    x             = trades["entry_time"] if "entry_time" in trades.columns else trades.index
+    has_contracts = "contracts" in trades.columns
+
     fig = go.Figure()
-    fig.add_trace(_equity_trace(trades, label))
-    _apply_equity_layout(fig, account_size, show_legend=False)
+    for label, (_pnl, equity) in run["curves"].items():
+        hover      = f"{label}<br>%{{x}}<br>Equity: $%{{y:,.2f}}"
+        customdata = None
+        if has_contracts and label == "Gross":   # contracts identical across curves; show once
+            hover     += "<br>Contracts: %{customdata[0]:.1f}"
+            customdata = trades[["contracts"]]
+        fig.add_trace(go.Scatter(
+            x=x, y=equity, mode="lines", name=label,
+            line=_CURVE_STYLE.get(label, dict(width=2)),
+            customdata=customdata,
+            hovertemplate=hover + "<extra></extra>",
+        ))
+    _apply_equity_layout(fig, account_size, show_legend=True)
     return fig
 
 
-def combined_equity_figure(runs: list[dict], account_size: float) -> go.Figure:
-    """All non-empty runs overlaid on one chart, one trace per run."""
+def combined_equity_figure(enriched_runs: list[dict], account_size: float) -> go.Figure:
+    """All non-empty runs overlaid on one chart, one NET trace per run."""
     fig = go.Figure()
-    for run in runs:
-        if run["trades"].empty:
+    for run in enriched_runs:
+        if run["net_trades"].empty:
             continue
-        fig.add_trace(_equity_trace(run["trades"], run["label"]))
+        fig.add_trace(_equity_trace(run["net_trades"], run["label"]))
     _apply_equity_layout(fig, account_size, show_legend=True)
     return fig
 
@@ -593,9 +710,9 @@ def combined_equity_figure(runs: list[dict], account_size: float) -> go.Figure:
 # UI — Section 1: Shared defaults
 # ===========================================================================
 
-def render_shared_defaults(trades_files: list[str]) -> tuple[str, float]:
+def render_shared_defaults(trades_files: list[str]) -> tuple[str, float, int]:
     st.subheader("Shared defaults")
-    col_file, col_account = st.columns(2)
+    col_file, col_account, col_slip = st.columns(3)
 
     with col_file:
         default_trades_file = st.selectbox(
@@ -611,8 +728,16 @@ def render_shared_defaults(trades_files: list[str]) -> tuple[str, float]:
             format="%.2f",
             key="shared_account_size",
         )
+    with col_slip:
+        slippage_n = st.slider(
+            "Slippage (ticks/side)",
+            min_value=1, max_value=5, value=1, step=1,
+            key="shared_slippage_n",
+            help="Entry-side ticks slipped per trade; market exits (losers) slip 2×. "
+                 "Drives every instance.",
+        )
 
-    return default_trades_file, account_size
+    return default_trades_file, account_size, int(slippage_n)
 
 
 # ===========================================================================
@@ -904,50 +1029,91 @@ def _render_filter_caption(trades_file: str) -> None:
     )
 
 
-def render_individual_equity_curves(runs: list[dict], account_size: float) -> None:
-    """One subheader + one equity chart + metrics block per run."""
+_SLIPPAGE_CAPTION = (
+    "Slippage is a first-order post-hoc deduction on the recorded trades: it "
+    "cannot model that a worse entry might have prevented a TP from filling at "
+    "all. Read it as a cost overlay / lower bound on damage, not a "
+    "re-simulation — true path-dependent slippage lives in the backtester."
+)
+
+
+def _curve_frame(run: dict, curve_label: str) -> pd.DataFrame:
+    """View frame for one curve: a copy of the sized trades with trade_pnl /
+    equity replaced by the selected curve's series. Stats are computed on this."""
+    trades = run["trades"]
+    frame  = trades.copy()
+    if not trades.empty and "trade_pnl" in trades.columns:
+        pnl, equity = run["curves"][curve_label]
+        frame["trade_pnl"] = pnl
+        frame["equity"]    = equity
+    return frame
+
+
+def render_individual_equity_curves(enriched_runs: list[dict], account_size: float,
+                                    stats_curve: str) -> None:
+    """Per instance: caption, four-curve chart, slippage note, metrics block
+    computed on the user-selected `stats_curve`."""
     st.subheader("Individual equity curves")
-    for run in runs:
+    for run in enriched_runs:
         st.subheader(run["label"])
         _render_filter_caption(run["trades_file"])
-        trades = run["trades"]
-        if trades.empty:
+        values = compute_metric_values(_curve_frame(run, stats_curve), run["gross_total"])
+        if run["trades"].empty:
             st.info("No trades to display for this instance.")
+            render_instance_metrics_block(values)   # safe zeros, keeps shape
+            st.write("")
             continue
-        st.plotly_chart(
-            equity_curve_figure(trades, run["label"], account_size),
-            width='stretch',
-        )
-        render_instance_metrics_block(trades)
+        st.plotly_chart(instance_cost_figure(run, account_size), width='stretch')
+        st.caption(_SLIPPAGE_CAPTION)
+        st.caption(f"Statistics below are computed on the **{stats_curve}** curve.")
+        render_instance_metrics_block(values)
         st.write("")
 
 
-def render_combined_equity_curve(runs: list[dict], account_size: float) -> None:
-    """All non-empty runs overlaid on one chart."""
-    st.subheader("Combined equity curve")
-    non_empty = [r for r in runs if not r["trades"].empty]
+def render_combined_equity_curve(enriched_runs: list[dict], account_size: float,
+                                 stats_curve: str) -> None:
+    """All non-empty runs overlaid on one chart (selected curve, one trace per run)."""
+    st.subheader(f"Combined equity curve ({stats_curve})")
+    non_empty = [r for r in enriched_runs if not r["trades"].empty]
     if not non_empty:
         st.info("No non-empty runs to combine.")
         return
+    views = [{"label": r["label"], "net_trades": _curve_frame(r, stats_curve)}
+             for r in non_empty]
     st.plotly_chart(
-        combined_equity_figure(non_empty, account_size),
+        combined_equity_figure(views, account_size),
         width='stretch',
     )
 
 
-def render_metrics_table(runs: list[dict]) -> None:
-    """One-row-per-run comparison table."""
+def render_metrics_table(enriched_runs: list[dict], stats_curve: str) -> None:
+    """One-row-per-run comparison table, all registry metrics on the selected curve."""
     st.subheader("Metrics comparison")
-    rows = [compute_analytics_metrics(r["trades"], r["label"]) for r in runs]
+    st.caption(f"Computed on the **{stats_curve}** curve.")
+    rows = []
+    for run in enriched_runs:
+        vals = compute_metric_values(_curve_frame(run, stats_curve), run["gross_total"])
+        row  = {"Label": run["label"]}
+        for key, label, _f in METRIC_REGISTRY:
+            row[label] = vals[key]
+        rows.append(row)
     st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
 
-def render_results(runs: list[dict], account_size: float) -> None:
-    """Render all three results sections, in order."""
-    render_individual_equity_curves(runs, account_size)
-    render_combined_equity_curve(runs, account_size)
+def render_results(runs: list[dict], account_size: float, slippage_n: int,
+                   stats_curve: str) -> None:
+    """Enrich runs with costs once, then render all sections."""
+    enriched = [enrich_run(r, account_size, slippage_n) for r in runs]
+
+    # Surface any cost-model warnings (missing commission, fractional non-micro).
+    for run in enriched:
+        for w in run["warnings"]:
+            st.warning(w)
+
+    render_individual_equity_curves(enriched, account_size, stats_curve)
+    render_combined_equity_curve(enriched, account_size, stats_curve)
     st.write("")
-    render_metrics_table(runs)
+    render_metrics_table(enriched, stats_curve)
 
 
 # ===========================================================================
@@ -979,6 +1145,20 @@ def _validate_environment(trades_files: list[str], sizers: list[str]) -> bool:
     return True
 
 
+def render_curve_selector() -> str:
+    """Global selector for WHICH equity curve the statistics are computed on.
+    The chart always shows all four; this only drives the metrics block + table."""
+    return st.radio(
+        "Statistics based on",
+        options=CURVE_LABELS,
+        index=CURVE_LABELS.index(DEFAULT_CURVE),
+        horizontal=True,
+        key="shared_stats_curve",
+        help="Pick which curve the metrics below are calculated on — raw (gross) "
+             "or after commissions, slippage, or both.",
+    )
+
+
 def render() -> None:
     _render_header()
 
@@ -987,7 +1167,8 @@ def render() -> None:
     if not _validate_environment(trades_files, sizers):
         return
 
-    default_trades_file, account_size = render_shared_defaults(trades_files)
+    default_trades_file, account_size, slippage_n = render_shared_defaults(trades_files)
+    stats_curve = render_curve_selector()
     st.write("")
 
     instance_configs = render_instance_builder(
@@ -1003,7 +1184,7 @@ def render() -> None:
 
     runs = st.session_state.get("analytics_runs")
     if runs:
-        render_results(runs, account_size)
+        render_results(runs, account_size, slippage_n, stats_curve)
 
 
 # Allow `streamlit run views/analytics.py` for quick isolated testing.
