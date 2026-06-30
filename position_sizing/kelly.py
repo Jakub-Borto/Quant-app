@@ -4,7 +4,7 @@ import pandas as pd
 
 PARAMS = {
     "fraction": 0.25,
-    "contract_increment": 1.0,  # 1.0 = whole contracts; set 0.1 for mini contracts
+    "contract_increment": 0.1,  # 1.0 = whole contracts; set 0.1 for mini contracts
     "account_size": 100000.0,
     "dollars_per_tick": 12.50,
 }
