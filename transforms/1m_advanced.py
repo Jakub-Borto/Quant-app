@@ -374,40 +374,81 @@ def run_all(
 
     total = len(files) - 1
 
-    prev_df = _load_and_clean(files[0])
+    # Deferred load + forward cache: on a skip we do NOTHING (no load, no decode).
+    # The date is read straight from the current file's name and checked against
+    # the output parquet before anything else. prev_df is loaded on demand only
+    # when a day actually needs processing, and cached forward so a run of
+    # consecutive new days loads each file once.
+    prev_df   = None
+    prev_file = None   # which Path prev_df currently holds
 
     for i in range(total):
         current_file = files[i + 1]
+        # Filename stem like "glbx-mdp3-20260517.tbbo.dbn" -> ISO date "2026-05-17".
+        ymd      = current_file.stem.split(".")[0].split("-")[-1]
+        date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
+        out_file = output_path / f"{date_str}.parquet"
 
         def on_log(msg: str, _i=i):
             if on_progress:
                 on_progress(_i + 1, total, msg)
 
+        # 0) WEEKEND — a Sat/Sun curr file never has an RTH session, so it never
+        # produces an output parquet. There is nothing to skip-against on disk, so
+        # without this it would reload (+ its prev) every run. It is still used as
+        # the next trading day's prev (loaded on demand below). Always skip it.
+        if pd.Timestamp(date_str).weekday() >= 5:
+            on_log(f"↷ Skipping {date_str} — weekend (no session)")
+            continue
+
+        # 1) SKIP FIRST — zero work; drop any cached prev so we don't hold memory.
+        if skip_existing and out_file.exists():
+            on_log(f"↷ Skipping {date_str} — already processed")
+            if prev_df is not None:
+                del prev_df
+                gc.collect()
+                prev_df, prev_file = None, None
+            continue
+
+        # 2) Need to process — ensure prev_df holds files[i] (load on demand, reuse cache).
+        if prev_file != files[i]:
+            if prev_df is not None:
+                del prev_df
+                gc.collect()
+            prev_df   = _load_and_clean(files[i])
+            prev_file = files[i]
+
         curr_df = _load_and_clean(current_file)
 
         try:
+            # run_all is now the authoritative skip gate (out_file does not exist
+            # here), so build_candles runs with skip_existing=False.
             build_candles(
                 previous_df        = prev_df,
                 current_df         = curr_df,
                 output_folder_path = output_path,
-                skip_existing      = skip_existing,
+                skip_existing      = False,
                 on_log             = on_log,
             )
         except Exception as e:
             if on_progress:
                 on_progress(i + 1, total, f"ERROR {current_file.name}: {e}")
-            prev_df = curr_df
+            del prev_df
+            gc.collect()
+            prev_df, prev_file = curr_df, current_file
             continue
 
         if on_progress:
             on_progress(i + 1, total, "")
 
+        # 3) Cache curr forward as next prev.
         del prev_df
         gc.collect()
-        prev_df = curr_df
+        prev_df, prev_file = curr_df, current_file
 
-    del prev_df
-    gc.collect()
+    if prev_df is not None:
+        del prev_df
+        gc.collect()
 
 
 '''

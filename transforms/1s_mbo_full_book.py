@@ -64,8 +64,13 @@ def run_all(
         on_progress(1, 1, "ERROR: Need at least 2 files to build a session.")
         return
 
-    total   = len(files) - 1
-    prev_df = _load_and_clean(files[0])
+    total = len(files) - 1
+
+    # Deferred load + forward cache: on a skip we do NOTHING (no load, no decode).
+    # prev_df is loaded on demand only when a day actually needs processing, and
+    # cached forward so a run of consecutive new days loads each file once.
+    prev_df   = None
+    prev_file = None   # which Path prev_df currently holds
 
     for i in range(total):
         curr_file = files[i + 1]
@@ -77,12 +82,30 @@ def run_all(
         def log(msg: str, _i=i):
             on_progress(_i + 1, total, msg)
 
+        # 0) WEEKEND — a Sat/Sun curr file never holds its own session, so it never
+        # produces an output parquet. There is nothing to skip-against on disk, so
+        # without this it would reload (+ its prev) every run. It is still used as
+        # the next trading day's prev (loaded on demand below). Always skip it.
+        if pd.Timestamp(date_str).weekday() >= 5:
+            log(f"[SKIP] {date_str} (weekend)")
+            continue
+
+        # 1) SKIP FIRST — zero work; drop any cached prev so we don't hold memory.
         if skip_existing and out_file.exists():
             log(f"[SKIP] {date_str}")
-            del prev_df
-            gc.collect()
-            prev_df = _load_and_clean(curr_file)
+            if prev_df is not None:
+                del prev_df
+                gc.collect()
+                prev_df, prev_file = None, None
             continue
+
+        # 2) Need to process — ensure prev_df holds files[i] (load on demand, reuse cache).
+        if prev_file != files[i]:
+            if prev_df is not None:
+                del prev_df
+                gc.collect()
+            prev_df   = _load_and_clean(files[i])
+            prev_file = files[i]
 
         curr_df = _load_and_clean(curr_file)
 
@@ -98,15 +121,17 @@ def run_all(
             log(f"[ERROR] {date_str}: {e}")
             del prev_df
             gc.collect()
-            prev_df = curr_df
+            prev_df, prev_file = curr_df, curr_file
             continue
 
+        # 3) Cache curr forward as next prev.
         del prev_df
         gc.collect()
-        prev_df = curr_df
+        prev_df, prev_file = curr_df, curr_file
 
-    del prev_df
-    gc.collect()
+    if prev_df is not None:
+        del prev_df
+        gc.collect()
 
 
 _UNDEF_PRICE = np.iinfo(np.int64).max  # Databento sentinel for "no price"
