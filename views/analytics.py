@@ -419,11 +419,37 @@ def compute_cost_series(trades: pd.DataFrame, filename: str, n: int,
     warnings: list[str] = []
     zero = pd.Series(0.0, index=trades.index)
 
-    if trades.empty or "contracts" not in trades.columns or "trade_pnl" not in trades.columns:
+    # Empty frame: legitimately zero cost — no warning.
+    if trades.empty:
         return {"commission": zero, "slippage": zero.copy(), "warnings": warnings}
 
     asset = filename.split("_")[0]
     tag   = f"{label} ({asset})" if label else asset
+
+    # Resolve the position-size column defensively: live sizers emit `contracts`,
+    # the documented sizer contract says `size`. Accept either (prefer contracts).
+    if "contracts" in trades.columns:
+        size_col = "contracts"
+    elif "size" in trades.columns:
+        size_col = "size"
+    else:
+        size_col = None
+
+    # A non-empty frame missing a required column is a real problem — and this is
+    # the one cost failure that fails in the flattering direction (costs vanish,
+    # net == gross). Warn loudly and name the columns present so it's diagnosable.
+    missing = []
+    if size_col is None:
+        missing.append("contracts/size")
+    if "trade_pnl" not in trades.columns:
+        missing.append("trade_pnl")
+    if missing:
+        warnings.append(
+            f"{tag}: cost path bailed out — missing required column(s) "
+            f"{', '.join(missing)}; costs billed as $0. Columns present: "
+            f"{list(trades.columns)}."
+        )
+        return {"commission": zero, "slippage": zero.copy(), "warnings": warnings}
 
     try:
         dpt = get_dollars_per_tick(filename)
@@ -431,7 +457,7 @@ def compute_cost_series(trades: pd.DataFrame, filename: str, n: int,
         warnings.append(str(e))
         return {"commission": zero, "slippage": zero.copy(), "warnings": warnings}
 
-    contracts = trades["contracts"].astype(float)
+    contracts = trades[size_col].astype(float)
     gross     = trades["trade_pnl"]
     full_comm, micro_comm = get_commission_info(filename)
 
