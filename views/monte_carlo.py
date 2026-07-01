@@ -14,50 +14,53 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+# NOTE: this dict is duplicated across views (analytics, monte_carlo) — known
+# tech debt. The commissions_per_contract / parent keys MUST be kept in lockstep
+# with views/analytics.py or commissions silently diverge per page.
 ASSET_INFO = {
     # Equity Index
-    "ES":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50},
-    "NQ":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 5.00},
-    "RTY": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 5.00},
-    "YM":  {"tick_size": 1.00, "ticks_per_point": 1,   "dollars_per_tick": 5.00},
-    "MES": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 1.25},
-    "MNQ": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 0.50},
-    "M2K": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 0.50},
-    "MYM": {"tick_size": 1.00, "ticks_per_point": 1,   "dollars_per_tick": 0.50},
+    "ES":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50,   "commissions_per_contract": 2.88},
+    "NQ":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 5.00,    "commissions_per_contract": 2.88},
+    "RTY": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 5.00,    "commissions_per_contract": 2.88},
+    "YM":  {"tick_size": 1.00, "ticks_per_point": 1,   "dollars_per_tick": 5.00,    "commissions_per_contract": 2.88},
+    "MES": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 1.25,    "commissions_per_contract": 0.95, "parent": "ES"},
+    "MNQ": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95, "parent": "NQ"},
+    "M2K": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95, "parent": "RTY"},
+    "MYM": {"tick_size": 1.00, "ticks_per_point": 1,   "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95, "parent": "YM"},
 
     # Rates
-    "ZN":  {"tick_size": 0.015625, "ticks_per_point": 64,  "dollars_per_tick": 15.625},  # 1/64
-    "ZB":  {"tick_size": 0.03125,  "ticks_per_point": 32,  "dollars_per_tick": 31.25},   # 1/32
-    "ZF":  {"tick_size": 0.0078125,"ticks_per_point": 128, "dollars_per_tick": 7.8125},  # 1/128
-    "ZT":  {"tick_size": 0.00390625,"ticks_per_point": 256, "dollars_per_tick": 7.8125},  # 1/128 — verify, ZT is quoted in 1/256 in some venues
-    "SR3": {"tick_size": 0.0025,   "ticks_per_point": 400, "dollars_per_tick": 6.25},
+    "ZN":  {"tick_size": 0.015625, "ticks_per_point": 64,  "dollars_per_tick": 15.625,   "commissions_per_contract": 2.30},  # 1/64
+    "ZB":  {"tick_size": 0.03125,  "ticks_per_point": 32,  "dollars_per_tick": 31.25,   "commissions_per_contract": 2.37},   # 1/32
+    "ZF":  {"tick_size": 0.0078125,"ticks_per_point": 128, "dollars_per_tick": 7.8125,  "commissions_per_contract": 2.15},  # 1/128
+    "ZT":  {"tick_size": 0.00390625,"ticks_per_point": 256, "dollars_per_tick": 7.8125, "commissions_per_contract": 2.15},  # 1/128 — verify, ZT is quoted in 1/256 in some venues
+    "SR3": {"tick_size": 0.0025,   "ticks_per_point": 400, "dollars_per_tick": 6.25,    "commissions_per_contract": 2.10},   # commision
 
     # Energy
-    "CL":  {"tick_size": 0.01, "ticks_per_point": 100, "dollars_per_tick": 10.00},
-    "QM":  {"tick_size": 0.025,"ticks_per_point": 40,  "dollars_per_tick": 12.50},
-    "NG":  {"tick_size": 0.001,"ticks_per_point": 1000,"dollars_per_tick": 10.00},
-    "RB":  {"tick_size": 0.0001,"ticks_per_point": 10000,"dollars_per_tick": 4.20},  # ~4.20 at 42000 gal contract — price-dependent, verify
-    "HO":  {"tick_size": 0.0001,"ticks_per_point": 10000,"dollars_per_tick": 4.20},  # same as RB
+    "CL":  {"tick_size": 0.01, "ticks_per_point": 100, "dollars_per_tick": 10.00,   "commissions_per_contract": 3.00},
+    "QM":  {"tick_size": 0.025,"ticks_per_point": 40,  "dollars_per_tick": 12.50,   "commissions_per_contract": 2.70},
+    "NG":  {"tick_size": 0.001,"ticks_per_point": 1000,"dollars_per_tick": 10.00,   "commissions_per_contract": 3.10},
+    "RB":  {"tick_size": 0.0001,"ticks_per_point": 10000,"dollars_per_tick": 4.20,  "commissions_per_contract": 3.00},  # ~4.20 at 42000 gal contract — price-dependent, verify
+    "HO":  {"tick_size": 0.0001,"ticks_per_point": 10000,"dollars_per_tick": 4.20,  "commissions_per_contract": 3.00},  # same as RB
 
     # Metals
-    "GC":  {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 10.00},
-    "MGC": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 1.00},
-    "SI":  {"tick_size": 0.005,"ticks_per_point": 200, "dollars_per_tick": 25.00},
-    "HG":  {"tick_size": 0.0005,"ticks_per_point": 2000,"dollars_per_tick": 12.50},
+    "GC":  {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 10.00,   "commissions_per_contract": 3.10},
+    "MGC": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 1.00,    "commissions_per_contract": 1.20, "parent": "GC"},
+    "SI":  {"tick_size": 0.005,"ticks_per_point": 200, "dollars_per_tick": 25.00,   "commissions_per_contract": 3.10},
+    "HG":  {"tick_size": 0.0005,"ticks_per_point": 2000,"dollars_per_tick": 12.50,  "commissions_per_contract": 3.10},
 
     # Grains
-    "ZC":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50},
-    "ZS":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50},
-    "ZW":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50},
+    "ZC":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50,   "commissions_per_contract": 3.60},
+    "ZS":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50,   "commissions_per_contract": 3.60},
+    "ZW":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50,   "commissions_per_contract": 3.60},
 
     # FX
-    "6E":  {"tick_size": 0.00005,"ticks_per_point": 20000,"dollars_per_tick": 6.25},
-    "6J":  {"tick_size": 0.0000005,"ticks_per_point": 2000000,"dollars_per_tick": 6.25},
-    "6B":  {"tick_size": 0.0001,"ticks_per_point": 10000,"dollars_per_tick": 6.25},
-    "6C":  {"tick_size": 0.00005,"ticks_per_point": 20000,"dollars_per_tick": 5.00},
+    "6E":  {"tick_size": 0.00005,"ticks_per_point": 20000,"dollars_per_tick": 6.25, "commissions_per_contract": 3.10},
+    "6J":  {"tick_size": 0.0000005,"ticks_per_point": 2000000,"dollars_per_tick": 6.25, "commissions_per_contract": 3.10},
+    "6B":  {"tick_size": 0.0001,"ticks_per_point": 10000,"dollars_per_tick": 6.25,  "commissions_per_contract": 3.10},
+    "6C":  {"tick_size": 0.00005,"ticks_per_point": 20000,"dollars_per_tick": 5.00, "commissions_per_contract": 3.10},
 
     # Crypto
-    "BTC": {"tick_size": 5.00, "ticks_per_point": 0.2, "dollars_per_tick": 25.00},
+    "BTC": {"tick_size": 5.00, "ticks_per_point": 0.2, "dollars_per_tick": 25.00,   "commissions_per_contract": 8.00},
 }
 
 def _get_dollars_per_tick(trade_filename: str) -> float:
@@ -66,10 +69,37 @@ def _get_dollars_per_tick(trade_filename: str) -> float:
         raise ValueError(f"Unknown asset '{asset}' from filename '{trade_filename}'. Add it to ASSET_INFO.")
     return ASSET_INFO[asset]["dollars_per_tick"]
 
+
+def _micro_child(asset: str) -> str | None:
+    """Return the micro ticker whose `parent` is `asset`, or None. An asset is
+    'microable' iff such a child exists — that's the only decomposition flag."""
+    for ticker, info in ASSET_INFO.items():
+        if info.get("parent") == asset:
+            return ticker
+    return None
+
+
+def _get_commission_info(trades_filename: str) -> tuple[float | None, float | None]:
+    """
+    (full_commission, micro_commission) for the file's asset, mirroring
+    analytics.get_commission_info. `full` is None if the asset has no
+    commissions_per_contract key (graceful degradation → caller bills 0 + warns).
+    `micro` is the child's commission when a micro child exists, else None
+    (non-microable).
+    """
+    asset = trades_filename.split("_")[0]
+    info  = ASSET_INFO.get(asset, {})
+    full  = info.get("commissions_per_contract")
+
+    child = _micro_child(asset)
+    micro = ASSET_INFO[child].get("commissions_per_contract") if child else None
+    return full, micro
+
 # ---------------------------------------------------------------------------
-# How many faded sample paths to render as a fraction of total paths.
-# Change this to show more or fewer grey lines on the chart.
-SAMPLE_PATH_FRACTION = 0.10
+# How many faded sample (grey) paths to render on each fan chart. A FIXED COUNT,
+# not a fraction — 50k paths still shows this many lines (intended, for
+# readability). Applies to every fan chart, including the three prop-firm ones.
+SAMPLE_PATH_COUNT = 200
 # ---------------------------------------------------------------------------
 
 
@@ -294,9 +324,8 @@ def _build_fan_chart(
     all_indices      = list(range(n_paths))
     sample_pool      = [i for i in all_indices if i not in featured_indices]
 
-    n_sample = max(1, int(len(sample_pool) * SAMPLE_PATH_FRACTION))
     rng      = np.random.default_rng(seed=0)
-    sampled  = rng.choice(sample_pool, size=min(n_sample, len(sample_pool)), replace=False)
+    sampled  = rng.choice(sample_pool, size=min(SAMPLE_PATH_COUNT, len(sample_pool)), replace=False)
 
     for idx in sampled:
         fig.add_trace(go.Scatter(
@@ -480,6 +509,280 @@ def _render_metrics(metrics: dict, account_size: float):
     st.dataframe(df, width='stretch', hide_index=True, height=500)
 
 
+# ===========================================================================
+# Prop-firm UI (dedicated flow — per-rule toggles + three charts/stats)
+# ===========================================================================
+
+_PROP_OPTIMISM_CAPTION = (
+    "Breach is checked on **closed-trade** equity — an intra-trade dip below the "
+    "floor that recovers to a green close is not counted. Every P(pass)/P(payout) "
+    "here is therefore an **upper bound**."
+)
+
+
+def _rule_widget(label: str, default: dict, key_prefix: str,
+                 *, step: float = 100.0, pct: bool = False, help: str = None) -> dict:
+    """Render a checkbox + value input for an {enabled, value} rule. Value greys
+    out when the checkbox is off. Returns the resolved {enabled, value}."""
+    c1, c2 = st.columns([1.5, 1])
+    with c1:
+        enabled = st.checkbox(label, value=bool(default["enabled"]),
+                              key=f"{key_prefix}_en", help=help)
+    with c2:
+        if pct:
+            v = st.number_input("max % of profit from one day",
+                                value=float(default["value"]) * 100.0,
+                                min_value=0.0, max_value=100.0, step=5.0,
+                                key=f"{key_prefix}_val", disabled=not enabled,
+                                label_visibility="collapsed")
+            value = v / 100.0
+        else:
+            value = st.number_input("value", value=float(default["value"]), step=step,
+                                    format="%.2f", key=f"{key_prefix}_val",
+                                    disabled=not enabled, label_visibility="collapsed")
+    return {"enabled": bool(enabled), "value": float(value)}
+
+
+def _fmt_pct01(v):    return f"{v*100:.1f}%" if v is not None else "—"
+def _fmt_dollar(v):   return f"${v:,.0f}"    if v is not None else "—"
+
+
+def _fmt_pctiles(p: dict | None) -> str:
+    if p is None:
+        return "— (none)"
+    return f"{p['median']:.0f}  (25–75: {p['p25']:.0f}–{p['p75']:.0f}, 95th: {p['p95']:.0f})"
+
+
+def _prop_fan(sim: dict, account_size: float, costs_on: bool):
+    """Fan chart for Sim 1 / Sim 2, reusing the shared fan-chart machinery."""
+    eqm      = sim["equity_matrix"]
+    featured = _select_featured_paths(eqm)
+    metrics  = _compute_metrics(eqm, account_size, None)
+    fig = _build_fan_chart(
+        equity_matrix  = eqm,
+        account_size   = account_size,
+        featured       = featured,
+        ruin_threshold = None,
+        y_max          = None,
+        band_finals    = metrics["band_finals"],
+    )
+    # Target line (pass / payout threshold).
+    if sim.get("target"):
+        tgt = account_size + sim["target"]
+        fig.add_hline(y=tgt, line=dict(color="rgba(80,220,120,0.7)", width=1, dash="dash"),
+                      annotation_text=f"Target ${tgt:,.0f}",
+                      annotation_font_color="rgba(80,220,120,0.9)")
+    fig.update_layout(xaxis_title="Trade # (path stops at pass/fail, then holds flat)")
+    st.plotly_chart(fig, width="stretch")
+
+
+def _render_prop_sim(sim: dict, account_size: float, costs_on: bool):
+    st.write("")
+    st.subheader(sim["title"])
+    caption = _PROP_OPTIMISM_CAPTION
+    if costs_on:
+        caption += "  Equity is net of commissions & slippage."
+    st.caption(caption)
+
+    _prop_fan(sim, account_size, costs_on)
+
+    s = sim["stats"]
+    rows = []
+    if "p_pass" in s:        # challenge
+        rows.append(("P(pass)", _fmt_pct01(s["p_pass"])))
+        rows.append(("Trades to pass", _fmt_pctiles(s["trades_to_pass"])))
+        fb = s["failure_breakdown"]
+        rows.append(("Failure — max-loss breach", _fmt_pct01(fb["max_loss"])))
+        rows.append(("Failure — unresolved at horizon", _fmt_pct01(fb["unresolved"])))
+        rows.append(("Consistency hold rate", _fmt_pct01(s["consistency_hold_rate"])))
+        rows.append(("Median final equity (passers)", _fmt_dollar(s["median_final_equity_passers"])))
+        rows.append(("Worst peak-to-trough (passers)", _fmt_dollar(s["worst_peak_to_trough_passers"])))
+    else:                    # payout
+        rows.append(("P(payout | funded)", _fmt_pct01(s["p_payout"])))
+        rows.append(("Trades to payout", _fmt_pctiles(s["trades_to_payout"])))
+        rows.append(("Funded breach rate (max-loss)", _fmt_pct01(s["breach_rate"])))
+        rows.append(("Unresolved at horizon", _fmt_pct01(s["breach_breakdown"]["unresolved"])))
+        rows.append(("Held-then-diluted-and-paid", _fmt_pct01(s["held_then_paid"])))
+        rows.append(("Held-then-breached-while-grinding", _fmt_pct01(s["held_then_breached"])))
+        rows.append(("Consistency hold rate", _fmt_pct01(s["consistency_hold_rate"])))
+
+    df = pd.DataFrame(rows, columns=["Statistic", "Value"])
+    st.dataframe(df, width="stretch", hide_index=True)
+
+
+def _render_combined_sim(sim: dict, account_size: float, costs_on: bool):
+    st.write("")
+    st.subheader(sim["title"])
+    st.caption(
+        "End-to-end: challenge phase, then a fresh funded phase concatenated at "
+        "the reset (yellow dot). Funded accounts reset to the starting balance — "
+        "challenge profit is not carried. Green lines went on to get paid."
+    )
+
+    mat     = sim["equity_matrix"]
+    reset_x = sim["reset_x"]
+    paid    = sim["paid_mask"]
+
+    if mat.shape[0] == 0:
+        st.info("No paths passed the challenge — nothing to chart.")
+    else:
+        fig = go.Figure()
+        x = list(range(mat.shape[1]))
+        rng_ = np.random.default_rng(0)
+        sample = rng_.choice(mat.shape[0], size=min(SAMPLE_PATH_COUNT, mat.shape[0]), replace=False)
+        for r in sample:
+            color = "rgba(80,200,120,0.30)" if paid[r] else "rgba(180,180,180,0.18)"
+            fig.add_trace(go.Scatter(x=x, y=mat[r].tolist(), mode="lines",
+                          line=dict(color=color, width=1), showlegend=False, hoverinfo="skip"))
+            rx = int(reset_x[r])
+            fig.add_trace(go.Scatter(x=[rx], y=[float(mat[r, rx])], mode="markers",
+                          marker=dict(color="#ffcc00", size=4),
+                          showlegend=False, hoverinfo="skip"))
+        fig.add_hline(y=account_size, line=dict(color="rgba(255,255,255,0.25)", width=1, dash="dot"),
+                      annotation_text=f"Start ${account_size:,.0f}")
+        fig.update_layout(
+            template="plotly_dark", paper_bgcolor="#111111", plot_bgcolor="#111111",
+            height=560, margin=dict(l=60, r=120, t=40, b=40),
+            xaxis=dict(title="Trade # (challenge → reset → funded)", showgrid=True, gridcolor="#222"),
+            yaxis=dict(title="Equity ($)", showgrid=True, gridcolor="#222", tickformat="$,.0f"),
+        )
+        st.plotly_chart(fig, width="stretch")
+
+    s = sim["stats"]
+    p_pass, p_po, p_paid = s["funnel"]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("P(pass)", f"{p_pass*100:.1f}%")
+    c2.metric("P(payout | passed)", f"{p_po*100:.1f}%")
+    c3.metric("P(paid) end-to-end", f"{p_paid*100:.2f}%")
+
+    rows = [
+        ("Total trades to payout (challenge + funded)", _fmt_pctiles(s["total_trades_to_payout"])),
+        ("Realized payout per paid account", _fmt_dollar(s["realized_payout_per_paid"])),
+        ("Expected payout value  =  P(paid) × realized", _fmt_dollar(s["expected_payout_value"])),
+    ]
+    st.dataframe(pd.DataFrame(rows, columns=["Statistic", "Value"]),
+                 width="stretch", hide_index=True)
+
+
+def _render_prop_firm(mc_module, mc_name, trades_path, trade_filename,
+                      sizer_module, sizer_params, account_size):
+    defaults = getattr(mc_module, "PARAMS", {})
+
+    st.markdown("**General**")
+    g1, g2, g3 = st.columns(3)
+    with g1:
+        n_paths = st.number_input("Paths", value=int(defaults.get("n_paths", 5000)),
+                                  min_value=100, step=500, key="pf_n_paths")
+    with g2:
+        max_trades = st.number_input("Max trades (horizon)",
+                                     value=int(defaults.get("max_trades", 500)),
+                                     min_value=10, step=50, key="pf_max_trades",
+                                     help="Trades before an unresolved path is stopped "
+                                          "and counted as 'unresolved' (~trading days at 1 trade/day).")
+    with g3:
+        seed = st.number_input("Seed", value=int(defaults.get("seed", 42)),
+                               step=1, key="pf_seed")
+
+    st.markdown("**Challenge — passing ruleset**")
+    profit_target = _rule_widget("Profit Target ($)", defaults["profit_target"],
+                                 "pf_ch_target", step=500.0)
+    ch_eod = _rule_widget("Max Loss Limit (EOD, trailing $)", defaults["challenge_max_loss_eod"],
+                          "pf_ch_eod", step=500.0,
+                          help="Trailing from the highest end-of-day balance; ratchets up only.")
+    ch_daily = _rule_widget("Daily Loss Limit ($)", defaults["challenge_daily_loss"],
+                            "pf_ch_daily", step=250.0,
+                            help="Risk cap, not a breach — caps size so one day can't lose more than this.")
+    ch_cons = _rule_widget("Consistency Rule", defaults["challenge_consistency"],
+                           "pf_ch_cons", pct=True,
+                           help="Max % of total profit allowed from a single day. A pass gate, not a breach.")
+    ch_climit = _rule_widget("Contract Limit", defaults["challenge_contract_limit"],
+                             "pf_ch_climit", step=1.0,
+                             help="Hard size cap, full-contract units (3.0 = 3 minis = 30 micros).")
+
+    st.markdown("**Payout — funded ruleset**")
+    targeted_payout = _rule_widget("Targeted Payout ($)", defaults["targeted_payout"],
+                                   "pf_po_target", step=500.0)
+    po_eod = _rule_widget("Max Loss Limit (EOD, trailing $)", defaults["payout_max_loss_eod"],
+                          "pf_po_eod", step=500.0)
+    po_daily = _rule_widget("Daily Loss Limit ($)", defaults["payout_daily_loss"],
+                            "pf_po_daily", step=250.0)
+    po_cons = _rule_widget("Consistency Rule", defaults["payout_consistency"],
+                           "pf_po_cons", pct=True)
+    po_climit = _rule_widget("Contract Limit", defaults["payout_contract_limit"],
+                             "pf_po_climit", step=1.0)
+    max_withdrawal = _rule_widget("Maximum Withdrawal ($/payout)", defaults["maximum_withdrawal"],
+                                  "pf_po_mw", step=500.0,
+                                  help="Caps the dollar amount per payout: realized = min(profit, this).")
+
+    apply_costs = st.checkbox("Apply commissions & slippage", value=True, key="pf_apply_costs")
+    if apply_costs:
+        slippage_n = st.slider("Slippage (ticks/side)", min_value=1, max_value=5,
+                               value=1, step=1, key="pf_slip",
+                               help="Entry-side ticks slipped per trade; market exits (losers) slip 2×.")
+    else:
+        slippage_n = 1
+
+    st.write("")
+    if st.button("Run Prop-Firm Simulation", type="primary"):
+        try:
+            dollars_per_tick = _get_dollars_per_tick(trade_filename)
+        except ValueError as e:
+            st.error(str(e)); return
+        try:
+            trades = pd.read_parquet(trades_path)
+        except Exception as e:
+            st.error(f"Could not load trades: {e}"); return
+
+        full_comm, micro_comm = _get_commission_info(trade_filename)
+        if apply_costs and full_comm is None:
+            st.warning(
+                f"No commission rate for asset '{trade_filename.split('_')[0]}' "
+                "— commissions billed at 0; slippage still applies."
+            )
+        cost_ctx = {
+            "enabled":    apply_costs,
+            "n":          slippage_n,
+            "full_comm":  full_comm,
+            "micro_comm": micro_comm,
+            "microable":  micro_comm is not None,
+        }
+        final_sizer_params = {**sizer_params, "dollars_per_tick": dollars_per_tick}
+        params = {
+            "n_paths": int(n_paths), "max_trades": int(max_trades), "seed": int(seed),
+            "account_size": account_size,
+            "increment": sizer_params.get("contract_increment", 1.0),
+            "cost_ctx": cost_ctx,
+            "profit_target": profit_target,
+            "challenge_max_loss_eod": ch_eod, "challenge_daily_loss": ch_daily,
+            "challenge_consistency": ch_cons, "challenge_contract_limit": ch_climit,
+            "targeted_payout": targeted_payout,
+            "payout_max_loss_eod": po_eod, "payout_daily_loss": po_daily,
+            "payout_consistency": po_cons, "payout_contract_limit": po_climit,
+            "maximum_withdrawal": max_withdrawal,
+        }
+        with st.spinner(f"Running prop-firm MC — {int(n_paths):,} paths × 2 sims..."):
+            try:
+                results = mc_module.run(trades=trades, sizer_module=sizer_module,
+                                        sizer_params=final_sizer_params, params=params)
+            except Exception as e:
+                st.error(f"Simulation error: {e}"); return
+
+        st.session_state.pf_results = results
+        st.session_state.pf_costs   = apply_costs
+
+    if st.session_state.get("pf_results") is None:
+        return
+
+    results  = st.session_state.pf_results
+    costs_on = st.session_state.get("pf_costs", False)
+    for w in results.get("warnings", []):
+        st.warning(w)
+
+    _render_prop_sim(results["sim1"], results["account_size"], costs_on)
+    _render_prop_sim(results["sim2"], results["account_size"], costs_on)
+    _render_combined_sim(results["sim3"], results["account_size"], costs_on)
+
+
 # ---------------------------------------------------------------------------
 # Main render
 # ---------------------------------------------------------------------------
@@ -553,10 +856,16 @@ def render():
         st.error("No Monte Carlo scripts found in monte_carlo/")
         return
 
-    col3, col4 = st.columns(2)
-    with col3:
-        mc_name   = st.selectbox("Method", list(mc_plugins.keys()), key="mc_method")
-        mc_module = _load_module(mc_plugins[mc_name])
+    mc_name   = st.selectbox("Method", list(mc_plugins.keys()), key="mc_method")
+    mc_module = _load_module(mc_plugins[mc_name])
+
+    # Prop-firm methods get a dedicated UI (per-rule toggles) + three-chart output.
+    if getattr(mc_module, "PROP_FIRM", False):
+        _render_prop_firm(mc_module, mc_name, trades_path, selected_trade_file,
+                          sizer_module, sizer_params, account_size)
+        return
+
+    col4, _ = st.columns(2)
     with col4:
         ruin_options = {
             "No threshold": None,
@@ -574,6 +883,19 @@ def render():
         mc_specific = {}
 
     mc_params = {**mc_params_raw, **mc_specific}
+
+    # Costs — commissions + slippage applied to the simulated paths, net of which
+    # equity (and thus ruin) is reported. Costs feed back into per-step sizing.
+    apply_costs = st.checkbox("Apply commissions & slippage", value=True, key="mc_apply_costs")
+    if apply_costs:
+        slippage_n = st.slider(
+            "Slippage (ticks/side)",
+            min_value=1, max_value=5, value=1, step=1,
+            key="mc_slippage_n",
+            help="Entry-side ticks slipped per trade; market exits (losers) slip 2×.",
+        )
+    else:
+        slippage_n = 1
 
     # -------------------------------------------------------------------------
     # 4. Run
@@ -594,21 +916,42 @@ def render():
 
         final_sizer_params = {**sizer_params, "dollars_per_tick": dollars_per_tick}
 
+        # Resolve cost constants from the filename's asset (page owns ASSET_INFO;
+        # base/bootstrap stay asset-agnostic). cost_ctx rides into the engine via params.
+        full_comm, micro_comm = _get_commission_info(selected_trade_file)
+        if apply_costs and full_comm is None:
+            st.warning(
+                f"No commission rate for asset '{selected_trade_file.split('_')[0]}' "
+                "— commissions billed at 0; slippage still applies."
+            )
+        cost_ctx = {
+            "enabled":    apply_costs,
+            "n":          slippage_n,
+            "full_comm":  full_comm,
+            "micro_comm": micro_comm,
+            "microable":  micro_comm is not None,
+        }
+        run_params = {**mc_params, "cost_ctx": cost_ctx}
+
         with st.spinner(f"Running {mc_name} — {mc_params.get('n_paths', '?')} paths..."):
             try:
                 results = mc_module.run(
                     trades       = trades,
                     sizer_module = sizer_module,
                     sizer_params = final_sizer_params,
-                    params       = mc_params,
+                    params       = run_params,
                 )
             except Exception as e:
                 st.error(f"Simulation error: {e}")
                 return
 
+        for w in results.get("warnings", []):
+            st.warning(w)
+
         st.session_state.mc_results        = results
         st.session_state.mc_result_account = account_size
         st.session_state.mc_result_ruin    = ruin_threshold
+        st.session_state.mc_result_costs   = apply_costs
 
     # -------------------------------------------------------------------------
     # 5. Results
@@ -624,6 +967,13 @@ def render():
 
     st.write("")
     st.subheader("Equity Fan Chart")
+
+    if st.session_state.get("mc_result_costs"):
+        st.caption(
+            "Equity is net of commissions & slippage. Note: slippage is applied "
+            "post-hoc to recorded trades — a worse entry that would have prevented "
+            "a take-profit fill is not modelled."
+        )
 
     # Scale toggle — capped view avoids Kelly-style outliers dominating the axis
     if "mc_chart_capped" not in st.session_state:
