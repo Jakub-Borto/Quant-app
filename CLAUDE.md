@@ -34,7 +34,7 @@ excluded.
 | `monte_carlo/` | Monte Carlo view | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`) |
 
 A strategy may also be a **package** (a folder with `__init__.py` exposing `run`, `PARAMS`,
-`PARAM_SECTIONS`) — see `strategies/ivb_model_2_folder_2/` and its own `CLAUDE.md`.
+`PARAM_SECTIONS`) — see `strategies/ivb_model/` and its own `CLAUDE.md`.
 
 ## Repo map
 
@@ -98,4 +98,4 @@ the built extension; `1s_mbo_full_book.py` has a pure-Python fallback.
 ## Where to read more
 
 - `Quant_app_documentation.pdf` — full module-by-module contracts, schemas, data-flow.
-- `IVB_Model_Documentation.pdf` + `strategies/ivb_model_2_folder_2/CLAUDE.md` — the flagship strategy.
+- `IVB_Model_Documentation.pdf` + `strategies/ivb_model/CLAUDE.md` — the flagship strategy.

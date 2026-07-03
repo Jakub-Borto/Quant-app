@@ -1,6 +1,6 @@
-# CLAUDE.md — IVB Model 2 (restructured package)
+# CLAUDE.md — IVB Model (modular package)
 
-Strategy-package guide for `strategies/ivb_model_2_restructured/`. Long-form rationale and the
+Strategy-package guide for `strategies/ivb_model/`. Long-form rationale and the
 trade logic live in `IVB_Model_Documentation.pdf`; this file is the code map and the contract.
 
 ## What it is
