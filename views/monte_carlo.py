@@ -293,7 +293,14 @@ def _build_fan_chart(
     ruin_threshold: float | None,
     y_max:          float | None = None,
     band_finals:    dict | None  = None,
+    line_matrix:    np.ndarray | None = None,
 ) -> go.Figure:
+    # Bands + median always use equity_matrix (full population). Individual
+    # sample + featured lines are drawn from line_matrix when given — for the
+    # prop-firm charts it is NaN-tailed past each path's resolution, so those
+    # lines end at pass/fail instead of drawing a flat forward-filled tail.
+    # When line_matrix is None the two are identical (generic bootstrap flow).
+    lines = line_matrix if line_matrix is not None else equity_matrix
 
     n_paths, n_steps = equity_matrix.shape
     x = list(range(n_steps))
@@ -329,7 +336,7 @@ def _build_fan_chart(
 
     for idx in sampled:
         fig.add_trace(go.Scatter(
-            x=x, y=equity_matrix[idx].tolist(),
+            x=x, y=lines[idx].tolist(),
             mode="lines",
             line=dict(color="rgba(180,180,180,0.08)", width=1),
             showlegend=False,
@@ -339,7 +346,7 @@ def _build_fan_chart(
     # -- featured paths ------------------------------------------------------
     for label, idx in featured.items():
         color = FEATURED_COLORS.get(label, "#ffffff")
-        eq    = equity_matrix[idx]
+        eq    = lines[idx]
 
         fig.add_trace(go.Scatter(
             x=x, y=eq.tolist(),
@@ -349,10 +356,13 @@ def _build_fan_chart(
             hovertemplate=f"{label}<br>Trade: %{{x}}<br>Equity: $%{{y:,.0f}}<extra></extra>",
         ))
 
-        # end-of-line annotation
+        # end-of-line annotation — at the path's last real point (its resolution
+        # step when the line is truncated), not the chart's right edge.
+        finite = np.flatnonzero(np.isfinite(eq))
+        end_i  = int(finite[-1]) if len(finite) else n_steps - 1
         fig.add_annotation(
-            x=n_steps - 1,
-            y=float(eq[-1]),
+            x=end_i,
+            y=float(eq[end_i]),
             text=f"  {label}",
             showarrow=False,
             xanchor="left",
@@ -556,8 +566,15 @@ def _fmt_pctiles(p: dict | None) -> str:
 def _prop_fan(sim: dict, account_size: float, costs_on: bool):
     """Fan chart for Sim 1 / Sim 2, reusing the shared fan-chart machinery."""
     eqm      = sim["equity_matrix"]
-    featured = _select_featured_paths(eqm)
+    featured = _select_featured_paths(eqm)          # needs real finals → full matrix
     metrics  = _compute_metrics(eqm, account_size, None)
+
+    # Truncated line matrix: NaN past each path's stop step so individual lines
+    # end at pass/fail. Bands + median still use the full (forward-filled) eqm.
+    n_steps  = eqm.shape[1]
+    cols     = np.arange(n_steps)
+    display  = np.where(cols[None, :] > sim["stop_step"][:, None], np.nan, eqm)
+
     fig = _build_fan_chart(
         equity_matrix  = eqm,
         account_size   = account_size,
@@ -565,6 +582,7 @@ def _prop_fan(sim: dict, account_size: float, costs_on: bool):
         ruin_threshold = None,
         y_max          = None,
         band_finals    = metrics["band_finals"],
+        line_matrix    = display,
     )
     # Target line (pass / payout threshold).
     if sim.get("target"):
@@ -683,12 +701,23 @@ def _render_prop_firm(mc_module, mc_name, trades_path, trade_filename,
         seed = st.number_input("Seed", value=int(defaults.get("seed", 42)),
                                step=1, key="pf_seed")
 
+    cap_wins = st.checkbox(
+        "Cap daily wins at the consistency limit",
+        value=bool(defaults.get("cap_wins_to_consistency", False)),
+        key="pf_cap_wins",
+        help="Model a trader who stops/reduces once the day's profit hits the "
+             "consistency daily threshold (consistency% × target), so a single "
+             "day never exceeds it and the consistency recalculation is never "
+             "triggered. Applies to whichever phase has its consistency rule enabled.",
+    )
+
     st.markdown("**Challenge — passing ruleset**")
     profit_target = _rule_widget("Profit Target ($)", defaults["profit_target"],
                                  "pf_ch_target", step=500.0)
     ch_eod = _rule_widget("Max Loss Limit (EOD, trailing $)", defaults["challenge_max_loss_eod"],
                           "pf_ch_eod", step=500.0,
-                          help="Trailing from the highest end-of-day balance; ratchets up only.")
+                          help="Trailing from the highest end-of-day balance; ratchets up only, "
+                               "then locks once the floor reaches the starting balance (never above it).")
     ch_daily = _rule_widget("Daily Loss Limit ($)", defaults["challenge_daily_loss"],
                             "pf_ch_daily", step=250.0,
                             help="Risk cap, not a breach — caps size so one day can't lose more than this.")
@@ -703,7 +732,9 @@ def _render_prop_firm(mc_module, mc_name, trades_path, trade_filename,
     targeted_payout = _rule_widget("Targeted Payout ($)", defaults["targeted_payout"],
                                    "pf_po_target", step=500.0)
     po_eod = _rule_widget("Max Loss Limit (EOD, trailing $)", defaults["payout_max_loss_eod"],
-                          "pf_po_eod", step=500.0)
+                          "pf_po_eod", step=500.0,
+                          help="Trailing from the highest end-of-day balance; ratchets up only, "
+                               "then locks once the floor reaches the starting balance (never above it).")
     po_daily = _rule_widget("Daily Loss Limit ($)", defaults["payout_daily_loss"],
                             "pf_po_daily", step=250.0)
     po_cons = _rule_widget("Consistency Rule", defaults["payout_consistency"],
@@ -752,6 +783,7 @@ def _render_prop_firm(mc_module, mc_name, trades_path, trade_filename,
             "account_size": account_size,
             "increment": sizer_params.get("contract_increment", 1.0),
             "cost_ctx": cost_ctx,
+            "cap_wins_to_consistency": bool(cap_wins),
             "profit_target": profit_target,
             "challenge_max_loss_eod": ch_eod, "challenge_daily_loss": ch_daily,
             "challenge_consistency": ch_cons, "challenge_contract_limit": ch_climit,

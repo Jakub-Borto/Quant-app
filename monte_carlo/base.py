@@ -189,7 +189,8 @@ def run_prop_paths(
     target / max_loss_eod / daily_loss / consistency / contract_limit
                                                  : {"enabled": bool, "value": float}
         target       value = profit ($) above start_equity to pass
-        max_loss_eod value = trailing drawdown ($) below the peak EOD balance
+        max_loss_eod value = trailing drawdown ($) below the peak EOD balance,
+                             locking at the starting balance (floor never exceeds start_eq)
         daily_loss   value = per-day loss budget ($, positive) — risk cap only
         consistency  value = max fraction of total profit allowed from one day
         contract_limit value = hard cap on size (full-contract units)
@@ -215,6 +216,13 @@ def run_prop_paths(
     daily_on,  daily_v   = _rule(config, "daily_loss")
     cons_on,   cons_v    = _rule(config, "consistency")
     climit_on, climit_v  = _rule(config, "contract_limit")
+
+    # Win cap tied to the consistency rule: model a trader who stops/reduces once
+    # the day's profit hits the consistency daily threshold (cons% × target), so a
+    # single day never exceeds it and the consistency recalculation is never
+    # triggered. Inert unless both consistency and target are enabled.
+    win_cap = (cons_v * target_v) if (config.get("cap_wins_to_consistency")
+                                      and cons_on and target_on) else None
 
     # --- per-original-trade arrays ---
     ticks = trades["ticks"].to_numpy(dtype=float)
@@ -286,7 +294,10 @@ def run_prop_paths(
 
         if eod_on and risk_dollars_arr is not None:
             rpc        = risk_dollars_arr[col]                 # $ risk per contract at full stop
-            eod_floor  = peak_eod[a] - eod_v
+            # Trailing floor that LOCKS at the starting balance: it trails the peak
+            # EOD balance up, but once peak - limit reaches start_eq it pins there
+            # and never rises above the starting balance.
+            eod_floor  = np.minimum(peak_eod[a] - eod_v, start_eq)
             remaining  = equity[a] - eod_floor                 # distance to the EOD floor
             if daily_on:
                 remaining = np.minimum(remaining, daily_v)     # daily budget (fresh each day)
@@ -307,6 +318,12 @@ def run_prop_paths(
         else:
             net = gross
 
+        # Cap the day's net so it can't exceed the consistency threshold. Only
+        # trims wins (remaining_day > 0); losses pass through unchanged. Uses the
+        # day's running profit so it also holds for future multi-trade days.
+        if win_cap is not None:
+            net = np.minimum(net, win_cap - day_pnl[a])
+
         equity[a]  = equity[a] + net
         day_pnl[a] = day_pnl[a] + net
         out[a, k + 1] = equity[a]
@@ -317,7 +334,9 @@ def run_prop_paths(
         # consistency uses the largest single-day profit INCLUDING today so far
         eff_max_day  = np.maximum(max_day_profit[a], day_pnl[a])
 
-        breached = (eq_a <= (peak_eod[a] - eod_v)) if eod_on else np.zeros(eq_a.shape, dtype=bool)
+        # Floor trails the peak EOD balance up but locks at the starting balance.
+        breached = (eq_a <= np.minimum(peak_eod[a] - eod_v, start_eq)) if eod_on \
+            else np.zeros(eq_a.shape, dtype=bool)
 
         if target_on:
             hit = eq_a >= (start_eq + target_v)

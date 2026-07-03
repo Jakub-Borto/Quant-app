@@ -44,6 +44,9 @@ PARAMS = {
     "n_paths":    5000,
     "max_trades": 500,
     "seed":       42,
+    # Model a trader who caps each day's win at the consistency daily threshold
+    # (consistency% × target) so the consistency recalculation is never triggered.
+    "cap_wins_to_consistency": False,
 
     # Challenge (passing) ruleset
     "profit_target":          {"enabled": True,  "value": 6000.0},
@@ -204,10 +207,11 @@ def _build_combined_curves(sim1: dict, sim2: dict, max_sample: int, seed: int):
         paid.append(bool(funded_passed[j]))
 
     width = max(len(c) for c in curves)
-    mat = np.empty((len(curves), width))
+    # NaN pad (not forward-fill): each line ends when its funded phase resolves,
+    # so the chart shows no flat horizontal tail (Plotly breaks a line on NaN).
+    mat = np.full((len(curves), width), np.nan)
     for r, c in enumerate(curves):
         mat[r, : len(c)] = c
-        mat[r, len(c):]  = c[-1]        # forward-fill the flat tail
     return mat, np.array(resets, dtype=int), np.array(paid, dtype=bool)
 
 
@@ -237,6 +241,8 @@ def run(trades: pd.DataFrame, sizer_module, sizer_params: dict, params: dict) ->
         "max_trades":   max_trades,
         "start_equity": account_size,
         "increment":    increment,
+        # General toggle — applies to whichever sim has consistency enabled.
+        "cap_wins_to_consistency": bool(params.get("cap_wins_to_consistency", False)),
     }
 
     challenge_cfg = {
@@ -283,6 +289,7 @@ def run(trades: pd.DataFrame, sizer_module, sizer_params: dict, params: dict) ->
         "sim1": {
             "title": "Sim 1 — Challenge",
             "equity_matrix": sim1["equity_matrix"],
+            "stop_step": sim1["stop_step"],   # for truncating lines at resolution
             "start_equity": account_size,
             "target": challenge_cfg["target"]["value"] if challenge_cfg["target"]["enabled"] else None,
             "floor_offset": challenge_cfg["max_loss_eod"]["value"] if challenge_cfg["max_loss_eod"]["enabled"] else None,
@@ -291,6 +298,7 @@ def run(trades: pd.DataFrame, sizer_module, sizer_params: dict, params: dict) ->
         "sim2": {
             "title": "Sim 2 — Payout (fresh funded)",
             "equity_matrix": sim2["equity_matrix"],
+            "stop_step": sim2["stop_step"],   # for truncating lines at resolution
             "start_equity": account_size,
             "target": payout_cfg["target"]["value"] if payout_cfg["target"]["enabled"] else None,
             "floor_offset": payout_cfg["max_loss_eod"]["value"] if payout_cfg["max_loss_eod"]["enabled"] else None,
