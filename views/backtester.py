@@ -1,5 +1,6 @@
 # views/backtester.py
 import json
+import math
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -715,6 +716,93 @@ def render_equity_curve(trades: pd.DataFrame):
     return st.plotly_chart(fig, width='stretch', on_select="rerun", key="equity_curve")
 
 
+# ── RR distribution ───────────────────────────────────────────────────────────
+
+def render_rr_distribution(trades: pd.DataFrame):
+    """
+    Overlaid histogram of planned vs. realised RR (R-multiple) per trade.
+    x = RR, y = number of trades. Same formulas as compute_metrics:
+      planned  = |tp - entry| / |entry - sl|
+      realised = pnl_points   / |entry - sl|
+    over rows with stop distance > 0.
+    """
+    if not all(c in trades.columns for c in ["entry_price", "sl"]):
+        st.write("")
+        st.subheader("RR Distribution")
+        st.info("RR distribution needs entry_price + sl (+ tp / pnl_points).")
+        return
+
+    sl_dist = (trades["entry_price"] - trades["sl"]).abs()
+    valid   = sl_dist > 0
+
+    planned  = ((trades["tp"] - trades["entry_price"]).abs() / sl_dist)[valid] \
+        if "tp" in trades.columns else None
+    realised = (trades["pnl_points"] / sl_dist)[valid] \
+        if "pnl_points" in trades.columns else None
+
+    # Realised RR of WINNERS only — trades that actually went to profit
+    # (a planned-3 trade that only banked +1 R shows here as 1; SL hits excluded).
+    won = realised[realised > 0] if realised is not None else None
+
+    have_planned  = planned  is not None and len(planned)  > 0
+    have_realised = realised is not None and len(realised) > 0
+    have_won      = won      is not None and len(won)      > 0
+    if not have_planned and not have_realised:
+        st.write("")
+        st.subheader("RR Distribution")
+        st.info("RR distribution needs entry_price + sl (+ tp / pnl_points).")
+        return
+
+    st.write("")
+    st.subheader("RR Distribution")
+
+    w = st.number_input(
+        "RR bin width", value=0.5, min_value=0.1, step=0.1, format="%.2f",
+        key="rr_bin_width",
+    )
+
+    # Shared bins so the two series line up. Widen range slightly past the data.
+    values = pd.concat([s for s in (planned, realised) if s is not None])
+    lo, hi = float(values.min()), float(values.max())
+    start  = math.floor(lo / w) * w
+    end    = math.ceil(hi / w) * w + w   # +1 bin of headroom on the right edge
+    xbins  = dict(start=start, end=end, size=w)
+
+    fig = go.Figure()
+    if have_planned:
+        fig.add_trace(go.Histogram(
+            x=planned, name="Planned RR", xbins=xbins,
+            marker_color="#1f77b4", opacity=0.6,
+            hovertemplate="%{fullData.name}: %{y}<extra></extra>",
+        ))
+    if have_realised:
+        fig.add_trace(go.Histogram(
+            x=realised, name="Realised RR", xbins=xbins,
+            marker_color="#ff7f0e", opacity=0.6,
+            hovertemplate="%{fullData.name}: %{y}<extra></extra>",
+        ))
+    if have_won:
+        fig.add_trace(go.Histogram(
+            x=won, name="Realised RR (wins)", xbins=xbins,
+            marker_color="#2ca02c", opacity=0.6,
+            hovertemplate="%{fullData.name}: %{y}<extra></extra>",
+        ))
+
+    fig.add_vline(x=0,  line_dash="dash", line_color="gray",  opacity=0.6)
+    fig.add_vline(x=-1, line_dash="dot",  line_color="red",   opacity=0.5,
+                  annotation_text="full stop", annotation_position="top")
+
+    fig.update_layout(
+        barmode="overlay",
+        xaxis_title="RR (R-multiple)",
+        yaxis_title="Number of trades",
+        hovermode="x unified",
+        height=650,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig, width='stretch', key="rr_distribution")
+
+
 # ── Chart view ────────────────────────────────────────────────────────────────
 
 def render_chart_view_controls() -> dict:
@@ -1040,6 +1128,7 @@ def render():
     selected       = render_equity_curve(trades)
     chart_settings = render_chart_view_controls()
     render_trade_detail(selected, trades, chart_settings)
+    render_rr_distribution(trades)
     render_trades_table(
         trades, dataset, strategy_name, start_date, end_date,
         filtered, selected_day_types, selected_trade_types_meta,
