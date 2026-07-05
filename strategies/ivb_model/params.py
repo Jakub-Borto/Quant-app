@@ -12,7 +12,8 @@ PARAM_SECTIONS = {
     "CVD Divergence":           ["cvd_pivot_k", "cvd_min_separation", "cvd_max_separation", "cvd_wick_tolerance_ticks", "cvd_min_score"],
     "Basic Risk Management":    ["rr", "sl_type"],
     "Zone SL Risk":             ["zone_rr"],
-    "VWAP Risk":                ["sl_placement", "vwap_std", "vwap_session", "vwap_tp_mode"]
+    "VWAP Risk":                ["sl_placement", "vwap_std", "vwap_session", "vwap_tp_mode"],
+    "VWAP Trailing Risk":       ["trailing_entries"]
 }
 
 
@@ -57,7 +58,7 @@ PARAMS = {
     "cvd_min_score":                0.3,    # z-score threshold for the CVD divergence
     # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive_size_only, passive_wall, cvd_divergence_absorption, cvd_divergence_exhaustion ---
     "valid_entries":                "1111100",
-    # --- which risk management script to use: 1 = basic_risk, 2 = zone_sl_risk, 3 = vwap_tp_risk ---
+    # --- which risk management script to use: 1 = basic_risk, 2 = zone_sl_risk, 3 = vwap_tp_risk, 4 = vwap_trailing_risk ---
     "risk_script":                  1,
     # --- basic risk management script ---
     "rr":                           1.0,    # fixed risk to reward ratio
@@ -69,6 +70,9 @@ PARAMS = {
     "vwap_std":                     2,      # which sigma band for TP (2 or 3)
     "vwap_session":                 "globex",  # vwap band session: "globex" or "rth"
     "vwap_tp_mode":                 "now",  # "now" (band frozen at entry) or "trailing" (live)
+    # --- vwap trailing risk script (script 4 = vwap_tp_risk + signal-driven trailing stop) ---
+    # which signals may trail the stop (1=on, 0=off), same bit order as valid_entries
+    "trailing_entries":             "1111100",
 }
 
 OUTPUT_COLUMNS = [

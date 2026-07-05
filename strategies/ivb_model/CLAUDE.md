@@ -103,13 +103,26 @@ The two CVD finders are deliberately kept independent — each carries its own c
 | 1 | `basic_risk` | VAL/VAH (`sl_type=0`) or swing (`sl_type=1`) | fixed RR (`rr`) |
 | 2 | `zone_sl_risk` | pullback-extreme vs VAL/POC/VAH zones | fixed RR (`zone_rr`) |
 | 3 | `vwap_tp_risk` | VAL/VAH or zone logic (`sl_placement`) | tick-vwap ±2σ/±3σ band (`vwap_std`, `vwap_session`, `vwap_tp_mode`) |
+| 4 | `vwap_trailing_risk` | as script 3, plus a signal-driven trailing stop (`trailing_entries`) | as script 3 |
 
 Each risk script is **fully self-contained**: it owns its stop placement *and* its own copy of the
-fill simulator (`_run_trade`, plus `_run_trade_trailing` in `vwap_tp_risk`). There is no shared
-`sl_tp` module and no cross-script imports — the duplication is intentional so each script can be
-edited in isolation. `vwap_tp_risk` returns **None (no trade)** when the day has no VWAP bands.
-A risk script may attach a `trade["risk_notes"]` dict (e.g. `tp_type`, `escalated`); it is popped
-in `process_day` and merged into `notes` rather than becoming a stray column.
+fill simulator (`_run_trade`, plus `_run_trade_trailing` in the two vwap scripts). There is no
+shared `sl_tp` module and no cross-script imports — the duplication is intentional so each script
+can be edited in isolation. Both vwap scripts return **None (no trade)** when the day has no VWAP
+bands. A risk script may attach a `trade["risk_notes"]` dict (e.g. `tp_type`, `escalated`); it is
+popped in `process_day` and merged into `notes` rather than becoming a stray column.
+
+`vwap_trailing_risk` re-detects the entry-style signals on the live trade bars, gated by the
+`trailing_entries` bit string (same order as `valid_entries`). A signal confirmed by a candle
+meeting both `body_threshold` and `delta_threshold` ratchets the stop to the signal candle's
+extreme (low long / high short) from the next bar on — the stop only ever tightens, and only to
+breakeven-or-better levels (a candidate stop still in loss never trails). Unlike the entry
+finders, **every** trailing signal needs the confirming candle (also `consecutive_absorption`
+and `passive_wall`), and there is no VAL/VAH invalidation in-trade. A hit on a trailed stop
+reports `exit_reason = "trailing_sl"` with the trailed level as `exit_price`, while the `sl`
+column keeps the originally placed stop; applied trails are logged in `risk_notes`
+(`trail_count/times/types/stops`). To support this, `process_day` passes the day-level baselines
+and CVD series to every risk script inside `levels` (older scripts ignore them).
 
 ## Required input columns (per `YYYY-MM-DD.parquet`, tz-aware NY index)
 
@@ -134,8 +147,8 @@ trade. Columns consumed:
 
 | Column(s) | Used for |
 |---|---|
-| `cumulative_delta` | CVD pivots (both `cvd_divergence_*` finders) + `build_cvd_change_baseline` |
-| `vwap_tick_{globex,rth}_std{2,3}_{up,dn}` | `vwap_tp_risk` deviation-band targets (see `VWAP_BAND_COLUMNS` in `core.py`) |
+| `cumulative_delta` | CVD pivots (both `cvd_divergence_*` finders + the CVD trail detectors) + `build_cvd_change_baseline` |
+| `vwap_tick_{globex,rth}_std{2,3}_{up,dn}` | `vwap_tp_risk` / `vwap_trailing_risk` deviation-band targets (see `VWAP_BAND_COLUMNS` in `core.py`) |
 
 `big_trades_folder` is declared in `PARAMS` but **reserved** (not yet consumed).
 
@@ -145,7 +158,8 @@ trade. Columns consumed:
 exit_reason, pnl_points, notes`
 
 - `trade_type` — which finder fired (one of the seven names above).
-- `exit_reason` — `tp` / `sl` / `eod` / `tp_timeout` / `sl_timeout`.
+- `exit_reason` — `tp` / `sl` / `eod` / `tp_timeout` / `sl_timeout` (+ `trailing_sl` from
+  `vwap_trailing_risk`).
 - `pnl_points` — `exit-entry` (long), `entry-exit` (short). **No `ticks` column** (backtester adds it).
 - `notes` — JSON: `breakout_time, retest_time, flip_count, ivb_high, ivb_low, poc, vah, val` merged
   with finder-specific keys and any risk-script `risk_notes`.
@@ -157,7 +171,7 @@ big_trades_folder`. Windows: `retest_window, entry_window, entry_after_absorptio
 absorption_baseline_window`. Entry candle: `delta_threshold, body_threshold`. Then per-finder
 groups (absorption+delta, consecutive, two-bar, passive size-only, passive wall, CVD divergence)
 and per-risk-script groups (basic: `rr`/`sl_type`; zone: `zone_rr`; vwap: `sl_placement`/
-`vwap_std`/`vwap_session`/`vwap_tp_mode`).
+`vwap_std`/`vwap_session`/`vwap_tp_mode`; vwap trailing: `trailing_entries`).
 
 `PARAM_SECTIONS` intentionally omits `tick_size`: it is auto-injected from `ASSET_INFO` by the
 backtester and listed in `HIDDEN_PARAMS`, so it has no UI widget. (That gap is deliberate, not a

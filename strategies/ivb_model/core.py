@@ -255,7 +255,17 @@ def process_day(session: pd.DataFrame, params: dict, ind_df: pd.DataFrame = None
             return None
 
     # --- risk script dispatch (1-based risk_script -> RISK_REGISTRY) ---
-    levels     = {"val": val, "vah": vah, "poc": poc, "vwap_bands": vwap_bands}
+    # levels also carries the day-level baselines + CVD series so risk scripts can re-detect
+    # entry-style signals on the live trade bars (vwap_trailing_risk); older scripts ignore them.
+    levels = {
+        "val": val, "vah": vah, "poc": poc, "vwap_bands": vwap_bands,
+        "sell_baseline":          sell_baseline,
+        "buy_baseline":           buy_baseline,
+        "passive_baseline_long":  passive_baseline_long,
+        "passive_baseline_short": passive_baseline_short,
+        "cvd_series":             cvd_series,
+        "cvd_change_std":         cvd_change_std,
+    }
     post_entry = post_ib.loc[entry_ts:]
 
     idx     = params["risk_script"] - 1
