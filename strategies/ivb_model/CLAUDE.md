@@ -115,14 +115,20 @@ popped in `process_day` and merged into `notes` rather than becoming a stray col
 `vwap_trailing_risk` re-detects the entry-style signals on the live trade bars, gated by the
 `trailing_entries` bit string (same order as `valid_entries`). A signal confirmed by a candle
 meeting both `body_threshold` and `delta_threshold` ratchets the stop to the signal candle's
-extreme (low long / high short) from the next bar on — the stop only ever tightens, and only to
-breakeven-or-better levels (a candidate stop still in loss never trails). Unlike the entry
-finders, **every** trailing signal needs the confirming candle (also `consecutive_absorption`
-and `passive_wall`), and there is no VAL/VAH invalidation in-trade. A hit on a trailed stop
-reports `exit_reason = "trailing_sl"` with the trailed level as `exit_price`, while the `sl`
-column keeps the originally placed stop; applied trails are logged in `risk_notes`
-(`trail_count/times/types/stops`). To support this, `process_day` passes the day-level baselines
-and CVD series to every risk script inside `levels` (older scripts ignore them).
+extreme (low long / high short) from the next bar on — the stop only ever tightens.
+`trailing_in_profit` (default 1) keeps the signal log breakeven-or-better only (an in-loss
+level is not even logged); `0` logs and trails everything, loss included. `late_trailing`
+(default 0) lags the trail one signal behind: each logged signal moves the stop to the
+**previous** logged signal's level, so the first logged signal only arms the log. Unlike the
+entry finders, **every** trailing signal needs the confirming candle (also
+`consecutive_absorption` and `passive_wall`), and there is no VAL/VAH invalidation in-trade. A
+hit on a trailed stop reports `exit_reason = "trailing_sl"` with the trailed level as
+`exit_price`, while the `sl` column keeps the originally placed stop; applied trails are logged
+in `risk_notes` as `trail_count` plus flat `trailN_*` keys per trail (`trailN_time/type/stop`
+and the same fields that finder's `entry_notes` would carry — trigger/passive/wall/CVD-pivot
+details — plus `trailN_trigger_type/_trigger_time` for late trails). To support this,
+`process_day` passes the day-level baselines and CVD series to every risk script inside
+`levels` (older scripts ignore them).
 
 ## Required input columns (per `YYYY-MM-DD.parquet`, tz-aware NY index)
 
@@ -171,7 +177,8 @@ big_trades_folder`. Windows: `retest_window, entry_window, entry_after_absorptio
 absorption_baseline_window`. Entry candle: `delta_threshold, body_threshold`. Then per-finder
 groups (absorption+delta, consecutive, two-bar, passive size-only, passive wall, CVD divergence)
 and per-risk-script groups (basic: `rr`/`sl_type`; zone: `zone_rr`; vwap: `sl_placement`/
-`vwap_std`/`vwap_session`/`vwap_tp_mode`; vwap trailing: `trailing_entries`).
+`vwap_std`/`vwap_session`/`vwap_tp_mode`; vwap trailing: `trailing_entries`/
+`trailing_in_profit`/`late_trailing`).
 
 `PARAM_SECTIONS` intentionally omits `tick_size`: it is auto-injected from `ASSET_INFO` by the
 backtester and listed in `HIDDEN_PARAMS`, so it has no UI widget. (That gap is deliberate, not a

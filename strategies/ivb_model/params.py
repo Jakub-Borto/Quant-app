@@ -13,7 +13,7 @@ PARAM_SECTIONS = {
     "Basic Risk Management":    ["rr", "sl_type"],
     "Zone SL Risk":             ["zone_rr"],
     "VWAP Risk":                ["sl_placement", "vwap_std", "vwap_session", "vwap_tp_mode"],
-    "VWAP Trailing Risk":       ["trailing_entries"]
+    "VWAP Trailing Risk":       ["trailing_entries", "trailing_in_profit", "late_trailing"]
 }
 
 
@@ -59,7 +59,7 @@ PARAMS = {
     # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive_size_only, passive_wall, cvd_divergence_absorption, cvd_divergence_exhaustion ---
     "valid_entries":                "1111100",
     # --- which risk management script to use: 1 = basic_risk, 2 = zone_sl_risk, 3 = vwap_tp_risk, 4 = vwap_trailing_risk ---
-    "risk_script":                  1,
+    "risk_script":                  4,
     # --- basic risk management script ---
     "rr":                           1.0,    # fixed risk to reward ratio
     "sl_type":                      0,      # 0 = VAL, 1 = swing low
@@ -73,6 +73,8 @@ PARAMS = {
     # --- vwap trailing risk script (script 4 = vwap_tp_risk + signal-driven trailing stop) ---
     # which signals may trail the stop (1=on, 0=off), same bit order as valid_entries
     "trailing_entries":             "1111100",
+    "trailing_in_profit":           1,      # 1 = only breakeven-or-better levels trail (in-loss signals not even logged); 0 = trail everything
+    "late_trailing":                0,      # 1 = trail to the PREVIOUS logged signal's level (lag one signal); 0 = trail immediately
 }
 
 OUTPUT_COLUMNS = [

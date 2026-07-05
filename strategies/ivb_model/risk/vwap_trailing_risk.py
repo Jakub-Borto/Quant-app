@@ -6,13 +6,21 @@ while the trade is open, the seven entry-style signals are re-detected on the li
 (gated by the `trailing_entries` bit string, same order as `valid_entries`). When a signal is
 confirmed by a candle meeting BOTH `body_threshold` and `delta_threshold` (in the trade
 direction), the stop ratchets to the signal candle's extreme (low for longs / high for shorts)
-starting from the bar AFTER the confirming candle. The stop only ever tightens, and only to a
-level that already locks in breakeven-or-better — a candidate stop still in loss (below entry
-for longs / above for shorts) is ignored. Unlike the entry finders, EVERY trailing signal
-requires the confirming candle (also consecutive_absorption and passive_wall, which enter
-without one), and there is no VAL/VAH invalidation — the stop manages the exit. A stop hit at a
-trailed level reports exit_reason = "trailing_sl" with the trailed level as exit_price; the `sl`
-column always keeps the originally placed stop.
+starting from the bar AFTER the confirming candle. The stop only ever tightens.
+
+Two switches shape the signal log:
+  trailing_in_profit (default 1) — 1: a signal whose candidate stop is still in loss (below
+    entry for longs / above for shorts) is not even logged; 0: every signal is logged and may
+    trail, loss or not.
+  late_trailing (default 0) — 1: each logged signal trails the stop to the PREVIOUS logged
+    signal's level (the first logged signal only arms the log); 0: a signal trails to its own
+    level immediately.
+
+Unlike the entry finders, EVERY trailing signal requires the confirming candle (also
+consecutive_absorption and passive_wall, which enter without one), and there is no VAL/VAH
+invalidation — the stop manages the exit. A stop hit at a trailed level reports
+exit_reason = "trailing_sl" with the trailed level as exit_price; the `sl` column always keeps
+the originally placed stop.
 
 Self-contained per the risk-script convention: own copies of _zone_sl, both fill simulators and
 the 2-bar/CVD helpers; the only package import is the shared absorption grader the entry finders
@@ -24,14 +32,16 @@ CVD trail detectors additionally need cvd_series / cvd_change_std and disable th
 those are absent.
 
 exit_reason: tp / sl / eod (+ tp_timeout / sl_timeout) + trailing_sl. risk_notes records
-tp_type / escalated plus trail_count / trail_times / trail_types / trail_stops (only the trail
-events that actually tightened the stop before the exit).
+tp_type / escalated / trail_count plus flat trailN_* keys per applied trail (trailN_time /
+trailN_type / trailN_stop and the same fields that finder's entry_notes would carry —
+absorption/trigger/passive/wall/CVD-pivot details — plus trailN_trigger_type/_trigger_time for
+late trails), so every value renders as a plain note tile.
 """
 
 import json
 import pandas as pd
 
-from ..absorption import is_absorption_candle
+from ..absorption import is_absorption_candle, find_absorption_trigger
 
 
 def _zone_sl(post_retest, entry_ts, direction, levels):
@@ -115,6 +125,7 @@ def _trail_absorption_delta(post_entry, direction, levels, params):
             continue
 
         absorption_level = float(bar["low"]) if direction == "long" else float(bar["high"])
+        trigger_price, trigger_volume = find_absorption_trigger(bar, baseline, direction, params)
 
         scan_end = min(i + 1 + params["entry_after_absorption"], n)
         for j in range(i + 1, scan_end):
@@ -130,7 +141,13 @@ def _trail_absorption_delta(post_entry, direction, levels, params):
 
             if _is_confirm_candle(next_bar, direction, params):
                 events.append({"confirm_idx": j, "stop": absorption_level,
-                               "name": "absorption_delta"})
+                               "name": "absorption_delta",
+                               "notes": {
+                                   "absorption_time": ts.strftime("%H:%M"),
+                                   "abs_baseline":    round(baseline, 2),
+                                   "trigger_price":   trigger_price,
+                                   "trigger_volume":  trigger_volume,
+                               }})
                 break
 
     return events
@@ -154,7 +171,7 @@ def _trail_consecutive_absorption(post_entry, direction, levels, params):
         "wick_threshold":   params["consec_wick_threshold"],
     }
 
-    seen: list[tuple[float, float]] = []   # (abs_level, body_mid)
+    seen: list[tuple[float, float, pd.Timestamp]] = []   # (abs_level, body_mid, ts)
     events = []
 
     for i in range(n):
@@ -171,10 +188,10 @@ def _trail_consecutive_absorption(post_entry, direction, levels, params):
             max(float(bar["open"]), float(bar["close"]))
         ) / 2
 
-        seen.append((abs_level, body_mid))
+        seen.append((abs_level, body_mid, ts))
 
         nearby = [
-            lvl for lvl, bm in seen
+            (lvl, t) for lvl, bm, t in seen
             if abs(lvl - abs_level) <= level_tol
             and abs(bm - body_mid) <= level_tol
         ]
@@ -182,11 +199,20 @@ def _trail_consecutive_absorption(post_entry, direction, levels, params):
         if len(nearby) < required_n:
             continue
 
+        # trigger reflects the nth (triggering) candle, as in the entry finder
+        trigger_price, trigger_volume = find_absorption_trigger(bar, baseline, direction, consec_params)
+
         scan_end = min(i + 1 + params["entry_after_absorption"], n)
         for j in range(i + 1, scan_end):
             if _is_confirm_candle(post_entry.iloc[j], direction, params):
                 events.append({"confirm_idx": j, "stop": abs_level,
-                               "name": "consecutive_absorption"})
+                               "name": "consecutive_absorption",
+                               "notes": {
+                                   "absorption_time": [t.strftime("%H:%M") for _, t in nearby],
+                                   "abs_baseline":    round(baseline, 2),
+                                   "trigger_price":   trigger_price,
+                                   "trigger_volume":  trigger_volume,
+                               }})
                 break
 
     return events
@@ -343,7 +369,10 @@ def _trail_two_bar_absorption(post_entry, direction, levels, params):
         except Exception:
             continue
 
-        absorbed = False
+        absorbed       = False
+        trigger_price  = None
+        trigger_volume = None
+
         for price_str, (buy_qty, sell_qty) in raw_tv.items():
             price = float(price_str)
             if not (wick_low <= price <= wick_high):
@@ -354,20 +383,30 @@ def _trail_two_bar_absorption(post_entry, direction, levels, params):
                 continue
             volume_at_level = sell_qty if direction == "long" else buy_qty
             if volume_at_level >= required:
-                absorbed = True
+                absorbed       = True
+                trigger_price  = price
+                trigger_volume = volume_at_level
                 break
 
         if not absorbed:
             continue
 
         stop = merged_low if direction == "long" else merged_high
+        ts1  = post_entry.index[i]
+        ts2  = post_entry.index[i + 1]
 
         # --- confirming candle scan starting from bar2 (inclusive), as in the entry finder ---
         scan_end = min(i + 1 + params["entry_after_absorption"], n)
         for j in range(i + 1, scan_end):
             if _is_confirm_candle(post_entry.iloc[j], direction, params):
                 events.append({"confirm_idx": j, "stop": stop,
-                               "name": "two_bar_absorption"})
+                               "name": "two_bar_absorption",
+                               "notes": {
+                                   "absorption_time":  [ts1.strftime("%H:%M"), ts2.strftime("%H:%M")],
+                                   "two_bar_baseline": round(baseline, 2),
+                                   "trigger_price":    trigger_price,
+                                   "trigger_volume":   trigger_volume,
+                               }})
                 break
 
     return events
@@ -413,9 +452,12 @@ def _trail_passive_size(post_entry, direction, levels, params):
         except Exception:
             continue
 
-        bar_open        = float(bar["open"])
-        required_po     = p_baseline * params["passive_size_order_mult"]
-        has_big_passive = False
+        bar_open              = float(bar["open"])
+        required_po           = p_baseline * params["passive_size_order_mult"]
+        has_big_passive       = False
+        passive_trigger_price = None
+        passive_trigger_size  = None
+        passive_trigger_count = None
 
         for price_str, (size, count) in raw_po.items():
             price = float(price_str)
@@ -426,7 +468,10 @@ def _trail_passive_size(post_entry, direction, levels, params):
             if direction == "short" and price <= bar_open:
                 continue
             if size >= required_po:
-                has_big_passive = True
+                has_big_passive       = True
+                passive_trigger_price = price
+                passive_trigger_size  = size
+                passive_trigger_count = count
                 break
 
         if not has_big_passive:
@@ -443,7 +488,13 @@ def _trail_passive_size(post_entry, direction, levels, params):
         for j in range(i + 1, scan_end):
             if _is_confirm_candle(post_entry.iloc[j], direction, params):
                 events.append({"confirm_idx": j, "stop": stop,
-                               "name": "passive_absorption_size_only"})
+                               "name": "passive_absorption_size_only",
+                               "notes": {
+                                   "absorption_time": ts.strftime("%H:%M"),
+                                   "passive_price":   passive_trigger_price,
+                                   "passive_size":    passive_trigger_size,
+                                   "passive_count":   passive_trigger_count,
+                               }})
                 break
 
     return events
@@ -464,7 +515,7 @@ def _trail_passive_wall(post_entry, direction, levels, params):
     level_tol  = params["passive_wall_ticks"] * tick_size
     required_n = params["passive_wall_n"]
 
-    seen: list[float] = []   # every big passive level so far — spans all bars, never cleared
+    seen: list[tuple[float, pd.Timestamp]] = []   # every big passive level (price, ts) — never cleared
     events = []
 
     for i in range(n):
@@ -501,11 +552,11 @@ def _trail_passive_wall(post_entry, direction, levels, params):
         # append each level; at most one trail event per bar (same stop either way)
         completed = False
         for lvl in new_levels:
-            seen.append(lvl)
+            seen.append((lvl, ts))
             if completed:
                 continue
 
-            nearby = [p for p in seen if abs(p - lvl) <= level_tol]
+            nearby = [(p, t) for p, t in seen if abs(p - lvl) <= level_tol]
             if len(nearby) < required_n:
                 continue
 
@@ -516,7 +567,12 @@ def _trail_passive_wall(post_entry, direction, levels, params):
             for j in range(i + 1, scan_end):
                 if _is_confirm_candle(post_entry.iloc[j], direction, params):
                     events.append({"confirm_idx": j, "stop": stop,
-                                   "name": "passive_wall"})
+                                   "name": "passive_wall",
+                                   "notes": {
+                                       "wall_levels": [round(p, 2) for p, _ in nearby],
+                                       "wall_times":  [t.strftime("%H:%M") for _, t in nearby],
+                                       "wall_count":  len(nearby),
+                                   }})
                     break
 
     return events
@@ -632,8 +688,19 @@ def _trail_cvd(post_entry, direction, levels, params, mode):
             if i >= active["conf_idx"] + params["entry_after_absorption"]:
                 active = None                                # window elapsed, abandon setup
             elif _is_confirm_candle(post_entry.iloc[i], direction, params):
-                events.append({"confirm_idx": i, "stop": float(active["p2"]["price"]),
-                               "name": name})
+                p1, p2 = active["p1"], active["p2"]
+                events.append({"confirm_idx": i, "stop": float(p2["price"]),
+                               "name": name,
+                               "notes": {
+                                   "cvd_pivot1_time":  p1["ts"].strftime("%H:%M"),
+                                   "cvd_pivot1_price": round(p1["price"], 2),
+                                   "cvd_pivot1_cvd":   round(float(p1["cvd"]), 2),
+                                   "cvd_pivot2_time":  p2["ts"].strftime("%H:%M"),
+                                   "cvd_pivot2_price": round(p2["price"], 2),
+                                   "cvd_pivot2_cvd":   round(float(p2["cvd"]), 2),
+                                   "cvd_score":        round(float(active["score"]), 2),
+                                   "cvd_change_std":   round(float(active["std"]), 2),
+                               }})
                 active = None                                # one event per setup
 
     return events
@@ -652,30 +719,50 @@ _TRAIL_DETECTORS = [
 
 
 def _build_trailing_sl(post_entry, direction, base_sl, entry_price, levels, params):
-    """Detect all trail events and build the per-bar effective stop.
+    """Detect all trail signals and build the per-bar effective stop.
+
+    The chronological signal log obeys `trailing_in_profit`: when 1, a signal whose candidate
+    stop is still in loss (long: below entry_price, short: above) is not even logged; when 0,
+    every signal is logged. `late_trailing` shifts the application one signal back: the k-th
+    logged signal trails the stop to the (k-1)-th logged signal's level, so the first logged
+    signal only arms the log. Either way a signal confirmed on bar j applies from bar j+1 and
+    the stop only ever tightens.
 
     Returns (sl_series, trail_flags, trail_log):
-      sl_series   — the stop in effect at each bar (starts at base_sl, only ever tightens;
-                    an event confirmed on bar j takes effect from bar j+1). A candidate stop
-                    still in loss (long: below entry_price, short: above) never trails.
-      trail_flags — True where the effective stop came from a trail event
-      trail_log   — ordered [{eff_ts, type, stop}] of events that actually tightened the stop
+      sl_series   — the stop in effect at each bar
+      trail_flags — True where the effective stop came from a trail signal
+      trail_log   — ordered [{eff_ts, type, stop, notes (+trigger_type/trigger_time when
+                    late)}] of the trails actually applied
     """
     n     = len(post_entry)
     flags = str(params.get("trailing_entries", "0" * len(_TRAIL_DETECTORS)))
     flags = flags.ljust(len(_TRAIL_DETECTORS), "0")
 
+    in_profit_only = int(params.get("trailing_in_profit", 1)) == 1
+    late           = int(params.get("late_trailing", 0)) == 1
+
     events = []
     for detector, flag in zip(_TRAIL_DETECTORS, flags):
         if flag == "1":
             events.extend(detector(post_entry, direction, levels, params))
+    events.sort(key=lambda e: e["confirm_idx"])   # chronological across detectors
 
-    # bucket by effective bar (confirm_idx + 1); events confirmed on the last bar never apply
-    by_bar: dict[int, list] = {}
+    # --- the signal log: the in-profit filter applies BEFORE logging ---
+    log = []
     for e in events:
+        if in_profit_only:
+            in_profit = e["stop"] >= entry_price if direction == "long" \
+                   else e["stop"] <= entry_price
+            if not in_profit:
+                continue
+        log.append(e)
+
+    # bucket by effective bar (confirm_idx + 1); signals confirmed on the last bar never apply
+    by_bar: dict[int, list] = {}
+    for k, e in enumerate(log):
         eff = e["confirm_idx"] + 1
         if eff < n:
-            by_bar.setdefault(eff, []).append(e)
+            by_bar.setdefault(eff, []).append((k, e))
 
     sl_values = [base_sl] * n
     trailed   = [False] * n
@@ -684,19 +771,26 @@ def _build_trailing_sl(post_entry, direction, base_sl, entry_price, levels, para
     current_trailed = False
 
     for i in range(n):
-        for e in by_bar.get(i, []):
-            if direction == "long":
-                tighter   = e["stop"] > current
-                in_profit = e["stop"] >= entry_price   # breakeven-or-better only
+        for k, e in by_bar.get(i, []):
+            if late:
+                if k == 0:
+                    continue          # first logged signal: log only, nothing to trail to yet
+                src = log[k - 1]      # trail to the PREVIOUS logged signal's level
             else:
-                tighter   = e["stop"] < current
-                in_profit = e["stop"] <= entry_price
-            if tighter and in_profit:
-                current         = e["stop"]
+                src = e
+            tighter = src["stop"] > current if direction == "long" else src["stop"] < current
+            if tighter:
+                current         = src["stop"]
                 current_trailed = True
-                trail_log.append({"eff_ts": post_entry.index[i],
-                                  "type":   e["name"],
-                                  "stop":   e["stop"]})
+                applied = {"eff_ts": post_entry.index[i],
+                           "type":   src["name"],
+                           "stop":   src["stop"],
+                           "notes":  src.get("notes", {})}
+                if late:
+                    # the level came from the previous signal; this one pulled the trigger
+                    applied["trigger_type"] = e["name"]
+                    applied["trigger_time"] = post_entry.index[e["confirm_idx"]].strftime("%H:%M")
+                trail_log.append(applied)
         sl_values[i] = current
         trailed[i]   = current_trailed
 
@@ -1048,13 +1142,24 @@ def run(post_retest, post_entry, entry_ts, entry_price, direction, levels, param
     # only the trail events that were in effect by the exit bar are relevant
     applied = [e for e in trail_log if e["eff_ts"] <= trade["exit_time"]]
 
-    trade["risk_notes"] = {
+    risk_notes = {
         "tp_type":     tp_type,
         "escalated":   bool(escalated),
         "trail_count": len(applied),
-        "trail_times": [e["eff_ts"].strftime("%H:%M") for e in applied],
-        "trail_types": [e["type"] for e in applied],
-        "trail_stops": [round(float(e["stop"]), 2) for e in applied],
     }
+
+    # flat trailN_* keys so each renders as its own note tile, like entry notes
+    for idx, e in enumerate(applied, start=1):
+        prefix = f"trail{idx}_"
+        risk_notes[prefix + "time"] = e["eff_ts"].strftime("%H:%M")
+        risk_notes[prefix + "type"] = e["type"]
+        risk_notes[prefix + "stop"] = round(float(e["stop"]), 2)
+        for k, v in e.get("notes", {}).items():
+            risk_notes[prefix + k] = v
+        if "trigger_type" in e:
+            risk_notes[prefix + "trigger_type"] = e["trigger_type"]
+            risk_notes[prefix + "trigger_time"] = e["trigger_time"]
+
+    trade["risk_notes"] = risk_notes
 
     return trade
