@@ -726,7 +726,7 @@ def render_chart_view_controls() -> dict:
     with col1:
         view_mode = st.radio(
             "Chart start from",
-            options=["Candles before entry", "Fixed session time"],
+            options=["Fixed session time", "Candles before entry"],
             key="chart_view_mode",
             horizontal=True,
         )
@@ -842,30 +842,53 @@ def render_trade_detail(selected, trades: pd.DataFrame, chart_settings: dict):
     tp_ticks  = abs(trade["entry_price"] - trade["tp"]) * ticks_per_point
     actual_rr = tp_ticks / sl_ticks if sl_ticks > 0 else 0
 
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("Direction",   trade["direction"].upper())
-    c2.metric("Tick PnL",    f"{trade['ticks']:.0f}")
-    c3.metric("SL Ticks",    f"{sl_ticks:.0f}")
-    c4.metric("TP Ticks",    f"{tp_ticks:.0f}")
-    c5.metric("RR",          f"{actual_rr:.2f}")
-    c6.metric("Duration",    f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m")
-    c7.metric("Exit Reason", trade["exit_reason"])
+    metric_items = [
+        ("Direction",   trade["direction"].upper()),
+        ("Tick PnL",    f"{trade['ticks']:.0f}"),
+        ("SL Ticks",    f"{sl_ticks:.0f}"),
+        ("TP Ticks",    f"{tp_ticks:.0f}"),
+        ("RR",          f"{actual_rr:.2f}"),
+        ("Duration",    f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"),
+        ("Exit Reason", str(trade["exit_reason"])),
+    ]
+    if "trade_type" in trade.index and pd.notna(trade["trade_type"]):
+        metric_items.append(("Trade Type", str(trade["trade_type"])))
+    if "day_type" in trade.index and pd.notna(trade["day_type"]):
+        metric_items.append(("Day Type", str(trade["day_type"])))
+
+    per_row = 5
+    for start in range(0, len(metric_items), per_row):
+        cols = st.columns(per_row)
+        for col, (label, value) in zip(cols, metric_items[start:start + per_row]):
+            col.metric(label, value)
 
     if "notes" in trade.index and pd.notna(trade["notes"]):
         try:
             notes = json.loads(trade["notes"])
-            cols  = st.columns(len(notes))
-            for col, (key, val) in zip(cols, notes.items()):
-                if isinstance(val, list):
-                    display = ", ".join(
-                        pd.Timestamp(v).strftime("%H:%M") if _is_timestamp(v) else str(v)
-                        for v in val
-                    )
-                elif _is_timestamp(val):
-                    display = pd.Timestamp(val).strftime("%H:%M")
-                else:
-                    display = str(val)
-                col.metric(key, display)
+            items = list(notes.items())
+            if items:
+                st.write("")
+                st.markdown("**Trade notes**")
+                # Render in rows of up to 4 tiles. We use caption + markdown
+                # instead of st.metric because a metric value is single-line and
+                # clips long values (e.g. a joined timestamp list) with an
+                # ellipsis; markdown wraps so the full note is always visible.
+                per_row = 4
+                for start in range(0, len(items), per_row):
+                    chunk = items[start:start + per_row]
+                    cols  = st.columns(per_row)
+                    for col, (key, val) in zip(cols, chunk):
+                        if isinstance(val, list):
+                            display = ", ".join(
+                                pd.Timestamp(v).strftime("%H:%M") if _is_timestamp(v) else str(v)
+                                for v in val
+                            )
+                        elif _is_timestamp(val):
+                            display = pd.Timestamp(val).strftime("%H:%M")
+                        else:
+                            display = str(val)
+                        col.caption(key)
+                        col.markdown(f"**{display}**")
         except Exception as e:
             st.warning(str(e))
 
