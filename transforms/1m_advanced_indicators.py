@@ -20,6 +20,89 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+ASSET_INFO = {
+    # Equity Index
+    "ES":  {"tick_size": 0.25},
+    "NQ":  {"tick_size": 0.25},
+    "RTY": {"tick_size": 0.10},
+    "YM":  {"tick_size": 1.00},
+    "MES": {"tick_size": 0.25},
+    "MNQ": {"tick_size": 0.25},
+    "M2K": {"tick_size": 0.10},
+    "MYM": {"tick_size": 1.00},
+    # Rates
+    "ZN":  {"tick_size": 0.015625},
+    "ZB":  {"tick_size": 0.03125},
+    "ZF":  {"tick_size": 0.0078125},
+    "ZT":  {"tick_size": 0.00390625},
+    "SR3": {"tick_size": 0.0025},
+    # Energy
+    "CL":  {"tick_size": 0.01},
+    "QM":  {"tick_size": 0.025},
+    "NG":  {"tick_size": 0.001},
+    "RB":  {"tick_size": 0.0001},
+    "HO":  {"tick_size": 0.0001},
+    # Metals
+    "GC":  {"tick_size": 0.10},
+    "MGC": {"tick_size": 0.10},
+    "SI":  {"tick_size": 0.005},
+    "HG":  {"tick_size": 0.0005},
+    # Grains
+    "ZC":  {"tick_size": 0.25},
+    "ZS":  {"tick_size": 0.25},
+    "ZW":  {"tick_size": 0.25},
+    # FX
+    "6E":  {"tick_size": 0.00005},
+    "6J":  {"tick_size": 0.0000005},
+    "6B":  {"tick_size": 0.0001},
+    "6C":  {"tick_size": 0.00005},
+    # Crypto
+    "BTC": {"tick_size": 5.00},
+}
+
+
+def _asset_from_path(path) -> str | None:
+    """
+    Derive the asset symbol from a data path such as
+    `data/parquet/ASSET_SYMBOL/input_dataset` by matching any path
+    component (case-insensitive) against ASSET_INFO keys.
+    Returns the ticker, or None if no component matches.
+    """
+    for part in Path(path).parts:
+        key = part.upper()
+        if key in ASSET_INFO:
+            return key
+    return None
+
+
+def _round_vwap_to_tick(indicators: pd.DataFrame, tick_size: float) -> pd.DataFrame:
+    """
+    Snap the VWAP columns to the instrument's tick grid, in place.
+
+      - the VWAP line itself -> nearest tick (normal rounding)
+      - upper std bands (*_up) -> round DOWN to nearest tick
+      - lower std bands (*_dn) -> round UP to nearest tick
+
+    Rounding the bands inward keeps them on tradable price levels while
+    never overstating the band width. Non-VWAP columns are left untouched.
+    NaNs pass through unchanged.
+    """
+    for col in indicators.columns:
+        if not col.startswith("vwap_"):
+            continue
+
+        vals = indicators[col].to_numpy(dtype=float) / tick_size
+        if col.endswith("_up"):
+            snapped = np.floor(vals)
+        elif col.endswith("_dn"):
+            snapped = np.ceil(vals)
+        else:
+            snapped = np.round(vals)
+
+        # Multiply back and clean binary float noise (e.g. 32.30000000004).
+        indicators[col] = np.round(snapped * tick_size, 10)
+
+    return indicators
 
 # ---------------------------------------------------------------------------
 # BAR VWAP
@@ -364,6 +447,7 @@ def _process_file(
     output_path: Path,
     skip_existing: bool = True,
     on_log: callable = None,
+    tick_size: float = None,
 ) -> None:
     """
     Read one candle Parquet, compute all 29 indicator columns,
@@ -400,7 +484,10 @@ def _process_file(
 
     indicators = pd.concat([bar_vwap, tick_vwap, cvd, absorption], axis=1)
 
-    
+    if tick_size is not None:
+        indicators = _round_vwap_to_tick(indicators, tick_size)
+    else:
+        log(f"⚠ {date_label} — unknown asset, VWAP left unrounded")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     indicators.to_parquet(output_path)
@@ -428,6 +515,11 @@ def run_all(
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    # Asset (hence tick size) is derived from the input path, e.g.
+    # data/parquet/ASSET_SYMBOL/input_dataset
+    asset     = _asset_from_path(input_path)
+    tick_size = ASSET_INFO[asset]["tick_size"] if asset else None
+
     files = sorted(input_path.glob("*.parquet"))
     total = len(files)
 
@@ -450,6 +542,7 @@ def run_all(
                 output_path   = out_file,
                 skip_existing = skip_existing,
                 on_log        = on_log,
+                tick_size     = tick_size,
             )
         except Exception as e:
             if on_progress:
