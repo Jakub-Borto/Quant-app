@@ -178,6 +178,14 @@ def _trail_consecutive_absorption(post_entry, direction, levels, params):
         bar = post_entry.iloc[i]
         ts  = post_entry.index[i]
 
+        # an absorption level price has since CLOSED through is dead (mirrors the entry finder):
+        # long => any later close strictly below the level runs it out; closing AT it keeps it
+        close_i = float(bar["close"])
+        if direction == "long":
+            seen = [(lvl, bm, t) for lvl, bm, t in seen if close_i >= lvl]
+        else:
+            seen = [(lvl, bm, t) for lvl, bm, t in seen if close_i <= lvl]
+
         baseline = baseline_series.get(ts, float("nan"))
         if not is_absorption_candle(bar, baseline, direction, consec_params):
             continue
@@ -578,14 +586,23 @@ def _trail_passive_wall(post_entry, direction, levels, params):
     return events
 
 
+def _cvd_param(params, mode, name):
+    """CVD divergence params are per-flavour: the exhaustion finder reads its own cvd_exh_*
+    keys, the absorption finder reads cvd_*. `name` is the unprefixed suffix (pivot_k, etc.)."""
+    prefix = "cvd_exh_" if mode == "exhaustion" else "cvd_"
+    return params[prefix + name]
+
+
 def _test_cvd_divergence(p1, p2, direction, params, cvd_change_std, mode):
     """Grade the (P1 older, P2 newer) pivot pair. Returns a setup dict or None.
     mode = "absorption" (price held, CVD pushed) or "exhaustion" (price extended, CVD didn't)."""
+    min_score = _cvd_param(params, mode, "min_score")
+
     sep = p2["idx"] - p1["idx"]
-    if sep < params["cvd_min_separation"] or sep > params["cvd_max_separation"]:
+    if sep < _cvd_param(params, mode, "min_separation") or sep > _cvd_param(params, mode, "max_separation"):
         return None
 
-    tol = params["cvd_wick_tolerance_ticks"] * params["tick_size"]
+    tol = _cvd_param(params, mode, "wick_tolerance_ticks") * params["tick_size"]
     if mode == "absorption":
         # lower/equal high (short) or higher/equal low (long)
         if direction == "short":
@@ -611,18 +628,18 @@ def _test_cvd_divergence(p1, p2, direction, params, cvd_change_std, mode):
     if mode == "absorption":
         # CVD rose into a lower/equal high (short) / fell into a higher/equal low (long)
         if direction == "short":
-            if not (score >= params["cvd_min_score"]):
+            if not (score >= min_score):
                 return None
         else:
-            if not (score <= -params["cvd_min_score"]):
+            if not (score <= -min_score):
                 return None
     else:
         # CVD fell into a higher/equal high (short) / rose into a lower/equal low (long)
         if direction == "short":
-            if not (score <= -params["cvd_min_score"]):
+            if not (score <= -min_score):
                 return None
         else:
-            if not (score >= params["cvd_min_score"]):
+            if not (score >= min_score):
                 return None
 
     return {"p1": p1, "p2": p2, "score": score, "std": std}
@@ -641,7 +658,7 @@ def _trail_cvd(post_entry, direction, levels, params, mode):
     n    = len(post_entry)
 
     # --- stage 1: vectorized candidate pivots (left-side k-bar fractal) ---
-    k = params["cvd_pivot_k"]
+    k = _cvd_param(params, mode, "pivot_k")
     prev_high_max = post_entry["high"].rolling(k).max().shift(1)
     prev_low_min  = post_entry["low"].rolling(k).min().shift(1)
     cand_high = (post_entry["high"] > prev_high_max).values

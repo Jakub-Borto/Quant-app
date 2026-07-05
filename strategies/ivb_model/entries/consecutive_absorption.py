@@ -62,6 +62,16 @@ def find_entry(
         if invalid_whole.iloc[i]:
             return None, None, ts, None, None
 
+        # An absorption level that price has since CLOSED through is dead: for a long, any
+        # later close strictly below the level runs it out; closing exactly AT it keeps it
+        # valid. Prune every bar (not just absorption bars) so a plain candle closing through
+        # also kills the level.
+        close_i = float(bar["close"])
+        if direction == "long":
+            seen = [(lvl, bm, t) for lvl, bm, t in seen if close_i >= lvl]
+        else:
+            seen = [(lvl, bm, t) for lvl, bm, t in seen if close_i <= lvl]
+
         baseline = (
             sell_baseline.get(ts, float("nan"))
             if direction == "long"

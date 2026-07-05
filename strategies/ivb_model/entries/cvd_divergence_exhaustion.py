@@ -29,12 +29,12 @@ def _test_divergence(p1: dict, p2: dict, direction: str, params: dict, cvd_chang
     """Grade the (P1 older, P2 newer) pivot pair. Returns a setup dict or None."""
     # separation: too close => not a pair yet; too far => P1 is stale, drop it
     sep = p2["idx"] - p1["idx"]
-    if sep < params["cvd_min_separation"] or sep > params["cvd_max_separation"]:
+    if sep < params["cvd_exh_min_separation"] or sep > params["cvd_exh_max_separation"]:
         return None
 
     # price condition (higher/equal high, or lower/equal low) with a small wick tolerance —
     # price DID extend (this is the opposite inequality to absorption)
-    tol = params["cvd_wick_tolerance_ticks"] * params["tick_size"]
+    tol = params["cvd_exh_wick_tolerance_ticks"] * params["tick_size"]
     if direction == "short":
         if not (p2["price"] >= p1["price"] - tol):       # higher/equal high
             return None
@@ -49,10 +49,10 @@ def _test_divergence(p1: dict, p2: dict, direction: str, params: dict, cvd_chang
 
     score = (p2["cvd"] - p1["cvd"]) / std
     if direction == "short":
-        if not (score <= -params["cvd_min_score"]):      # CVD fell into a higher/equal high
+        if not (score <= -params["cvd_exh_min_score"]):  # CVD fell into a higher/equal high
             return None
     else:
-        if not (score >= params["cvd_min_score"]):       # CVD rose into a lower/equal low
+        if not (score >= params["cvd_exh_min_score"]):   # CVD rose into a lower/equal low
             return None
 
     return {"p1": p1, "p2": p2, "score": score, "std": std}
@@ -110,7 +110,7 @@ def find_entry(
         return None, None, post_retest.index[0], None, None
 
     # --- stage 1: vectorized candidate pivots (left-side k-bar fractal) ---
-    k = params["cvd_pivot_k"]
+    k = params["cvd_exh_pivot_k"]
     prev_high_max = post_retest["high"].rolling(k).max().shift(1)
     prev_low_min  = post_retest["low"].rolling(k).min().shift(1)
     cand_high = (post_retest["high"] > prev_high_max).values   # strictly > each of prev k highs

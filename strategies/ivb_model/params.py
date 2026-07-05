@@ -9,7 +9,8 @@ PARAM_SECTIONS = {
     "Two Bar Absorption":       ["two_bar_wick_ticks", "two_bar_abs_mult"],
     "Passive Absorption (Size Only)": ["passive_size_order_mult", "passive_size_absorption_mult", "passive_size_wick_threshold"],
     "Passive Wall":             ["passive_wall_n", "passive_wall_mult", "passive_wall_ticks"],
-    "CVD Divergence":           ["cvd_pivot_k", "cvd_min_separation", "cvd_max_separation", "cvd_wick_tolerance_ticks", "cvd_min_score"],
+    "CVD Divergence (Absorption)": ["cvd_pivot_k", "cvd_min_separation", "cvd_max_separation", "cvd_wick_tolerance_ticks", "cvd_min_score"],
+    "CVD Divergence (Exhaustion)": ["cvd_exh_pivot_k", "cvd_exh_min_separation", "cvd_exh_max_separation", "cvd_exh_wick_tolerance_ticks", "cvd_exh_min_score"],
     "Basic Risk Management":    ["rr", "sl_type"],
     "Zone SL Risk":             ["zone_rr"],
     "VWAP Risk":                ["sl_placement", "vwap_std", "vwap_session", "vwap_tp_mode"],
@@ -56,6 +57,12 @@ PARAMS = {
     "cvd_max_separation":           20,     # max bars between the two pivots (older pivot stale beyond this)
     "cvd_wick_tolerance_ticks":     2,      # tolerance (ticks) for lower/equal high (or higher/equal low)
     "cvd_min_score":                0.3,    # z-score threshold for the CVD divergence
+    # --- cvd divergence (exhaustion) params — independent of the absorption finder's ---
+    "cvd_exh_pivot_k":              2,      # bars on the left required to qualify a pivot (fractal)
+    "cvd_exh_min_separation":       3,      # min bars between the two pivots
+    "cvd_exh_max_separation":       20,     # max bars between the two pivots (older pivot stale beyond this)
+    "cvd_exh_wick_tolerance_ticks": 2,      # tolerance (ticks) for higher/equal high (or lower/equal low)
+    "cvd_exh_min_score":            0.3,    # z-score threshold for the CVD divergence
     # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive_size_only, passive_wall, cvd_divergence_absorption, cvd_divergence_exhaustion ---
     "valid_entries":                "1111100",
     # --- which risk management script to use: 1 = basic_risk, 2 = zone_sl_risk, 3 = vwap_tp_risk, 4 = vwap_trailing_risk ---

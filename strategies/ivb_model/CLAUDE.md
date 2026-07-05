@@ -67,7 +67,10 @@ confirming candle. The `valid_entries` bit order is exactly the `FINDER_REGISTRY
    `wick_threshold`.
 2. **`consecutive_absorption`** — `consec_abs_n` absorption candles clustered within
    `consec_abs_ticks` of the same level/body-midpoint; **no** delta confirmation. Uses
-   `consec_abs_mult`, `consec_wick_threshold`.
+   `consec_abs_mult`, `consec_wick_threshold`. An absorption level is dropped once any later
+   candle **closes through** it (long: close strictly below the level; short: strictly above) —
+   closing exactly at the level keeps it. (`absorption_delta` enforces the same rule inside its
+   confirm scan via an early break.)
 3. **`two_bar_absorption`** — a reversal pair (small wicks ≤ `two_bar_wick_ticks`) merged into a
    synthetic candle, graded against a 2-bar paired baseline (`two_bar_abs_mult`), then a confirming
    candle.
@@ -81,12 +84,15 @@ confirming candle. The `valid_entries` bit order is exactly the `FINDER_REGISTRY
    `passive_orders`.
 6. **`cvd_divergence_absorption`** — a CVD divergence at a price extreme read as absorption (price
    could not extend while CVD pushed further), confirmed by an entry candle. **Requires CVD** from
-   the indicators folder; disables itself when CVD is absent.
+   the indicators folder; disables itself when CVD is absent. Uses the `cvd_*` params.
 7. **`cvd_divergence_exhaustion`** — the mirror, read as exhaustion (price did extend to a new
-   extreme but CVD could not follow), confirmed by an entry candle. **Requires CVD.**
+   extreme but CVD could not follow), confirmed by an entry candle. **Requires CVD.** Uses its own
+   independent `cvd_exh_*` params (pivot_k / min_separation / max_separation /
+   wick_tolerance_ticks / min_score).
 
 The two CVD finders are deliberately kept independent — each carries its own copy of
-`_test_divergence` / `_is_entry_candle` rather than sharing a helper.
+`_test_divergence` / `_is_entry_candle` and its own `cvd_*` / `cvd_exh_*` param set rather than
+sharing.
 
 ### Adding an eighth entry type
 
@@ -153,7 +159,7 @@ trade. Columns consumed:
 
 | Column(s) | Used for |
 |---|---|
-| `cumulative_delta` | CVD pivots (both `cvd_divergence_*` finders + the CVD trail detectors) + `build_cvd_change_baseline` |
+| `cumulative_delta` | CVD pivots (both `cvd_divergence_*` finders — absorption via `cvd_*`, exhaustion via `cvd_exh_*` — + the CVD trail detectors) + `build_cvd_change_baseline` |
 | `vwap_tick_{globex,rth}_std{2,3}_{up,dn}` | `vwap_tp_risk` / `vwap_trailing_risk` deviation-band targets (see `VWAP_BAND_COLUMNS` in `core.py`) |
 
 `big_trades_folder` is declared in `PARAMS` but **reserved** (not yet consumed).
@@ -175,7 +181,8 @@ exit_reason, pnl_points, notes`
 General: `ib_minutes, trade_timeout, max_flips, valid_entries, risk_script, indicators_folder,
 big_trades_folder`. Windows: `retest_window, entry_window, entry_after_absorption,
 absorption_baseline_window`. Entry candle: `delta_threshold, body_threshold`. Then per-finder
-groups (absorption+delta, consecutive, two-bar, passive size-only, passive wall, CVD divergence)
+groups (absorption+delta, consecutive, two-bar, passive size-only, passive wall, CVD divergence
+absorption `cvd_*` / exhaustion `cvd_exh_*`)
 and per-risk-script groups (basic: `rr`/`sl_type`; zone: `zone_rr`; vwap: `sl_placement`/
 `vwap_std`/`vwap_session`/`vwap_tp_mode`; vwap trailing: `trailing_entries`/
 `trailing_in_profit`/`late_trailing`).
