@@ -610,16 +610,19 @@ def _render_prop_sim(sim: dict, account_size: float, costs_on: bool):
         rows.append(("P(pass)", _fmt_pct01(s["p_pass"])))
         rows.append(("Trades to pass", _fmt_pctiles(s["trades_to_pass"])))
         fb = s["failure_breakdown"]
-        rows.append(("Failure — max-loss breach", _fmt_pct01(fb["max_loss"])))
+        rows.append(("Failure — max-loss breach (trailing)", _fmt_pct01(fb["max_loss"])))
+        rows.append(("Failure — static-loss breach", _fmt_pct01(fb.get("static_loss", 0.0))))
         rows.append(("Failure — unresolved at horizon", _fmt_pct01(fb["unresolved"])))
         rows.append(("Consistency hold rate", _fmt_pct01(s["consistency_hold_rate"])))
         rows.append(("Median final equity (passers)", _fmt_dollar(s["median_final_equity_passers"])))
         rows.append(("Worst peak-to-trough (passers)", _fmt_dollar(s["worst_peak_to_trough_passers"])))
     else:                    # payout
+        bb = s["breach_breakdown"]
         rows.append(("P(payout | funded)", _fmt_pct01(s["p_payout"])))
         rows.append(("Trades to payout", _fmt_pctiles(s["trades_to_payout"])))
-        rows.append(("Funded breach rate (max-loss)", _fmt_pct01(s["breach_rate"])))
-        rows.append(("Unresolved at horizon", _fmt_pct01(s["breach_breakdown"]["unresolved"])))
+        rows.append(("Funded breach — max-loss (trailing)", _fmt_pct01(bb["max_loss"])))
+        rows.append(("Funded breach — static-loss", _fmt_pct01(bb.get("static_loss", 0.0))))
+        rows.append(("Unresolved at horizon", _fmt_pct01(bb["unresolved"])))
         rows.append(("Held-then-diluted-and-paid", _fmt_pct01(s["held_then_paid"])))
         rows.append(("Held-then-breached-while-grinding", _fmt_pct01(s["held_then_breached"])))
         rows.append(("Consistency hold rate", _fmt_pct01(s["consistency_hold_rate"])))
@@ -718,6 +721,11 @@ def _render_prop_firm(mc_module, mc_name, trades_path, trade_filename,
                           "pf_ch_eod", step=500.0,
                           help="Trailing from the highest end-of-day balance; ratchets up only, "
                                "then locks once the floor reaches the starting balance (never above it).")
+    ch_static = _rule_widget("Static Loss Limit ($)", defaults["challenge_static_loss"],
+                             "pf_ch_static", step=500.0,
+                             help="Fixed floor at (starting balance − value) that never trails. "
+                                  "Breach when closed equity drops to it. Independent of the EOD "
+                                  "limit — run either or both; the nearer floor binds.")
     ch_daily = _rule_widget("Daily Loss Limit ($)", defaults["challenge_daily_loss"],
                             "pf_ch_daily", step=250.0,
                             help="Risk cap, not a breach — caps size so one day can't lose more than this.")
@@ -735,6 +743,10 @@ def _render_prop_firm(mc_module, mc_name, trades_path, trade_filename,
                           "pf_po_eod", step=500.0,
                           help="Trailing from the highest end-of-day balance; ratchets up only, "
                                "then locks once the floor reaches the starting balance (never above it).")
+    po_static = _rule_widget("Static Loss Limit ($)", defaults["payout_static_loss"],
+                             "pf_po_static", step=500.0,
+                             help="Fixed floor at (starting balance − value) that never trails. "
+                                  "Independent of the EOD limit — run either or both.")
     po_daily = _rule_widget("Daily Loss Limit ($)", defaults["payout_daily_loss"],
                             "pf_po_daily", step=250.0)
     po_cons = _rule_widget("Consistency Rule", defaults["payout_consistency"],
@@ -785,10 +797,12 @@ def _render_prop_firm(mc_module, mc_name, trades_path, trade_filename,
             "cost_ctx": cost_ctx,
             "cap_wins_to_consistency": bool(cap_wins),
             "profit_target": profit_target,
-            "challenge_max_loss_eod": ch_eod, "challenge_daily_loss": ch_daily,
+            "challenge_max_loss_eod": ch_eod, "challenge_static_loss": ch_static,
+            "challenge_daily_loss": ch_daily,
             "challenge_consistency": ch_cons, "challenge_contract_limit": ch_climit,
             "targeted_payout": targeted_payout,
-            "payout_max_loss_eod": po_eod, "payout_daily_loss": po_daily,
+            "payout_max_loss_eod": po_eod, "payout_static_loss": po_static,
+            "payout_daily_loss": po_daily,
             "payout_consistency": po_cons, "payout_contract_limit": po_climit,
             "maximum_withdrawal": max_withdrawal,
         }

@@ -51,6 +51,7 @@ PARAMS = {
     # Challenge (passing) ruleset
     "profit_target":          {"enabled": True,  "value": 6000.0},
     "challenge_max_loss_eod": {"enabled": True,  "value": 4000.0},
+    "challenge_static_loss":  {"enabled": False, "value": 4000.0},
     "challenge_daily_loss":   {"enabled": True,  "value": 2000.0},
     "challenge_consistency":  {"enabled": False, "value": 0.30},
     "challenge_contract_limit": {"enabled": True, "value": 3.0},
@@ -58,6 +59,7 @@ PARAMS = {
     # Payout (funded) ruleset
     "targeted_payout":      {"enabled": True,  "value": 4000.0},
     "payout_max_loss_eod":  {"enabled": True,  "value": 4000.0},
+    "payout_static_loss":   {"enabled": False, "value": 4000.0},
     "payout_daily_loss":    {"enabled": True,  "value": 2000.0},
     "payout_consistency":   {"enabled": True,  "value": 0.30},
     "payout_contract_limit": {"enabled": True, "value": 3.0},
@@ -108,8 +110,9 @@ def _challenge_stats(sim: dict) -> dict:
         "p_pass":      float(passed.mean()),
         "trades_to_pass": _pctiles(sim["stop_step"][passed]),
         "failure_breakdown": {
-            "max_loss":   float((sim["outcome"] == "fail:max_loss").mean()),
-            "unresolved": float(unresolved.mean()),
+            "max_loss":    float((sim["outcome"] == "fail:max_loss").mean()),
+            "static_loss": float((sim["outcome"] == "fail:static_loss").mean()),
+            "unresolved":  float(unresolved.mean()),
         },
         "consistency_hold_rate": float(sim["held_by_consistency"].mean()),
         "median_final_equity_passers": (
@@ -127,10 +130,13 @@ def _payout_stats(sim: dict) -> dict:
         "n_paths":   n,
         "p_payout":  float(passed.mean()),
         "trades_to_payout": _pctiles(sim["stop_step"][passed]),
-        "breach_rate": float((sim["outcome"] == "fail:max_loss").mean()),
+        # breach_rate = any loss-floor breach (trailing EOD or static).
+        "breach_rate": float(
+            ((sim["outcome"] == "fail:max_loss") | (sim["outcome"] == "fail:static_loss")).mean()),
         "breach_breakdown": {
-            "max_loss":   float((sim["outcome"] == "fail:max_loss").mean()),
-            "unresolved": float(unresolved.mean()),
+            "max_loss":    float((sim["outcome"] == "fail:max_loss").mean()),
+            "static_loss": float((sim["outcome"] == "fail:static_loss").mean()),
+            "unresolved":  float(unresolved.mean()),
         },
         # The true cost of the consistency rule:
         "held_then_paid":     float((held & passed).mean()),
@@ -249,6 +255,7 @@ def run(trades: pd.DataFrame, sizer_module, sizer_params: dict, params: dict) ->
         **base_cfg,
         "target":         params["profit_target"],
         "max_loss_eod":   params["challenge_max_loss_eod"],
+        "static_loss":    params.get("challenge_static_loss", {"enabled": False, "value": 0}),
         "daily_loss":     params["challenge_daily_loss"],
         "consistency":    params["challenge_consistency"],
         "contract_limit": params["challenge_contract_limit"],
@@ -257,17 +264,21 @@ def run(trades: pd.DataFrame, sizer_module, sizer_params: dict, params: dict) ->
         **base_cfg,
         "target":         params["targeted_payout"],
         "max_loss_eod":   params["payout_max_loss_eod"],
+        "static_loss":    params.get("payout_static_loss", {"enabled": False, "value": 0}),
         "daily_loss":     params["payout_daily_loss"],
         "consistency":    params["payout_consistency"],
         "contract_limit": params["payout_contract_limit"],
     }
 
+    def _has_loss_limit(cfg):
+        return cfg["max_loss_eod"]["enabled"] or cfg["static_loss"]["enabled"]
+
     # Warn on configurations that make outcomes degenerate.
-    if not challenge_cfg["max_loss_eod"]["enabled"]:
+    if not _has_loss_limit(challenge_cfg):
         warnings.append("Challenge: no active loss limit — paths can never fail.")
     if not challenge_cfg["target"]["enabled"]:
         warnings.append("Challenge: no profit target — paths can never pass.")
-    if not payout_cfg["max_loss_eod"]["enabled"]:
+    if not _has_loss_limit(payout_cfg):
         warnings.append("Payout: no active loss limit — funded paths can never breach.")
     if not payout_cfg["target"]["enabled"]:
         warnings.append("Payout: no targeted payout — funded paths can never get paid.")

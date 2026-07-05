@@ -191,6 +191,8 @@ def run_prop_paths(
         target       value = profit ($) above start_equity to pass
         max_loss_eod value = trailing drawdown ($) below the peak EOD balance,
                              locking at the starting balance (floor never exceeds start_eq)
+        static_loss  value = fixed drawdown ($) below the starting balance; a floor
+                             that never trails (breach when equity <= start - value)
         daily_loss   value = per-day loss budget ($, positive) — risk cap only
         consistency  value = max fraction of total profit allowed from one day
         contract_limit value = hard cap on size (full-contract units)
@@ -213,9 +215,15 @@ def run_prop_paths(
 
     target_on, target_v = _rule(config, "target")
     eod_on,    eod_v     = _rule(config, "max_loss_eod")
+    static_on, static_v  = _rule(config, "static_loss")
     daily_on,  daily_v   = _rule(config, "daily_loss")
     cons_on,   cons_v    = _rule(config, "consistency")
     climit_on, climit_v  = _rule(config, "contract_limit")
+
+    # Static loss floor: a FIXED threshold that never trails. Breach when closed
+    # equity <= start_equity - static_v. Independent of the trailing EOD floor;
+    # either or both may be enabled, and the higher (nearer) floor binds.
+    static_floor = (start_eq - static_v) if static_on else None
 
     # Win cap tied to the consistency rule: model a trader who stops/reduces once
     # the day's profit hits the consistency daily threshold (cons% × target), so a
@@ -292,13 +300,17 @@ def run_prop_paths(
         if climit_on:
             size = np.minimum(size, climit_v)
 
-        if eod_on and risk_dollars_arr is not None:
-            rpc        = risk_dollars_arr[col]                 # $ risk per contract at full stop
-            # Trailing floor that LOCKS at the starting balance: it trails the peak
-            # EOD balance up, but once peak - limit reaches start_eq it pins there
-            # and never rises above the starting balance.
-            eod_floor  = np.minimum(peak_eod[a] - eod_v, start_eq)
-            remaining  = equity[a] - eod_floor                 # distance to the EOD floor
+        if (eod_on or static_on) and risk_dollars_arr is not None:
+            rpc = risk_dollars_arr[col]                        # $ risk per contract at full stop
+            # Bind on the NEAREST enabled loss floor. Trailing EOD floor LOCKS at
+            # the starting balance (peak - limit, capped at start_eq); the static
+            # floor is fixed. remaining = distance to whichever floor is higher.
+            binding = np.full(equity[a].shape, -np.inf)
+            if eod_on:
+                binding = np.maximum(binding, np.minimum(peak_eod[a] - eod_v, start_eq))
+            if static_on:
+                binding = np.maximum(binding, static_floor)
+            remaining = equity[a] - binding
             if daily_on:
                 remaining = np.minimum(remaining, daily_v)     # daily budget (fresh each day)
             remaining = np.maximum(remaining, 0.0)
@@ -334,9 +346,15 @@ def run_prop_paths(
         # consistency uses the largest single-day profit INCLUDING today so far
         eff_max_day  = np.maximum(max_day_profit[a], day_pnl[a])
 
-        # Floor trails the peak EOD balance up but locks at the starting balance.
-        breached = (eq_a <= np.minimum(peak_eod[a] - eod_v, start_eq)) if eod_on \
-            else np.zeros(eq_a.shape, dtype=bool)
+        # Loss floors (−inf = rule disabled, so `eq <= −inf` is always False):
+        #   EOD  — trails the peak EOD balance up, locks at the starting balance.
+        #   static — fixed at start_eq − static_v.
+        neg_inf = np.full(eq_a.shape, -np.inf)
+        eod_floor_v    = np.minimum(peak_eod[a] - eod_v, start_eq) if eod_on else neg_inf
+        static_floor_v = np.full(eq_a.shape, static_floor) if static_on else neg_inf
+        eod_breach    = eq_a <= eod_floor_v
+        static_breach = eq_a <= static_floor_v
+        breached      = eod_breach | static_breach
 
         if target_on:
             hit = eq_a >= (start_eq + target_v)
@@ -352,12 +370,16 @@ def run_prop_paths(
 
         # Breach resolves first (a path can't both pass and breach on one close).
         fail_mask = breached & (~passed)
+        # Attribute to the binding (higher/nearer) floor when both are crossed.
+        static_fail  = fail_mask & static_breach & (static_floor_v >= eod_floor_v)
+        maxloss_fail = fail_mask & (~static_fail)
 
-        held_ever[a_idx[held]]      = True
-        outcome[a_idx[fail_mask]]   = "fail:max_loss"
-        outcome[a_idx[passed]]      = "pass"
-        stop_step[a_idx[fail_mask]] = k + 1
-        stop_step[a_idx[passed]]    = k + 1
+        held_ever[a_idx[held]]        = True
+        outcome[a_idx[maxloss_fail]]  = "fail:max_loss"
+        outcome[a_idx[static_fail]]   = "fail:static_loss"
+        outcome[a_idx[passed]]        = "pass"
+        stop_step[a_idx[fail_mask]]   = k + 1
+        stop_step[a_idx[passed]]      = k + 1
 
         newly_stopped = fail_mask | passed
         active[a_idx[newly_stopped]] = False
