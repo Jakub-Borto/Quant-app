@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from .params  import PARAMS, PARAM_SECTIONS, OUTPUT_COLUMNS
-from .core    import process_day, build_day_core, VWAP_BAND_COLUMNS
+from .core    import process_day, build_day_core, session_start_minutes, VWAP_BAND_COLUMNS
 from . import _timing
 from ._timing import timed
 
@@ -34,10 +34,11 @@ from ._timing import timed
 # ---------------------------------------------------------------------------
 # In-memory day-core cache (persists across run() calls in the same process)
 # ---------------------------------------------------------------------------
-# A DayData is param-independent (see _daydata), so re-running the backtester with different
-# params — the normal research loop — skips file reads, JSON parsing and array building
-# entirely. Keyed by (path, mtime_ns, size) of BOTH the candle and indicator file, so
-# re-running a transform invalidates naturally. LRU-capped in days (a fully parsed enriched
+# A DayData depends only on the files and the resolved session_start (see _daydata), so
+# re-running the backtester with different params — the normal research loop — skips file
+# reads, JSON parsing and array building entirely. Keyed by (path, mtime_ns, size) of BOTH
+# the candle and indicator file PLUS the session-start minute, so re-running a transform or
+# changing session_start invalidates naturally. LRU-capped in days (a fully parsed enriched
 # ES day is ~0.3 MB, so the default cap is a ~200 MB ceiling).
 #
 # The backtester's plugin loader RE-EXECUTES this __init__ on every backtest run
@@ -115,8 +116,12 @@ def run(
     ind_folder_name   = merged_params.get("indicators_folder", "")
     indicators_folder = folder_path.parent / ind_folder_name if ind_folder_name else None
 
+    # the RTH slice (and with it the whole day core) is anchored at session_start, so the
+    # resolved minute is part of the cache identity — different session starts cache separately
+    start_min = session_start_minutes(merged_params)
+
     def _key(f: Path):
-        """Cache identity of a day: candle file + its indicator sibling (or None)."""
+        """Cache identity of a day: candle file + its indicator sibling (or None) + session start."""
         st = f.stat()
         ind_id = None
         if indicators_folder is not None:
@@ -124,7 +129,7 @@ def run(
             if ind_file.exists():
                 ist    = ind_file.stat()
                 ind_id = (str(ind_file), ist.st_mtime_ns, ist.st_size)
-        return (str(f), st.st_mtime_ns, st.st_size, ind_id)
+        return (str(f), st.st_mtime_ns, st.st_size, ind_id, start_min)
 
     def _load(f: Path):
         """Read one day's candles + indicators (runs on a prefetch thread)."""
@@ -175,7 +180,7 @@ def run(
                 with timed("io:stall"):
                     session, ind_df = fut.result()
                 with timed("day:build_core"):
-                    core = build_day_core(session, ind_df)
+                    core = build_day_core(session, ind_df, start_min)
                 _DAY_CACHE[key] = core
                 while len(_DAY_CACHE) > _DAY_CACHE_MAX_DAYS:
                     _DAY_CACHE.popitem(last=False)

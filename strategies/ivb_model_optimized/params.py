@@ -1,7 +1,7 @@
 """Strategy parameters and output schema."""
 
 PARAM_SECTIONS = {
-    "General":                  ["ib_minutes", "trade_timeout", "max_flips", "valid_entries", "risk_script", "indicators_folder", "big_trades_folder"],
+    "General":                  ["session_start", "ib_minutes", "trade_timeout", "max_flips", "valid_entries", "risk_script", "indicators_folder", "big_trades_folder"],
     "Entry Windows":            ["retest_window", "entry_window", "entry_after_absorption", "absorption_baseline_window"],
     "Entry Candle":             ["delta_threshold", "body_threshold"],
     "Absorption + Delta":       ["wick_threshold", "absorption_mult"],
@@ -19,6 +19,8 @@ PARAM_SECTIONS = {
 
 
 PARAMS = {
+    "session_start":                "09:30",  # session start "HH:MM" NY time; IB, baselines and the
+                                              # RTH slice anchor here (end stays 16:00)
     "ib_minutes":                   30,     # IB range duration: 15, 30, or 60
     "delta_threshold":              10.0,   # minimum volume_delta_pct for entry candle
     "body_threshold":               0.5,    # body must cover 50% of bar range

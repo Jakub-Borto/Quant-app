@@ -1,7 +1,8 @@
 """Day-level rolling baselines for absorption / passive / CVD-change grading.
 
 All three builders now take the DayData context plus `valid_pos` (positions of the bars at or
-after BASELINE_WARMUP_START) and return full-length numpy arrays positionally aligned to the
+after the warm-up start = session_start + BASELINE_WARMUP_MINUTES) and return full-length
+numpy arrays positionally aligned to the
 RTH session (NaN outside the warm window / during rolling warmup). The pandas rolling
 mean/std pipelines are kept verbatim so the float results stay bit-identical to the original
 Series versions — only the per-row JSON parsing / .apply overhead is gone (the passive
@@ -10,11 +11,11 @@ per-bar max sizes are computed once in DayData for both directions).
 
 import numpy as np
 import pandas as pd
-from datetime import time
 
-# Skip the first 5 minutes of RTH before baselining — the 09:30 open bar(s) are abnormally heavy
-# and would distort the rolling volume-per-tick averages. Shared by all baselines below.
-BASELINE_WARMUP_START = time(9, 35)
+# Skip the first 5 minutes of the session before baselining — the opening bar(s) are abnormally
+# heavy and would distort the rolling volume-per-tick averages. Shared by all baselines below;
+# the absolute warm-up start is session_start + this offset (core passes `valid_pos` in).
+BASELINE_WARMUP_MINUTES = 5
 
 
 def build_rolling_baseline(day, valid_pos: np.ndarray, params: dict):

@@ -22,8 +22,10 @@ printed once per `run()`. Long-form rationale and the trade logic live in
   registries and every output stay exactly as before.
 - `__init__.py` reads only the consumed parquet columns (full-read fallback) and prefetches
   the next few days on a small thread pool; days are consumed strictly in file order.
-- **Day-core cache**: `DayData` is param-independent, so `__init__` keeps an LRU cache
-  (`_DAY_CACHE`, 600-day cap, ~0.3 MB/day) keyed by candle+indicator file (path, mtime, size).
+- **Day-core cache**: `DayData` depends only on the files + the resolved `session_start`, so
+  `__init__` keeps an LRU cache (`_DAY_CACHE`, 600-day cap, ~0.3 MB/day) keyed by
+  candle+indicator file (path, mtime, size) plus the session-start minute (different session
+  starts cache separately).
   The dict itself lives on a holder module registered in `sys.modules`
   (`_ivb_day_cache_store`) because the backtester's plugin loader re-executes this `__init__`
   on every run — a plain module global would be wiped each time.
@@ -58,7 +60,7 @@ Loaded by the backtester as a **package** (not a single file) via `__init__.py`,
 | `_daydata.py` | `DayData`, `EntryWindow`, `TradeWindow`, `parse_json_column`, `prev_rolling_max/min` | the per-day numpy context + shared window masks |
 | `core.py` | `detect_breakout`, `detect_retest`, `find_entry`, `process_day` | orchestrates one day on absolute positions; dispatches entry finders + the risk script |
 | `profile.py` | `compute_ivb_profile(day, ib_end) -> (poc, vah, val)` | reads the pre-parsed tick_volume; peak-based 70% value area (algorithm untouched) |
-| `baselines.py` | `build_rolling_baseline`, `build_passive_baseline`, `build_cvd_change_baseline` (+ `BASELINE_WARMUP_START`) | day-level baselines as arrays aligned to the session (pandas rolling kept for identical floats) |
+| `baselines.py` | `build_rolling_baseline`, `build_passive_baseline`, `build_cvd_change_baseline` (+ `BASELINE_WARMUP_MINUTES`) | day-level baselines as arrays aligned to the session (pandas rolling kept for identical floats); warm-up starts `session_start` + 5 min |
 | `absorption.py` | `absorption_scan(tv, wick_low, wick_high, required, direction)`, `wick_bounds(...)` | shared absorption level scan on pre-parsed `tick_volume`; first qualifying level in document order (= the old dict-iteration order); wick/baseline prechecks live vectorized in the callers |
 | `entries/` | 7 finders + `FINDER_REGISTRY` + `FINDER_NAMES` | each `find_entry(win, params) -> (entry_rel, entry_price, invalidation_rel, entry_notes, trade_type)` — window-relative bar indices into `win.pos` |
 | `risk/` | `RISK_REGISTRY` + `RISK_NAMES` of self-contained risk scripts | `run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)`; SL/TP placement + fill simulation; selected by `risk_script` |
@@ -71,7 +73,7 @@ day-level baselines.
 
 ```
 run() -> for each day file -> process_day(session, params, ind_df):
-  1. slice RTH (09:30–16:00 NY); need >= ib_minutes bars
+  1. slice RTH (`session_start` "HH:MM" NY, default 09:30, through 16:00); need >= ib_minutes bars
   2. IB high/low from first ib_minutes bars; abort if range <= 0
   3. compute_ivb_profile(ib_bars)            -> poc, vah, val   (profile.py)
   4. build_rolling_baseline / build_passive_baseline (long & short)  (baselines.py)
@@ -221,7 +223,8 @@ exit_reason, pnl_points, notes`
 
 ## Params (see `params.py` for defaults + `PARAM_SECTIONS` grouping)
 
-General: `ib_minutes, trade_timeout, max_flips, valid_entries, risk_script, indicators_folder,
+General: `session_start ("HH:MM" NY; anchors the RTH slice, the IB and the baseline warm-up;
+part of the day-core cache key), ib_minutes, trade_timeout, max_flips, valid_entries, risk_script, indicators_folder,
 big_trades_folder`. Windows: `retest_window, entry_window, entry_after_absorption,
 absorption_baseline_window`. Entry candle: `delta_threshold, body_threshold`. Then per-finder
 groups (absorption+delta, consecutive, two-bar, passive size-only, passive wall, CVD divergence

@@ -18,11 +18,6 @@ import json
 import numpy as np
 import pandas as pd
 
-from .baselines import BASELINE_WARMUP_START
-
-# minutes-since-midnight equivalent (exact for any second/microsecond value)
-_WARMUP_MIN = BASELINE_WARMUP_START.hour * 60 + BASELINE_WARMUP_START.minute
-
 
 # ---------------------------------------------------------------------------
 # JSON parsing (once per day)
@@ -103,8 +98,9 @@ class DayData:
     C level and masked as numpy arrays; the JSON string columns are masked at the Series
     level first so only RTH strings are ever materialized. No sliced DataFrame is created.
 
-    A DayData is PARAM-INDEPENDENT and immutable-after-parse, so the package caches it across
-    backtest runs (see the day-core cache in __init__). The two expensive pieces — JSON
+    A DayData is param-independent — except for `session_start`, which shapes the RTH slice
+    and is therefore part of the day-core cache key — and immutable-after-parse, so the
+    package caches it across backtest runs (see the day-core cache in __init__). The two expensive pieces — JSON
     parsing and the per-bar passive-max pass — are lazy, memoized properties: a day (or a
     param set) that never touches them never pays for them, and once computed they live on
     the cached object for every later run.
@@ -114,7 +110,8 @@ class DayData:
     param-independent indicator arrays the derived fields are cut from.
     """
 
-    def __init__(self, session: pd.DataFrame, rth_mask: np.ndarray, rth_minutes: np.ndarray):
+    def __init__(self, session: pd.DataFrame, rth_mask: np.ndarray, rth_minutes: np.ndarray,
+                 warmup_min: int):
         self.index = session.index[rth_mask]
         self.n     = len(self.index)
         self.open  = session["open"].to_numpy(dtype=np.float64)[rth_mask]
@@ -125,8 +122,9 @@ class DayData:
         self.buy_vol  = session["buy_volume"].to_numpy(dtype=np.float64)[rth_mask]
         self.sell_vol = session["sell_volume"].to_numpy(dtype=np.float64)[rth_mask]
 
-        # bars at/after BASELINE_WARMUP_START (positions into the RTH arrays)
-        self.warmup_pos = np.flatnonzero(rth_minutes >= _WARMUP_MIN)
+        # bars at/after the baseline warm-up start (positions into the RTH arrays);
+        # warmup_min = session_start + BASELINE_WARMUP_MINUTES, resolved by core
+        self.warmup_pos = np.flatnonzero(rth_minutes >= warmup_min)
 
         # raw JSON strings, parsed lazily (see properties below)
         self._tv_raw = (session["tick_volume"][rth_mask].to_numpy()

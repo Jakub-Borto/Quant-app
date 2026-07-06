@@ -15,29 +15,45 @@ from ._daydata  import DayData, EntryWindow, TradeWindow
 from .profile   import compute_ivb_profile
 from .baselines import (
     build_rolling_baseline, build_passive_baseline, build_cvd_change_baseline,
+    BASELINE_WARMUP_MINUTES,
 )
 from .entries   import FINDER_REGISTRY, FINDER_NAMES
 from .risk      import RISK_REGISTRY, RISK_NAMES
 
 
-RTH_START = time(9, 30)
-RTH_END   = time(16, 0)
+# The session START is the `session_start` param ("HH:MM" NY wall time, default "09:30");
+# the session END stays fixed. Slicing uses integer minutes-since-midnight
+# (t >= time(H, M) <=> 60h+m >= 60H+M for any second/microsecond value, and strictly-before
+# likewise) — avoids materializing 1380 datetime.time objects per day.
+RTH_END      = time(16, 0)
+_RTH_END_MIN = RTH_END.hour * 60 + RTH_END.minute
 
-# integer minutes-since-midnight equivalents (t >= time(H, M) <=> 60h+m >= 60H+M for any
-# second/microsecond value, and strictly-before likewise) — avoids materializing 1380
-# datetime.time objects per day just to slice RTH
-_RTH_START_MIN = RTH_START.hour * 60 + RTH_START.minute
-_RTH_END_MIN   = RTH_END.hour * 60 + RTH_END.minute
+
+def session_start_minutes(params: dict) -> int:
+    """Resolve the session_start param to minutes since midnight (validated)."""
+    raw = str(params.get("session_start", "09:30")).strip()
+    try:
+        hh, mm = raw.split(":")
+        start_min = int(hh) * 60 + int(mm)
+    except Exception:
+        raise ValueError(f'session_start must be "HH:MM" (got {raw!r})') from None
+    if not 0 <= start_min < _RTH_END_MIN:
+        raise ValueError(
+            f"session_start {raw!r} must lie at/after 00:00 and before the session end "
+            f"{RTH_END.strftime('%H:%M')}"
+        )
+    return start_min
 
 
 # ---------------------------------------------------------------------------
-# Day-core construction (param-independent => cacheable across runs)
+# Day-core construction (cacheable across runs; start_min is part of the cache key)
 # ---------------------------------------------------------------------------
 
-def build_day_core(session, ind_df=None):
+def build_day_core(session, ind_df=None, start_min: int = 570):
     """One day's files -> a cacheable DayData (arrays + lazy parsed JSON + raw indicator
-    arrays). Returns None for unusable days (empty / tz-naive index). Everything here is
-    param-independent; per-run state is derived from it in process_day."""
+    arrays). Returns None for unusable days (empty / tz-naive index). Everything here is a
+    pure function of the files + the resolved session start; per-run state is derived from
+    it in process_day."""
     if session.empty:
         return None
     if session.index.tz is None:
@@ -46,10 +62,11 @@ def build_day_core(session, ind_df=None):
     with timed("day:rth_filter"):
         idx      = session.index
         minutes  = idx.hour.to_numpy() * 60 + idx.minute.to_numpy()
-        rth_mask = (minutes >= _RTH_START_MIN) & (minutes < _RTH_END_MIN)
+        rth_mask = (minutes >= start_min) & (minutes < _RTH_END_MIN)
 
     with timed("day:daydata_build"):
-        day = DayData(session, rth_mask, minutes[rth_mask])
+        day = DayData(session, rth_mask, minutes[rth_mask],
+                      warmup_min=start_min + BASELINE_WARMUP_MINUTES)
 
     # raw indicator arrays, positionally aligned. Alignment fast path: indicator files share
     # the candle index, so the RTH mask applies directly; reindex stays as the fallback.
