@@ -25,6 +25,11 @@ from optimization.engine import (
     sibling_dataset_folders,
 )
 from optimization.loader import load_strategy
+from views.trade_report import (
+    DAY_TYPE_ORDER, render_chart_view_controls, render_equity_curve,
+    render_market_exposure, render_metrics, render_news_holiday_breakdown,
+    render_rr_distribution, render_trade_detail,
+)
 from optimization.metrics import METRIC_LABELS, METRIC_ORDER, compute_metrics_by_cell
 from optimization.param_space import (
     MAX_SWEPT, ROLE_LABELS, ROLES, build_range, combo_count, parse_values,
@@ -806,13 +811,27 @@ def _render_heatmap(arrays: dict, metric: str, x_param, x_values, y_param,
         y=list(range(ny)),
         colorscale=_curved_colorscale(color_gamma),
         zmin=zmin, zmax=zmax,
-        hovertext=hover,
-        hovertemplate="%{hovertext}<extra></extra>",
+        hoverinfo="skip",           # the scatter overlay owns hover + clicks
         colorbar=dict(
             title=dict(text=METRIC_LABELS[metric], side="right"),
             thickness=14, outlinewidth=0, ticks="outside", ticklen=3,
         ),
         xgap=2, ygap=2,
+    ))
+    # Invisible click/hover layer: plotly heatmaps don't emit selection
+    # events, so an in-place transparent scatter point per cell carries the
+    # tooltip AND makes every cell clickable for the drill-down
+    # (point_index k -> cell (k % nx, k // nx)).
+    fig.add_trace(go.Scatter(
+        x=[i for j in range(ny) for i in range(nx)],
+        y=[j for j in range(ny) for i in range(nx)],
+        mode="markers",
+        marker=dict(symbol="square", size=max(10, cell - 4),
+                    color="rgba(0,0,0,0)"),
+        hovertext=[hover[j, i] for j in range(ny) for i in range(nx)],
+        hovertemplate="%{hovertext}<extra></extra>",
+        showlegend=False,
+        name="",
     ))
     fig.update_layout(
         title=dict(text=title, x=0.0, xanchor="left", font=dict(size=15)),
@@ -850,9 +869,11 @@ def _render_heatmap(arrays: dict, metric: str, x_param, x_values, y_param,
         "</style>",
         unsafe_allow_html=True,
     )
-    st.plotly_chart(fig, width='content', key="opt_heatmap")
+    event = st.plotly_chart(fig, width='content', key="opt_heatmap",
+                            on_select="rerun")
 
-    st.caption("Hatched = fewer trades than the min-trades threshold · "
+    st.caption("Click a cell to open its full trade report below · "
+               "Hatched = fewer trades than the min-trades threshold · "
                "blank = no finite value (no trades, PF ∞, undefined Sharpe)")
     with st.expander("How to read this surface", expanded=False):
         st.markdown(
@@ -869,6 +890,128 @@ def _render_heatmap(arrays: dict, metric: str, x_param, x_values, y_param,
             "changes**, not the single brightest cell — the top cell of a "
             "large grid is selection-biased by construction."
         )
+
+    # the clicked cell, from the scatter overlay (trace 1)
+    try:
+        points = event.selection.points
+    except AttributeError:
+        points = []
+    for p in points:
+        if p.get("curve_number") == 1 and p.get("point_index") is not None:
+            k = p["point_index"]
+            return k % nx, k // nx
+    return None
+
+
+# ── Cell drill-down: the full backtester report for one grid cell ────────────
+
+def _render_cell_detail(trades, meta, x_axis, y_axis, slider_axes,
+                        slider_values, half, split, cell_ij,
+                        selected_buckets):
+    """
+    Everything the backtester shows, for the clicked cell's trades: trade-type
+    filter, news/holiday exposure, day-type filter, performance metrics + exit
+    breakdown, market exposure, clickable equity curve with single-trade
+    detail, RR distribution, trades table. No saving — the run's trades
+    already live in the optimization folder.
+    """
+    xi, yj = cell_ij
+    if xi >= len(x_axis["values"]) or (y_axis and yj >= len(y_axis["values"])):
+        return                                  # stale selection after reload
+
+    desc = []
+    df = trades
+    x_val = x_axis["values"][xi]
+    df = df[df[x_axis["param"]] == x_val]
+    desc.append(f"{x_axis['param']} = {_fmt_axis_value(x_val)}")
+    if y_axis is not None:
+        y_val = y_axis["values"][yj]
+        df = df[df[y_axis["param"]] == y_val]
+        desc.append(f"{y_axis['param']} = {_fmt_axis_value(y_val)}")
+    for ax in slider_axes:
+        value = slider_values[ax["param"]]
+        df = df[df[ax["param"]] == value]
+        desc.append(f"{ax['param']} = {_fmt_axis_value(value)}")
+    if half != "both" and split is not None:
+        dates = pd.to_datetime(df["date"])
+        split_ts = pd.Timestamp(split)
+        df = df[dates <= split_ts] if half == "1st" else df[dates > split_ts]
+        desc.append(f"{half} half")
+
+    st.write("")
+    st.divider()
+    st.subheader("Cell detail — " + " · ".join(desc))
+
+    if df.empty:
+        st.info("No trades in this cell.")
+        return
+
+    # backtester-shaped columns: ticks alias + historical day_type names
+    df = df.sort_values("entry_time").reset_index(drop=True)
+    df["ticks"] = df["pnl_ticks"]
+    df["day_type"] = df["day_bucket"].replace(
+        {"other_high_impact": "high_impact"})
+
+    # ── trade type filter ─────────────────────────────────────────────────────
+    if "trade_type" in df.columns:
+        unique_types = sorted(df["trade_type"].dropna().unique().tolist())
+        if unique_types:
+            st.write("")
+            st.caption("Filter by trade type")
+            cols = st.columns(min(len(unique_types), 6))
+            selected_types = []
+            for i, tt in enumerate(unique_types):
+                with cols[i % 6]:
+                    if st.checkbox(tt, value=True, key=f"opt_cell_tt_{tt}"):
+                        selected_types.append(tt)
+            if not selected_types:
+                st.warning("No trade types selected.")
+                return
+            df = df[df["trade_type"].isin(selected_types)]
+
+    # ── news & holiday breakdown — before the day filter (backtester order) ───
+    render_news_holiday_breakdown(df)
+
+    # ── day type filter — defaults follow the heatmap's day-bucket selection ──
+    heat_defaults = {("high_impact" if b == "other_high_impact" else b)
+                     for b in selected_buckets}
+    st.write("")
+    st.caption("Filter by day type")
+    day_cols = st.columns(len(DAY_TYPE_ORDER))
+    selected_day_types = []
+    for i, (tag, label) in enumerate(DAY_TYPE_ORDER):
+        with day_cols[i]:
+            if st.checkbox(label, value=tag in heat_defaults,
+                           key=f"opt_cell_dt_{tag}"):
+                selected_day_types.append(tag)
+    if not selected_day_types:
+        st.warning("No day types selected.")
+        return
+    df = df[df["day_type"].isin(selected_day_types)].copy()
+    if df.empty:
+        st.info("No trades match the selected filters.")
+        return
+    df["cumulative_ticks"] = df["ticks"].cumsum()
+
+    # ── the backtester report ─────────────────────────────────────────────────
+    render_metrics(df)
+    render_market_exposure(df, meta.get("ticker"), meta.get("tick_size"))
+    selected       = render_equity_curve(df, key="opt_cell_equity")
+    chart_settings = render_chart_view_controls(key_prefix="opt_cell_")
+    folder_path    = Path("data/parquet") / meta.get("dataset", "")
+    render_trade_detail(selected, df, chart_settings, folder_path,
+                        meta.get("ticks_per_point"))
+    render_rr_distribution(df, key_prefix="opt_cell_")
+
+    st.write("")
+    st.subheader("Trades")
+    display_cols = [c for c in ["date", "direction", "entry_time", "exit_time",
+                                "entry_price", "exit_price", "exit_reason",
+                                "ticks", "trade_type", "day_type"]
+                    if c in df.columns]
+    table = df[display_cols].copy()
+    table["date"] = pd.to_datetime(table["date"]).dt.date
+    st.dataframe(table, width='stretch')
 
 
 UNSAVED_LABEL = "● Unsaved run — switching away discards it"
@@ -1107,9 +1250,14 @@ def render_explore():
     arrays = _build_grid_arrays(grid, x_axis["param"], x_values, y_param,
                                 y_axis["values"] if y_axis else None)
 
-    _render_heatmap(arrays, metric, x_axis["param"], x_values, y_param,
-                    y_values, slider_desc, int(min_trades),
-                    color_gamma=color_gamma)
+    cell = _render_heatmap(arrays, metric, x_axis["param"], x_values, y_param,
+                           y_values, slider_desc, int(min_trades),
+                           color_gamma=color_gamma)
+
+    if cell is not None:
+        _render_cell_detail(trades, meta, x_axis, y_axis, slider_axes,
+                            slider_values, half, split, cell,
+                            selected_buckets)
 
 
 # ── Main render ───────────────────────────────────────────────────────────────

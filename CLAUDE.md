@@ -40,7 +40,8 @@ A strategy may also be a **package** (a folder with `__init__.py` exposing `run`
 
 ```
 app.py                     Streamlit entry point / router
-views/                     UI pages (home, data_formatter, backtester, analytics, monte_carlo, optimizer)
+views/                     UI pages (home, data_formatter, backtester, analytics, monte_carlo, optimizer);
+                           trade_report.py = shared report components (metrics, exposure, equity/trade charts) — not a view
 transforms/                raw DBN -> enriched parquet (the run_all plugins)
 strategies/                backtest strategies (single-file or package); base.py = helpers
 position_sizing/           fixed.py, kelly.py, risk_based.py
