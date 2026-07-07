@@ -175,12 +175,12 @@ def test_save_load_round_trip(tmp_path):
         "strategy": "toy",
         "axes": {"x": {"param": "a", "values": [1, 2, 99]},
                  "y": {"param": "b", "values": [2, 3]},
-                 "slider": None},
+                 "slider": None, "slider2": None},
         "n_trades": np.int64(len(trades)),          # numpy type must serialize
         "be_band_ticks": np.float64(0.0),
         "split_date": str(median_split_date(trades).date()),
     }
-    run_dir = save_run("toy run: v1", trades, meta, root=tmp_path)
+    run_dir = save_run(trades, meta, run_name="toy run: v1", root=tmp_path)
     assert run_dir.parent == tmp_path
     assert list_runs(tmp_path) == [run_dir.name]
 
@@ -200,10 +200,34 @@ def test_save_load_round_trip(tmp_path):
 
 def test_save_name_collision_suffix(tmp_path):
     _, trades = grid_run()
-    d1 = save_run("same", trades, {}, root=tmp_path)
-    d2 = save_run("same", trades, {}, root=tmp_path)
+    d1 = save_run(trades, {}, run_name="same", root=tmp_path)
+    d2 = save_run(trades, {}, run_name="same", root=tmp_path)
     assert d1.name == "same" and d2.name == "same_2"
     assert set(list_runs(tmp_path)) == {"same", "same_2"}
+
+
+def test_save_into_folders(tmp_path):
+    from optimization.io import list_folders
+
+    _, trades = grid_run()
+    # new folder is created on demand; a second save reuses it
+    d1 = save_run(trades, {}, run_name="run_a", folder="my sweeps", root=tmp_path)
+    d2 = save_run(trades, {}, run_name="run_b", folder="my_sweeps", root=tmp_path)
+    d3 = save_run(trades, {}, run_name="run_root", root=tmp_path)
+
+    assert d1.parent == d2.parent == tmp_path / "my_sweeps"   # name sanitized
+    assert list_folders(tmp_path) == ["my_sweeps"]
+    assert set(list_runs(tmp_path)) == {"my_sweeps/run_a", "my_sweeps/run_b",
+                                        "run_root"}
+
+    # nested runs load by their relative path; meta records it
+    loaded_trades, loaded_meta = load_run("my_sweeps/run_a", root=tmp_path)
+    pd.testing.assert_frame_equal(trades, loaded_trades)
+    assert loaded_meta["run_name"] == "my_sweeps/run_a"
+
+    # collision suffix works inside a folder too
+    d4 = save_run(trades, {}, run_name="run_a", folder="my_sweeps", root=tmp_path)
+    assert d4.name == "run_a_2"
 
 
 def test_by_cell_vs_reference_on_engine_output():

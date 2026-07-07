@@ -15,12 +15,19 @@ Inputs need `pnl_ticks` (float) and `date` columns. `be_band_ticks` defines a
 break-even band around zero: win = pnl > be, breakeven = |pnl| <= be,
 loss = pnl < -be. Default 0.0 = exact break-even.
 
+Sharpe definitions (both daily-aggregated, both annualized ×sqrt(252)):
+  sharpe_trade   daily P&L over TRADED days only — days without a trade
+                 simply don't exist for it
+  sharpe_daily   daily P&L over EVERY business day between the first and last
+                 (filtered) trade — days without trades count as 0
+
 NaN / inf conventions (callers exclude both from the color scale):
   profit_factor  inf when there are no gross losses (denominator 0)
-  sharpe_trade   NaN when n < 2 or the per-trade std is 0
-  sharpe_daily   NaN when < 2 trading days or the daily std is 0; the sqrt(252)
-                 annualization is approximate once day types are filtered out
-                 (fewer days) — comparative use only
+  sharpe_trade   NaN when < 2 traded days or the daily std is 0
+  sharpe_daily   NaN when the business-day span is < 2 days or the
+                 (zero-filled) variance is 0
+The sqrt(252) annualization is approximate once day types are filtered out
+(fewer days) — comparative use only.
 """
 
 import math
@@ -49,9 +56,20 @@ METRIC_LABELS = {
     "profit_factor": "Profit Factor",
     "win_rate":      "Win Rate %",
     "win_rate_be":   "Win Rate % (incl. BE)",
-    "sharpe_trade":  "Sharpe (trade)",
-    "sharpe_daily":  "Sharpe (daily, ann.)",
+    "sharpe_trade":  "Sharpe (traded days)",
+    "sharpe_daily":  "Sharpe (daily, zero-filled)",
 }
+
+
+def _business_day_span(first, last, n_traded: int) -> int:
+    """
+    Business days from `first` to `last` inclusive — the zero-fill spine
+    length for sharpe_daily. Never smaller than the number of traded days
+    (weekend/holiday trades still count as days).
+    """
+    n = int(np.busday_count(np.datetime64(first, "D"),
+                            np.datetime64(last, "D") + 1))
+    return max(n, n_traded)
 
 
 def compute_metrics(trades: pd.DataFrame, be_band_ticks: float = 0.0) -> dict:
@@ -77,21 +95,28 @@ def compute_metrics(trades: pd.DataFrame, be_band_ticks: float = 0.0) -> dict:
     gross_loss = float(-pnl[pnl < 0].sum())
     profit_factor = float("inf") if gross_loss == 0 else gross_win / gross_loss
 
-    std = float(pnl.std(ddof=1)) if n >= 2 else float("nan")
-    if n < 2 or not math.isfinite(std) or std == 0:
+    daily = pnl.groupby(pd.to_datetime(trades["date"]).dt.normalize()).sum()
+    k = len(daily)
+
+    # traded days only
+    if k < 2:
         sharpe_trade = float("nan")
     else:
-        sharpe_trade = float(pnl.mean()) / std
+        daily_std = float(daily.std(ddof=1))
+        sharpe_trade = float("nan") if daily_std == 0 else \
+            float(daily.mean()) / daily_std * math.sqrt(ANNUALIZATION_DAYS)
 
-    daily = pnl.groupby(pd.to_datetime(trades["date"]).dt.normalize()).sum()
-    if len(daily) < 2:
+    # zero-filled over the business-day span (first -> last trade). Computed
+    # from the traded-day sums alone: with N spine days, mean = S/N and
+    # var(ddof=1) = (sum(d^2) - S^2/N) / (N-1) — the zeros contribute nothing.
+    n_days = _business_day_span(daily.index.min(), daily.index.max(), k)
+    if n_days < 2:
         sharpe_daily = float("nan")
     else:
-        daily_std = float(daily.std(ddof=1))
-        if daily_std == 0:
-            sharpe_daily = float("nan")
-        else:
-            sharpe_daily = float(daily.mean()) / daily_std * math.sqrt(ANNUALIZATION_DAYS)
+        s     = float(daily.sum())
+        var_z = (float((daily ** 2).sum()) - s * s / n_days) / (n_days - 1)
+        sharpe_daily = float("nan") if var_z <= 0 else \
+            (s / n_days) / math.sqrt(var_z) * math.sqrt(ANNUALIZATION_DAYS)
 
     return {
         "total_ticks":   total,
@@ -132,7 +157,6 @@ def compute_metrics_by_cell(trades: pd.DataFrame, cell_cols: list,
     agg = work.groupby(cell_cols, sort=True).agg(
         total_ticks=("_pnl", "sum"),
         total_trades=("_pnl", "size"),
-        _std=("_pnl", "std"),            # pandas GroupBy.std is ddof=1
         _gross_win=("_gross_win", "sum"),
         _gross_loss=("_gross_loss", "sum"),
         _wins=("_is_win", "sum"),
@@ -152,16 +176,30 @@ def compute_metrics_by_cell(trades: pd.DataFrame, cell_cols: list,
     out["win_rate"]    = 100.0 * agg["_wins"] / n
     out["win_rate_be"] = 100.0 * agg["_wins_be"] / n
 
-    std = agg["_std"]
-    out["sharpe_trade"] = (out["avg_trade"] / std).where((n >= 2) & (std > 0))
+    ann = math.sqrt(ANNUALIZATION_DAYS)
+    daily   = work.groupby(cell_cols + ["_date"], sort=True)["_pnl"].sum()
+    levels  = list(range(len(cell_cols)))
+    by_cell = daily.groupby(level=levels)
 
-    daily = work.groupby(cell_cols + ["_date"], sort=True)["_pnl"].sum()
-    by_cell    = daily.groupby(level=list(range(len(cell_cols))))
-    daily_mean = by_cell.mean()
-    daily_std  = by_cell.std(ddof=1)
-    daily_n    = by_cell.size()
-    sharpe_daily = (daily_mean / daily_std * math.sqrt(ANNUALIZATION_DAYS)) \
-        .where((daily_n >= 2) & (daily_std > 0))
-    out["sharpe_daily"] = sharpe_daily.reindex(out.index)
+    # sharpe_trade: daily P&L over traded days only
+    k         = by_cell.size()
+    daily_std = by_cell.std(ddof=1)
+    out["sharpe_trade"] = (by_cell.mean() / daily_std * ann) \
+        .where((k >= 2) & (daily_std > 0)).reindex(out.index)
+
+    # sharpe_daily: zero-filled over each cell's business-day span (same
+    # closed-form as compute_metrics — the zero days contribute nothing)
+    s      = by_cell.sum()
+    sumsq  = (daily ** 2).groupby(level=levels).sum()
+    d_min  = work.groupby(cell_cols, sort=True)["_date"].min()
+    d_max  = work.groupby(cell_cols, sort=True)["_date"].max()
+    n_days = np.busday_count(d_min.to_numpy().astype("datetime64[D]"),
+                             d_max.to_numpy().astype("datetime64[D]")
+                             + np.timedelta64(1, "D"))
+    n_days = pd.Series(np.maximum(n_days, k.reindex(d_min.index).to_numpy()),
+                       index=d_min.index)
+    var_z  = (sumsq - s ** 2 / n_days) / (n_days - 1)
+    out["sharpe_daily"] = ((s / n_days) / np.sqrt(var_z.where(var_z > 0)) * ann) \
+        .where(n_days >= 2).reindex(out.index)
 
     return out[METRIC_ORDER]

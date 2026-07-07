@@ -16,9 +16,10 @@ from itertools import product
 import numpy as np
 
 # Axis roles in auto-assignment order (selection order: 1st checked -> x, ...).
-ROLES = ["x", "y", "slider"]
-ROLE_LABELS = {"x": "X axis", "y": "Y axis", "slider": "Slider"}
-MAX_SWEPT = 3
+ROLES = ["x", "y", "slider", "slider2"]
+ROLE_LABELS = {"x": "X axis", "y": "Y axis",
+               "slider": "Slider 1", "slider2": "Slider 2"}
+MAX_SWEPT = 4
 
 
 def sweep_kind(default) -> str | None:

@@ -419,20 +419,24 @@ def compute_metrics(trades: pd.DataFrame) -> dict:
     else:
         profit_factor = 0.0
 
-    # Daily Sharpe — zero-fill business days (institutional standard)
-    all_dates = pd.bdate_range(trades["date"].min(), trades["date"].max())
-    daily_pnl = (
-        trades.groupby("date")["ticks"]
-        .sum()
-        .reindex(all_dates, fill_value=0)
-    )
-    daily_std    = daily_pnl.std(ddof=1)
+    # Both Sharpes are daily-aggregated and annualized ×sqrt(252). Dates are
+    # normalized to Timestamps first: strategies return strings (orb) or date
+    # objects (ivb), and reindexing a string-keyed daily series against a
+    # DatetimeIndex silently matches nothing — all-zero series, Sharpe 0.
+    dates        = pd.to_datetime(trades["date"]).dt.normalize()
+    traded_daily = trades.groupby(dates)["ticks"].sum()
+
+    # Daily Sharpe — zero-fill every business day between first & last trade
+    # (union keeps any weekend/holiday traded day in the spine too)
+    spine     = pd.bdate_range(dates.min(), dates.max()).union(traded_daily.index)
+    daily_pnl = traded_daily.reindex(spine, fill_value=0)
+    daily_std = daily_pnl.std(ddof=1)
     sharpe_daily = (daily_pnl.mean() / daily_std) * (252 ** 0.5) if daily_std > 0 else 0.0
 
-    # Trade Sharpe — per-trade consistency, annualized by actual trading days
-    trade_std      = trades["ticks"].std(ddof=1)
-    n_trading_days = trades["date"].nunique()
-    sharpe_trade   = (trades["ticks"].mean() / trade_std) * (n_trading_days ** 0.5) if trade_std > 0 else 0.0
+    # Trade Sharpe — daily P&L over TRADED days only (no zero-fill)
+    traded_std   = traded_daily.std(ddof=1)
+    sharpe_trade = (traded_daily.mean() / traded_std) * (252 ** 0.5) \
+        if len(traded_daily) >= 2 and traded_std > 0 else 0.0
 
     # Equity curve / drawdown
     cumulative   = trades["cumulative_ticks"]
@@ -559,8 +563,11 @@ def render_metrics(trades: pd.DataFrame):
     r2c1.metric("Win Rate",         f"{m['win_rate']:.1%}")
     r2c2.metric("Loss Rate",        f"{m['loss_rate']:.1%}")
     r2c3.metric("Breakeven Rate",   f"{m['breakeven_rate']:.1%}")
-    r2c4.metric("Sharpe (daily)",   f"{m['sharpe_daily']:.2f}")
-    r2c5.metric("Sharpe (trade)",   f"{m['sharpe_trade']:.2f}")
+    r2c4.metric("Sharpe (daily)",   f"{m['sharpe_daily']:.2f}",
+                help="daily P&L over every business day between first and "
+                     "last trade — days without trades count as 0; ×√252")
+    r2c5.metric("Sharpe (traded days)", f"{m['sharpe_trade']:.2f}",
+                help="daily P&L over days with at least one trade; ×√252")
     r2c6.metric("Calmar",           calmar_display)
 
     # Row 3 — Risk/reward

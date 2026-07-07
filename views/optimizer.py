@@ -1,7 +1,7 @@
 # views/optimizer.py
 #
-# Strategy Optimizer — sweep up to 3 strategy params (X axis × Y axis ×
-# slider), store the full trades table of every grid cell, and explore an
+# Strategy Optimizer — sweep up to 4 strategy params (X axis × Y axis × two
+# sliders), store the full trades table of every grid cell, and explore an
 # interactive metric heatmap with zero backtest re-runs. A hypothesis
 # generator, deliberately WITHOUT any "pick the best config" control: read the
 # surface for plateaus and cross-half stability, not the single brightest cell.
@@ -378,7 +378,8 @@ def render_role_assignment(sweep_order: list, key_prefix: str):
             )
 
     if len(set(roles_by_param.values())) != len(roles_by_param):
-        st.error("Each swept param needs a distinct role (X / Y / Slider).")
+        st.error("Each swept param needs a distinct role "
+                 "(X / Y / Slider 1 / Slider 2).")
         return None
     return roles_by_param
 
@@ -387,7 +388,7 @@ def render_role_assignment(sweep_order: list, key_prefix: str):
 
 def execute_grid_run(strategy, asset_type, asset, dataset, strategy_name,
                      start_date, end_date, fixed_params, axes,
-                     run_name, be_band_ticks, min_trades_default):
+                     be_band_ticks, min_trades_default):
     asset_info  = ASSET_INFO[asset]
     folder_path = Path("data/parquet") / asset_type / asset / dataset
 
@@ -441,10 +442,10 @@ def execute_grid_run(strategy, asset_type, asset, dataset, strategy_name,
         "created_at":         pd.Timestamp.now().isoformat(),
     }
 
-    run_dir = opt_io.save_run(run_name, trades, meta)
-    meta["run_name"] = run_dir.name
-
-    st.session_state.opt_loaded_run = run_dir.name
+    # Nothing is written to disk here — the run lives in session state and can
+    # be saved (optionally) from the Explore panel's "Save this run".
+    st.session_state.opt_loaded_run = None
+    st.session_state.opt_unsaved    = True
     st.session_state.opt_trades     = trades
     st.session_state.opt_meta       = meta
     st.session_state.pop("opt_grid_key", None)
@@ -456,9 +457,11 @@ def execute_grid_run(strategy, asset_type, asset, dataset, strategy_name,
     minutes, seconds = int(elapsed // 60), int(elapsed % 60)
     st.session_state.opt_run_success = (
         f"Done in {f'{minutes}m {seconds}s' if minutes else f'{seconds}s'} — "
-        f"{meta['n_combos']} backtests, {len(trades)} trades. Saved to {run_dir}"
+        f"{meta['n_combos']} backtests, {len(trades)} trades. Not saved yet — "
+        f"use “Save this run” below to keep it."
     )
     st.session_state.opt_switch_to_explore = True
+    st.session_state.opt_reset_run_select  = True
     st.rerun()
 
 
@@ -533,7 +536,7 @@ def render_setup():
     if len(sweep_order) == 1:
         st.warning("Only 1 swept param — the heatmap degenerates to a single row.")
     if len(sweep_order) < 3:
-        st.caption("No slider (fewer than 3 swept params).")
+        st.caption("No sliders (the 3rd and 4th swept params become sliders).")
     for a in axes:
         if len(a["values"]) == 1:
             st.warning(f"Axis '{a['param']}' has a single value — degenerate axis.")
@@ -541,18 +544,13 @@ def render_setup():
     # run settings
     st.write("")
     with st.expander("Run settings", expanded=True):
-        c1, c2, c3 = st.columns([2, 1, 1])
-        run_name = c1.text_input(
-            "Run name",
-            value=f"{asset}_{strategy_name}_{start_date}_{end_date}",
-            key="opt_run_name",
-        )
-        be_band_ticks = c2.number_input(
+        c1, c2 = st.columns(2)
+        be_band_ticks = c1.number_input(
             "BE band (ticks)", value=0.0, min_value=0.0, step=0.5,
             key="opt_be_band",
             help="win = pnl > band, breakeven = |pnl| <= band, loss = pnl < -band",
         )
-        min_trades_default = c3.number_input(
+        min_trades_default = c2.number_input(
             "Min trades default", value=MIN_TRADES_DEFAULT, min_value=0, step=5,
             key="opt_min_trades_default",
             help="default hatch threshold in the heatmap (changeable there)",
@@ -578,13 +576,10 @@ def render_setup():
                         disabled=not confirmed, key="opt_run_btn")
 
     if run:
-        if not run_name.strip():
-            st.error("Please enter a run name.")
-            return
         execute_grid_run(
             strategy, asset_type, asset, dataset, strategy_name,
             start_date, end_date, fixed_params, axes,
-            run_name, be_band_ticks, min_trades_default,
+            be_band_ticks, min_trades_default,
         )
 
 
@@ -814,35 +809,135 @@ def _render_heatmap(arrays: dict, metric: str, x_param, x_values, y_param,
             "threshold — read them with suspicion.\n"
             "- **Blank cells** have no finite metric value and are excluded "
             "from the color scale.\n"
-            "- **Sharpe (daily)** ×√252 is approximate once day types are "
-            "filtered out (fewer days) — comparative use only.\n"
+            "- **Sharpe (daily, zero-filled)**: daily P&L over every business "
+            "day between the first and last (filtered) trade — days without "
+            "trades count as 0. **Sharpe (traded days)**: only days with at "
+            "least one trade. Both ×√252 — approximate once day types are "
+            "filtered out, comparative use only.\n"
             "- Look for **plateaus that survive both halves and day-type "
             "changes**, not the single brightest cell — the top cell of a "
             "large grid is selection-biased by construction."
         )
 
 
+UNSAVED_LABEL = "● Unsaved run — switching away discards it"
+NEW_FOLDER    = "── New folder ──"
+NO_FOLDER     = "(no folder)"
+
+
 def _load_selected_run():
-    """Run selectbox + one-time load of trades/meta into session_state."""
-    runs = opt_io.list_runs()
-    if not runs:
+    """
+    Folder -> run cascading selector (mirrors the Data Formatter's output-
+    folder logic). The in-memory unsaved run (when present) is offered on top
+    of whichever folder is browsed. Loads the chosen run once into
+    session_state; returns (trades, meta, is_unsaved) or None.
+    """
+    # hand-off from a just-finished run / save: reset both selectboxes BEFORE
+    # they are instantiated so the new run is the active selection
+    if st.session_state.pop("opt_reset_run_select", False):
+        st.session_state.pop("opt_explore_folder", None)
+        st.session_state.pop("opt_run_select", None)
+
+    runs = opt_io.list_runs()                       # "run" or "folder/run"
+    has_unsaved = bool(st.session_state.get("opt_unsaved")) \
+        and st.session_state.get("opt_trades") is not None
+    if not runs and not has_unsaved:
         st.info("No saved optimization runs yet — create one under **New Run**.")
         return None
 
-    current = st.session_state.get("opt_loaded_run")
-    index = runs.index(current) if current in runs else 0
-    selected = st.selectbox("Optimization run", runs, index=index,
-                            key="opt_run_select")
+    by_folder: dict = {}
+    for rel in runs:
+        folder, _, name = rel.rpartition("/")
+        by_folder.setdefault(folder, []).append(name)
 
-    if selected != st.session_state.get("opt_loaded_run") \
-            or "opt_trades" not in st.session_state:
-        trades, meta = opt_io.load_run(selected)
-        st.session_state.opt_loaded_run = selected
+    current = st.session_state.get("opt_loaded_run") or ""
+    current_folder, _, current_name = current.rpartition("/")
+
+    # offer the root only when it actually holds runs (or nothing else does)
+    folder_labels = ([NO_FOLDER] if "" in by_folder else []) \
+        + sorted(f for f in by_folder if f)
+    if not folder_labels:
+        folder_labels = [NO_FOLDER]
+
+    col_folder, col_run = st.columns([1, 2])
+    with col_folder:
+        current_label = current_folder if current_folder else NO_FOLDER
+        f_index = folder_labels.index(current_label) \
+            if current_label in folder_labels else 0
+        folder_choice = st.selectbox("Folder", folder_labels, index=f_index,
+                                     key="opt_explore_folder")
+    folder = "" if folder_choice == NO_FOLDER else folder_choice
+
+    options = ([UNSAVED_LABEL] if has_unsaved else []) + by_folder.get(folder, [])
+    with col_run:
+        if not options:
+            st.selectbox("Optimization run", ["— no runs in this folder —"],
+                         disabled=True, key="opt_run_select_empty")
+            return None
+        default = UNSAVED_LABEL if has_unsaved else current_name
+        r_index = options.index(default) if default in options else 0
+        selected = st.selectbox("Optimization run", options, index=r_index,
+                                key="opt_run_select")
+
+    if selected == UNSAVED_LABEL:
+        return st.session_state.opt_trades, st.session_state.opt_meta, True
+
+    # switching to a saved run discards any unsaved one
+    st.session_state.opt_unsaved = False
+    rel = f"{folder}/{selected}" if folder else selected
+    if rel != st.session_state.get("opt_loaded_run") \
+            or st.session_state.get("opt_trades") is None:
+        trades, meta = opt_io.load_run(rel)
+        st.session_state.opt_loaded_run = rel
         st.session_state.opt_trades     = trades
         st.session_state.opt_meta       = meta
         st.session_state.pop("opt_grid_key", None)
 
-    return st.session_state.opt_trades, st.session_state.opt_meta
+    return st.session_state.opt_trades, st.session_state.opt_meta, False
+
+
+def _render_save_panel(trades, meta):
+    """
+    Optional persistence of the in-memory run — same folder logic as the Data
+    Formatter: pick an existing folder, create a new one, or save at the root.
+    """
+    with st.expander("Save this run", expanded=True):
+        c1, c2, c3 = st.columns([1.2, 1.2, 2])
+
+        folders = opt_io.list_folders()
+        choice = c1.selectbox("Folder", [NO_FOLDER, NEW_FOLDER] + folders,
+                              key="opt_save_folder")
+        if choice == NEW_FOLDER:
+            folder = c2.text_input("New folder name", key="opt_save_new_folder",
+                                   placeholder="e.g. ES_ivb_sweeps").strip()
+        else:
+            folder = "" if choice == NO_FOLDER else choice
+
+        run_name = c3.text_input(
+            "Run name",
+            value=f"{meta.get('ticker')}_{meta.get('strategy')}_"
+                  f"{meta.get('start_date')}_{meta.get('end_date')}",
+            key="opt_save_name",
+        )
+
+        if st.button("Save run", type="primary", key="opt_save_btn"):
+            if choice == NEW_FOLDER and not folder:
+                st.error("Enter a folder name.")
+                return
+            if not run_name.strip():
+                st.error("Enter a run name.")
+                return
+            run_dir = opt_io.save_run(trades, meta, run_name=run_name,
+                                      folder=folder)
+            rel = run_dir.relative_to(opt_io.RUNS_ROOT).as_posix()
+            meta = dict(meta)
+            meta["run_name"] = rel
+            st.session_state.opt_meta       = meta
+            st.session_state.opt_loaded_run = rel
+            st.session_state.opt_unsaved    = False
+            st.session_state.opt_run_success      = f"Saved to {run_dir}"
+            st.session_state.opt_reset_run_select = True
+            st.rerun()
 
 
 def render_explore():
@@ -853,14 +948,15 @@ def render_explore():
     loaded = _load_selected_run()
     if loaded is None:
         return
-    trades, meta = loaded
+    trades, meta, unsaved = loaded
 
     axes     = meta.get("axes", {})
     x_axis   = axes.get("x")
     y_axis   = axes.get("y")
-    s_axis   = axes.get("slider")
+    slider_axes = [ax for ax in (axes.get("slider"), axes.get("slider2")) if ax]
     be_band  = meta.get("be_band_ticks", 0.0)
     split    = meta.get("split_date")
+    run_key  = meta.get("run_name") or "unsaved"
 
     st.caption(
         f"**{meta.get('strategy')}** on `{meta.get('dataset')}` · "
@@ -871,6 +967,10 @@ def render_explore():
     if not meta.get("ff_events_found", True):
         st.warning("This run was built without ff_usd_events.parquet — every "
                    "day is bucketed 'normal'.")
+
+    if unsaved:
+        _render_save_panel(trades, meta)
+
     with st.expander("Held parameters", expanded=False):
         st.json(meta.get("fixed_params", {}))
 
@@ -888,18 +988,23 @@ def render_explore():
     min_trades = c3.number_input(
         "Min trades", min_value=0, step=5,
         value=int(meta.get("min_trades_default", MIN_TRADES_DEFAULT)),
-        key=f"opt_min_trades_{meta.get('run_name', '')}",
+        key=f"opt_min_trades_{run_key}",
         help="cells with fewer trades (after filtering) are hatched",
     )
 
-    slider_value, slider_desc = None, ""
-    if s_axis is not None:
-        options = s_axis["values"]
-        slider_value = st.select_slider(
-            f"{s_axis['param']} (slider axis)", options=options,
-            key=f"opt_slider_{meta.get('run_name', '')}",
-        ) if len(options) > 1 else options[0]
-        slider_desc = f"{s_axis['param']} = {_fmt_axis_value(slider_value)}"
+    slider_values, slider_descs = {}, []
+    if slider_axes:
+        slider_cols = st.columns(len(slider_axes))
+        for idx, (col, ax) in enumerate(zip(slider_cols, slider_axes), start=1):
+            options = ax["values"]
+            with col:
+                value = st.select_slider(
+                    f"{ax['param']} (slider {idx})", options=options,
+                    key=f"opt_slider{idx}_{run_key}",
+                ) if len(options) > 1 else options[0]
+            slider_values[ax["param"]] = value
+            slider_descs.append(f"{ax['param']} = {_fmt_axis_value(value)}")
+    slider_desc = " · ".join(slider_descs)
 
     st.caption("Day types included")
     bucket_cols = st.columns(len(BUCKET_ORDER))
@@ -914,13 +1019,15 @@ def render_explore():
 
     # ── filter (reductions over the stored trades) + vectorized recompute ─────
     # min_trades and the metric toggle are NOT part of the key: they only
-    # re-mask / recolor the cached grid, no recompute.
-    grid_key = (meta.get("run_name"), slider_value, tuple(selected_buckets),
-                half, float(be_band))
+    # re-mask / recolor the cached grid, no recompute. created_at
+    # disambiguates successive unsaved runs (both have run_name None).
+    grid_key = (meta.get("run_name"), meta.get("created_at"),
+                tuple(sorted(slider_values.items(), key=lambda kv: kv[0])),
+                tuple(selected_buckets), half, float(be_band))
     if st.session_state.get("opt_grid_key") != grid_key:
         df = trades
-        if s_axis is not None and slider_value is not None:
-            df = df[df[s_axis["param"]] == slider_value]
+        for ax in slider_axes:
+            df = df[df[ax["param"]] == slider_values[ax["param"]]]
         if len(selected_buckets) < len(BUCKET_ORDER):
             df = df[df["day_bucket"].isin(selected_buckets)]
         if half != "both" and split is not None:
@@ -951,7 +1058,7 @@ def render():
     if st.button("← Back"):
         go_page("home")
     st.title("Strategy Optimizer")
-    st.caption("Sweep up to 3 strategy params, store every cell's trades, "
+    st.caption("Sweep up to 4 strategy params, store every cell's trades, "
                "explore the metric surface — no auto-picked 'best' config.")
     st.write("")
 

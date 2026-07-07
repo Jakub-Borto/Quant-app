@@ -21,6 +21,7 @@ def trades_df(pnls, dates=None, **cells) -> pd.DataFrame:
 
 
 def test_all_wins_multi_day():
+    # three consecutive business days -> traded-days == zero-filled series
     m = compute_metrics(trades_df([10, 20, 30],
                                   ["2026-01-05", "2026-01-06", "2026-01-07"]))
     assert m["total_ticks"] == 60
@@ -29,9 +30,10 @@ def test_all_wins_multi_day():
     assert m["profit_factor"] == float("inf")      # zero losing trades
     assert m["win_rate"] == 100.0
     assert m["win_rate_be"] == 100.0
-    # std([10,20,30], ddof=1) = 10
-    assert m["sharpe_trade"] == pytest.approx(2.0)
-    assert m["sharpe_daily"] == pytest.approx(2.0 * math.sqrt(ANNUALIZATION_DAYS))
+    # daily [10,20,30]: mean 20, std(ddof=1) 10
+    expected = 2.0 * math.sqrt(ANNUALIZATION_DAYS)
+    assert m["sharpe_trade"] == pytest.approx(expected)
+    assert m["sharpe_daily"] == pytest.approx(expected)   # no gap days
 
 
 def test_all_losses():
@@ -40,8 +42,8 @@ def test_all_losses():
     assert m["profit_factor"] == 0.0               # 0 gross win / 10 gross loss
     assert m["win_rate"] == 0.0
     assert m["win_rate_be"] == 0.0
-    assert math.isnan(m["sharpe_trade"])           # std == 0
-    assert math.isnan(m["sharpe_daily"])           # single day
+    assert math.isnan(m["sharpe_trade"])           # single traded day
+    assert math.isnan(m["sharpe_daily"])           # single-day span
 
 
 def test_single_trade():
@@ -49,8 +51,8 @@ def test_single_trade():
     assert m["total_trades"] == 1
     assert m["avg_trade"] == 7
     assert m["profit_factor"] == float("inf")
-    assert math.isnan(m["sharpe_trade"])           # n < 2
-    assert math.isnan(m["sharpe_daily"])           # < 2 days
+    assert math.isnan(m["sharpe_trade"])           # < 2 traded days
+    assert math.isnan(m["sharpe_daily"])           # < 2 span days
 
 
 def test_breakeven_band():
@@ -74,12 +76,27 @@ def test_std_zero_sharpe_nan():
     assert m["win_rate"] == 100.0
 
 
-def test_multi_day_daily_sharpe():
+def test_multi_day_sharpes():
     df = trades_df([10, -5, 20, 5],
                    ["2026-01-05", "2026-01-05", "2026-01-06", "2026-01-07"])
     daily = pd.Series([5.0, 20.0, 5.0])
     expected = daily.mean() / daily.std(ddof=1) * math.sqrt(ANNUALIZATION_DAYS)
-    assert compute_metrics(df)["sharpe_daily"] == pytest.approx(expected)
+    m = compute_metrics(df)
+    assert m["sharpe_trade"] == pytest.approx(expected)
+    assert m["sharpe_daily"] == pytest.approx(expected)   # consecutive days
+
+
+def test_sharpe_daily_zero_fills_gap_days():
+    # Mon, Tue, then Fri: Wed+Thu are zero-filled in sharpe_daily only
+    df = trades_df([10, 20, 30], ["2026-01-05", "2026-01-06", "2026-01-09"])
+    traded      = pd.Series([10.0, 20.0, 30.0])
+    zero_filled = pd.Series([10.0, 20.0, 0.0, 0.0, 30.0])
+    m = compute_metrics(df)
+    assert m["sharpe_trade"] == pytest.approx(
+        traded.mean() / traded.std(ddof=1) * math.sqrt(ANNUALIZATION_DAYS))
+    assert m["sharpe_daily"] == pytest.approx(
+        zero_filled.mean() / zero_filled.std(ddof=1) * math.sqrt(ANNUALIZATION_DAYS))
+    assert m["sharpe_daily"] < m["sharpe_trade"]    # gap days drag it down
 
 
 def test_daily_sharpe_equal_days_nan():
