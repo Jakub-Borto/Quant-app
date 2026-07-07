@@ -26,6 +26,13 @@ def render():
         if st.button("Open →", key="nav_analytics", use_container_width=True):
             go("analytics")
 
+    with col1:
+        st.write("")
+        st.subheader("05 · Optimizer")
+        st.write("Sweep strategy params on a grid and explore the metric heatmap.")
+        if st.button("Open →", key="nav_optimizer", use_container_width=True):
+            go("optimizer")
+
     with col2:
         st.subheader("02 · Backtester")
         st.write("Run vectorized strategies on your datasets. Outputs trades to Parquet.")

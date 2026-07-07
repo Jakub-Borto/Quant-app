@@ -10,6 +10,8 @@ from pathlib import Path
 import importlib.util
 import sys
 
+from optimization.buckets import load_bucket_map
+
 ASSET_INFO = {
     # Equity Index
     "ES":  {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 12.50},
@@ -55,14 +57,12 @@ HIDDEN_PARAMS = {"tick_size"}
 
 # ── News / holiday classification ─────────────────────────────────────────────
 #
-# Single source of truth for day-type categories — consumed by
-# load_day_classifications(), tag_trades(), the day-type filter UI, and the
-# news/holiday breakdown table. Edit here and all four stay in sync.
-#
-# DAY_TYPE_ORDER is in precedence order (first match wins when collapsing a
-# date's tag set to a single day_type). RED_EVENT_PATTERNS holds the
-# case-insensitive substring rules for the event categories carved out of
-# high_impact — matched ONLY against red-impact rows.
+# The classification logic lives in optimization/buckets.py (shared with the
+# Strategy Optimizer — same priority rules, same EVENT_KEYWORDS config), so
+# both views classify a given date identically. This view keeps only its
+# historical names: day_type column, 'high_impact' instead of the shared
+# 'other_high_impact'. DAY_TYPE_ORDER drives the filter UI and the
+# news/holiday breakdown table.
 
 DAY_TYPE_ORDER = [
     ("holiday",     "Holidays"),
@@ -74,72 +74,25 @@ DAY_TYPE_ORDER = [
     ("normal",      "Normal Trading Days"),
 ]
 
-# Match order within the red-event categories (precedence: first hit wins).
-RED_EVENT_PATTERNS = {
-    "fomc": "FOMC",
-    "cpi":  "CPI",
-    "nfp":  "Non-Farm Employment Change",
-    "ppi":  "PPI",
-}
 
-
-def load_day_classifications() -> dict[str, set]:
+def load_day_classifications() -> dict[str, str]:
     """
-    Returns {date_str: set_of_tags} where tags are the per-date day-type
-    categories present (e.g. {'holiday'}, {'cpi', 'high_impact'}).
-    date_str is ISO format YYYY-MM-DD for fast lookup.
-
-    Tagging rules:
-      - any grey-impact event  -> 'holiday'
-      - each red-impact event  -> the first RED_EVENT_PATTERNS category it
-        matches (fomc/cpi/nfp/ppi), else 'high_impact'
-    A date can carry several tags; tag_trades() resolves precedence.
+    {date_iso: day_type} from the FF events parquet ({} when missing —
+    every date then resolves to 'normal' in tag_trades()).
     """
-    path = Path("data/news_and_holidays/ff_usd_events.parquet")
-    if not path.exists():
-        return {}
-
-    df = pd.read_parquet(path)
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-
-    classifications: dict[str, set] = {}
-    for date, group in df.groupby("date"):
-        tags: set = set()
-        if (group["impact"] == "grey").any():
-            tags.add("holiday")
-
-        red_events = group.loc[group["impact"] == "red", "event"].astype(str)
-        for event_text in red_events:
-            lowered = event_text.lower()
-            for key, pattern in RED_EVENT_PATTERNS.items():
-                if pattern.lower() in lowered:
-                    tags.add(key)
-                    break
-            else:
-                tags.add("high_impact")
-
-        classifications[date.isoformat()] = tags
-
-    return classifications
+    bucket_map = load_bucket_map()
+    return {
+        date: ("high_impact" if bucket == "other_high_impact" else bucket)
+        for date, bucket in bucket_map.items()
+    }
 
 
 def tag_trades(trades: pd.DataFrame, day_classifications: dict) -> pd.DataFrame:
-    """
-    Adds a single 'day_type' column by collapsing each date's tag set using
-    DAY_TYPE_ORDER precedence (first match wins; 'normal' if no tags).
-    """
-    def _tag(date) -> str:
-        key  = pd.Timestamp(date).date().isoformat()
-        tags = day_classifications.get(key, set())
-        for tag_key, _label in DAY_TYPE_ORDER:
-            if tag_key == "normal":
-                break
-            if tag_key in tags:
-                return tag_key
-        return "normal"
-
+    """Adds a single 'day_type' column ('normal' for unlisted dates)."""
     trades = trades.copy()
-    trades["day_type"] = trades["date"].apply(_tag)
+    trades["day_type"] = trades["date"].apply(
+        lambda d: day_classifications.get(pd.Timestamp(d).date().isoformat(), "normal")
+    )
     return trades
 
 

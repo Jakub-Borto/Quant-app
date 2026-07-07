@@ -29,7 +29,7 @@ excluded.
 | Folder | Loaded by | Contract |
 |---|---|---|
 | `transforms/` | Data Formatter | `run_all(input_folder, output_folder, skip_existing, on_progress) -> None` |
-| `strategies/` | Backtester | `run(folder_path, start_date, end_date, params) -> pd.DataFrame` (+ `PARAMS`) |
+| `strategies/` | Backtester, Optimizer | `run(folder_path, start_date, end_date, params) -> pd.DataFrame` (+ `PARAMS`; the Optimizer sweeps any int/float param over a UI-chosen min/max/step, str params over a value list) |
 | `position_sizing/` | Analytics, Monte Carlo | `apply(trades, params) -> pd.DataFrame` (+ `PARAMS`) |
 | `monte_carlo/` | Monte Carlo view | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`) |
 
@@ -40,17 +40,20 @@ A strategy may also be a **package** (a folder with `__init__.py` exposing `run`
 
 ```
 app.py                     Streamlit entry point / router
-views/                     UI pages (home, data_formatter, backtester, analytics, monte_carlo)
+views/                     UI pages (home, data_formatter, backtester, analytics, monte_carlo, optimizer)
 transforms/                raw DBN -> enriched parquet (the run_all plugins)
 strategies/                backtest strategies (single-file or package); base.py = helpers
 position_sizing/           fixed.py, kelly.py, risk_based.py
 monte_carlo/               base.py (utilities), bootstrap.py
+optimization/              Strategy Optimizer core (param_space, engine, metrics, buckets, io) — pure, tested
 ff_data_scraper/           Forex Factory calendar text -> ff_usd_events.parquet
 heatmap_rs/                Rust (PyO3) L3 order-book replay kernel
+tests/                     pytest suite (optimization package + optimizer view smoke)
 data/
   raw_dbn/{type}/{asset}/{dataset}/   *.dbn.zst   (immutable inputs)
   parquet/{type}/{asset}/{dataset}/   YYYY-MM-DD.parquet  (working layer)
   trades/{name}.parquet               backtest outputs (flat, no hierarchy)
+  optimizations/{run}/                optimizer runs: trades.parquet (all cells) + meta.json
   news_and_holidays/ff_usd_events.parquet
 ```
 
@@ -59,6 +62,7 @@ data/
 ```
 raw_dbn/  --(Data Formatter + a transform)-->  parquet/  (one YYYY-MM-DD.parquet per day)
 parquet/  --(Backtester + a strategy)-------->  trades/{name}.parquet  (+ day_type from FF data)
+parquet/  --(Optimizer + a strategy grid)---->  optimizations/{run}/  (all cells' trades + meta)
 trades/   --(Analytics + a sizer)------------>  sized equity curve + $ metrics
 trades/   --(Monte Carlo + a sizer)---------->  equity_matrix -> fan chart + stats
 ```

@@ -10,7 +10,7 @@ st.set_page_config(
 if "page" not in st.session_state:
     st.session_state.page = "home"
 
-from views import home, data_formatter, backtester, analytics, monte_carlo
+from views import home, data_formatter, backtester, analytics, monte_carlo, optimizer
 
 def router():
     page = st.session_state.page
@@ -25,6 +25,8 @@ def router():
         analytics.render()
     elif page == "monte_carlo":
         monte_carlo.render()
+    elif page == "optimizer":
+        optimizer.render()
     else:
         st.session_state.page = "home"
         st.rerun()
