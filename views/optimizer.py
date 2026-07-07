@@ -6,10 +6,10 @@
 # generator, deliberately WITHOUT any "pick the best config" control: read the
 # surface for plateaus and cross-half stability, not the single brightest cell.
 
+import os
 import time
+from collections import deque
 from pathlib import Path
-import importlib.util
-import sys
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,10 @@ from optimization import io as opt_io
 from optimization.buckets import (
     BUCKET_ORDER, EVENT_KEYWORDS, FF_EVENTS_PATH, load_bucket_map,
 )
-from optimization.engine import check_param_columns, median_split_date, run_grid
+from optimization.engine import (
+    check_param_columns, estimate_worker_memory, median_split_date, run_grid,
+)
+from optimization.loader import load_strategy
 from optimization.metrics import METRIC_LABELS, METRIC_ORDER, compute_metrics_by_cell
 from optimization.param_space import (
     MAX_SWEPT, ROLE_LABELS, ROLES, build_range, combo_count, parse_values,
@@ -126,34 +129,8 @@ def get_strategies() -> list:
     return sorted(results)
 
 
-def load_strategy(name: str):
-    flat_path   = Path("strategies") / f"{name}.py"
-    folder_path = Path("strategies") / name / "__init__.py"
-
-    if flat_path.exists():
-        path   = flat_path
-        is_pkg = False
-    elif folder_path.exists():
-        path   = folder_path
-        is_pkg = True
-    else:
-        raise FileNotFoundError(f"Strategy '{name}' not found")
-
-    if is_pkg:
-        spec = importlib.util.spec_from_file_location(
-            name, path,
-            submodule_search_locations=[str(Path("strategies") / name)],
-        )
-    else:
-        spec = importlib.util.spec_from_file_location(name, path)
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-
-    if not hasattr(module, "run") or not callable(module.run):
-        raise ValueError(f"Strategy '{name}' has no callable run()")
-    return module
+# load_strategy comes from optimization.loader — the same pure loader the
+# parallel workers use (no Streamlit import there).
 
 
 # ── Setup: dataset / strategy / date selectors ────────────────────────────────
@@ -388,9 +365,9 @@ def render_role_assignment(sweep_order: list, key_prefix: str):
 
 def execute_grid_run(strategy, asset_type, asset, dataset, strategy_name,
                      start_date, end_date, fixed_params, axes,
-                     be_band_ticks, min_trades_default):
+                     be_band_ticks, min_trades_default, n_workers):
     asset_info  = ASSET_INFO[asset]
-    folder_path = Path("data/parquet") / asset_type / asset / dataset
+    folder_path = (Path("data/parquet") / asset_type / asset / dataset).resolve()
 
     ff_found   = FF_EVENTS_PATH.exists()
     bucket_map = load_bucket_map()
@@ -400,23 +377,42 @@ def execute_grid_run(strategy, asset_type, asset, dataset, strategy_name,
     progress_bar  = st.progress(0)
     log_container = st.container(height=300)
     log_box       = log_container.empty()
-    logs          = []
+
+    # Throttled progress: repainting the bar + log per combo is O(n²) traffic
+    # at 10k combos. The log keeps the most recent lines only, and both
+    # widgets repaint at most ~4×/s — EXCEPT the final call, which always
+    # paints. Every call still touches st.progress often enough for a
+    # Streamlit Stop/rerun to interrupt the run (the engine emits idle ticks
+    # while workers grind).
+    logs = deque(maxlen=200)
+    last_paint = 0.0
 
     def on_progress(current, total, message: str = ""):
-        progress_bar.progress(current / total)
+        nonlocal last_paint
         if message:
             logs.append(message)
+        now = time.monotonic()
+        if current < total and now - last_paint < 0.25:
+            return
+        last_paint = now
+        progress_bar.progress(current / total if total else 1.0)
         log_box.code("\n".join(logs), language=None)
 
     t0 = time.time()
-    trades = run_grid(
-        strategy, folder_path, start_date, end_date,
-        base_params=fixed_params, axes=axes,
-        tick_size=asset_info["tick_size"],
-        ticks_per_point=asset_info["ticks_per_point"],
-        bucket_map=bucket_map,
-        on_progress=on_progress,
-    )
+    try:
+        trades = run_grid(
+            strategy, folder_path, start_date, end_date,
+            base_params=fixed_params, axes=axes,
+            tick_size=asset_info["tick_size"],
+            ticks_per_point=asset_info["ticks_per_point"],
+            bucket_map=bucket_map,
+            on_progress=on_progress,
+            n_workers=n_workers,
+            strategy_name=strategy_name,
+        )
+    except RuntimeError as e:
+        st.error(str(e))
+        return
     elapsed = time.time() - t0
 
     split = median_split_date(trades)
@@ -544,7 +540,7 @@ def render_setup():
     # run settings
     st.write("")
     with st.expander("Run settings", expanded=True):
-        c1, c2 = st.columns(2)
+        c1, c2, c3, c4 = st.columns(4)
         be_band_ticks = c1.number_input(
             "BE band (ticks)", value=0.0, min_value=0.0, step=0.5,
             key="opt_be_band",
@@ -555,11 +551,40 @@ def render_setup():
             key="opt_min_trades_default",
             help="default hatch threshold in the heatmap (changeable there)",
         )
+        max_workers = min(os.process_cpu_count() or 1, 61)
+        n_workers = c3.number_input(
+            "Parallel workers", value=1, min_value=1, max_value=max_workers,
+            step=1, key="opt_workers",
+            help="1 = serial (in-process, reuses the warm day cache across "
+                 "runs). >1 = separate processes, each building its OWN day "
+                 "cache — pays off from ~100s of combos.",
+        )
+        mem_budget_gb = c4.number_input(
+            "Memory budget (GB)", value=4.0, min_value=0.5, step=0.5,
+            key="opt_mem_budget",
+            help="caps the parallel worker count via the per-worker estimate",
+        )
+
+        folder_path = Path("data/parquet") / asset_type / asset / dataset
+        est = estimate_worker_memory(folder_path, start_date, end_date)
+        allowed = max(1, int(mem_budget_gb * 1024 // est["est_mb"])) \
+            if est["est_mb"] > 0 else 1
+        effective_workers = min(int(n_workers), allowed)
+        st.caption(
+            f"≈ {est['est_mb']:.0f} MB/worker for {est['n_days']} days "
+            f"({est['disk_mb']:.0f} MB on disk) → budget allows {allowed} "
+            f"worker(s). Heuristic only — ignores strategy extras like "
+            f"indicator folders."
+        )
+        if effective_workers < int(n_workers):
+            st.warning(f"Worker count clamped to {effective_workers} by the "
+                       f"memory budget.")
     st.caption(
-        "Grid speed rides on the strategy's internal day cache being "
-        "param-independent (ivb_model_optimized: yes). If each combo takes as "
-        "long as the first, the strategy re-reads its data every run — "
-        "expect grid_size × cold_run_time."
+        "Serial grid speed rides on the strategy's internal day cache being "
+        "param-independent (ivb_model_optimized: yes). With parallel workers, "
+        "each worker pays its own cold start before running warm — serial can "
+        "beat parallel on small grids. Stopping a parallel run waits for the "
+        "in-flight combo on each worker before releasing."
     )
 
     confirmed = True
@@ -579,7 +604,7 @@ def render_setup():
         execute_grid_run(
             strategy, asset_type, asset, dataset, strategy_name,
             start_date, end_date, fixed_params, axes,
-            be_band_ticks, min_trades_default,
+            be_band_ticks, min_trades_default, effective_workers,
         )
 
 

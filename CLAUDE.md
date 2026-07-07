@@ -45,7 +45,8 @@ transforms/                raw DBN -> enriched parquet (the run_all plugins)
 strategies/                backtest strategies (single-file or package); base.py = helpers
 position_sizing/           fixed.py, kelly.py, risk_based.py
 monte_carlo/               base.py (utilities), bootstrap.py
-optimization/              Strategy Optimizer core (param_space, engine, metrics, buckets, io) — pure, tested
+optimization/              Strategy Optimizer core (param_space, engine, metrics, buckets, io, loader) — pure, tested;
+                           engine runs grids serially or on a process pool (per-worker strategy caches, memory-budgeted worker count)
 ff_data_scraper/           Forex Factory calendar text -> ff_usd_events.parquet
 heatmap_rs/                Rust (PyO3) L3 order-book replay kernel
 tests/                     pytest suite (optimization package + optimizer view smoke)

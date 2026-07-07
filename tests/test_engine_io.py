@@ -11,9 +11,11 @@ import pandas as pd
 import pytest
 
 from optimization.engine import (
-    check_param_columns, median_split_date, run_grid,
+    WORKER_BASELINE_MB, WORKER_MB_PER_DISK_MB, check_param_columns,
+    estimate_worker_memory, median_split_date, run_grid,
 )
 from optimization.io import list_runs, load_run, save_run
+from optimization.loader import load_strategy
 from optimization.metrics import METRIC_ORDER, compute_metrics, compute_metrics_by_cell
 
 TICKS_PER_POINT = 4
@@ -165,6 +167,106 @@ def test_all_empty_grid():
     assert trades.empty
     assert "pnl_ticks" in trades.columns and "day_bucket" in trades.columns
     assert median_split_date(trades) is None
+
+
+# ── parallel execution ────────────────────────────────────────────────────────
+
+# File twin of ToyStrategy — written to tmp_path so pool workers (separate
+# processes) can load it by name via optimization.loader without polluting
+# the real strategies/ folder (whose contents feed the UI dropdown).
+TOY_STRATEGY_SOURCE = '''
+import pandas as pd
+
+PARAMS = {"a": 1, "b": 2, "hold": "x"}
+DAYS = ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
+
+
+def run(folder_path, start_date, end_date, params):
+    a, b = params["a"], params["b"]
+    if a == 99:
+        return pd.DataFrame()
+    rows = []
+    for day in DAYS[:b]:
+        rows.append({
+            "date":        day,
+            "direction":   "long",
+            "entry_time":  pd.Timestamp(f"{day} 10:00", tz="America/New_York"),
+            "exit_time":   pd.Timestamp(f"{day} 11:00", tz="America/New_York"),
+            "entry_price": 100.0,
+            "exit_price":  100.0 + a,
+            "sl":          99.0,
+            "tp":          100.0 + a,
+            "exit_reason": "tp",
+            "pnl_points":  float(a),
+        })
+    return pd.DataFrame(rows)
+'''
+
+
+@pytest.fixture()
+def toy_strategy_dir(tmp_path):
+    (tmp_path / "toy_grid.py").write_text(TOY_STRATEGY_SOURCE)
+    return tmp_path
+
+
+def test_parallel_matches_serial(toy_strategy_dir):
+    """The determinism contract: a pool run (out-of-order completion) must
+    produce the exact same trades table as the serial loop — including the
+    zero-trade a=99 cells. Also pins the progress stream: done-counts are
+    monotone and reach the total."""
+    _, serial = grid_run()
+
+    progress = []
+    parallel = run_grid(
+        None, "unused_folder", "2026-01-01", "2026-12-31",
+        base_params=dict(ToyStrategy.PARAMS), axes=AXES,
+        tick_size=0.25, ticks_per_point=TICKS_PER_POINT,
+        bucket_map=BUCKET_MAP,
+        on_progress=lambda cur, total, msg: progress.append((cur, total, msg)),
+        n_workers=3, strategy_name="toy_grid", strategies_dir=toy_strategy_dir,
+    )
+
+    pd.testing.assert_frame_equal(serial, parallel)
+
+    counts = [cur for cur, _, msg in progress if msg]   # ignore idle ticks
+    assert counts == sorted(counts)                     # monotone
+    assert counts[-1] == 6 and len(counts) == 6         # every combo reported
+    assert all(total == 6 for _, total, _ in progress)
+
+
+def test_parallel_requires_strategy_name():
+    with pytest.raises(ValueError, match="strategy_name"):
+        run_grid(
+            None, "unused_folder", "2026-01-01", "2026-12-31",
+            base_params={}, axes=AXES,
+            tick_size=0.25, ticks_per_point=TICKS_PER_POINT,
+            bucket_map={}, n_workers=3,
+        )
+
+
+def test_estimate_worker_memory(tmp_path):
+    (tmp_path / "2026-01-05.parquet").write_bytes(b"x" * 1_000_000)
+    (tmp_path / "2026-01-06.parquet").write_bytes(b"y" * 500_000)
+    (tmp_path / "2026-02-01.parquet").write_bytes(b"z" * 700_000)  # out of range
+    (tmp_path / "meta.parquet").write_bytes(b"m" * 900_000)        # not a day file
+    est = estimate_worker_memory(tmp_path, "2026-01-01", "2026-01-31")
+    assert est["n_days"] == 2
+    assert est["disk_mb"] == pytest.approx(1.5)
+    assert est["est_mb"] == pytest.approx(
+        WORKER_BASELINE_MB + 1.5 * WORKER_MB_PER_DISK_MB)
+
+
+def test_loader_custom_dir(toy_strategy_dir):
+    mod = load_strategy("toy_grid", toy_strategy_dir)
+    assert callable(mod.run)
+    assert mod.PARAMS["b"] == 2
+    with pytest.raises(FileNotFoundError):
+        load_strategy("does_not_exist", toy_strategy_dir)
+
+
+def test_loader_default_dir_finds_real_strategies():
+    mod = load_strategy("orb")          # repo strategies/, cwd-independent
+    assert callable(mod.run)
 
 
 # ── persistence ───────────────────────────────────────────────────────────────

@@ -59,6 +59,9 @@ def test_sweep_checkbox_shows_range_inputs_and_combo_readout(app):
     at = _run(at)
     assert any("5" in str(b.value) and "backtests" in str(b.value)
                for b in at.info)                               # 2.0..4.0 step 0.5
+    # parallel settings render with serial as the default
+    assert at.number_input(key="opt_workers").value == 1
+    assert at.number_input(key="opt_mem_budget").value == 4.0
 
 
 def test_string_param_sweeps_as_value_list(app):
