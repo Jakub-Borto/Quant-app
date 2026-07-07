@@ -173,6 +173,7 @@ def test_save_panel_new_folder(monkeypatch):
         at = _run(at)
 
         assert at.selectbox(key="opt_run_select").value.startswith("●")
+        assert at.slider(key="opt_color_curve").value == 0.0   # linear default
         at.selectbox(key="opt_save_folder").select("── New folder ──")
         at = _run(at)
         at.text_input(key="opt_save_new_folder").set_value("pytest_folder")

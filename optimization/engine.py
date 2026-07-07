@@ -71,16 +71,42 @@ def _range_files(folder_path, start_date, end_date) -> list:
     ]
 
 
-def estimate_worker_memory(folder_path, start_date, end_date) -> dict:
+def sibling_dataset_folders(folder_path, params: dict) -> list:
+    """
+    Sibling dataset folders the strategy will ALSO read, discovered from its
+    param values: any string param naming an existing directory next to the
+    selected dataset (that is exactly how ivb's indicators_folder /
+    big_trades_folder work). Their bytes belong in the memory estimate.
+    """
+    folder_path = Path(folder_path)
+    siblings = []
+    for value in params.values():
+        if not isinstance(value, str) or not value.strip():
+            continue
+        candidate = folder_path.parent / value.strip()
+        if candidate.is_dir() and candidate != folder_path \
+                and candidate not in siblings:
+            siblings.append(candidate)
+    return siblings
+
+
+def estimate_worker_memory(folder_path, start_date, end_date,
+                           extra_folders=()) -> dict:
     """
     Rough per-worker memory need: fixed process baseline + a multiple of the
-    date-filtered parquet bytes the strategy will read/cache. A heuristic —
-    it ignores strategy-specific extras (e.g. ivb's indicators sibling
-    folder) and strategy-internal cache caps; good enough to budget a worker
-    count. Returns {"n_days", "disk_mb", "est_mb"}.
+    date-filtered parquet bytes the strategy will read/cache — summed over
+    the selected dataset AND any `extra_folders` (sibling datasets the
+    strategy also loads, see sibling_dataset_folders). Still a heuristic
+    (in-memory size per byte varies by strategy; strategy-internal caches
+    have their own caps), but good enough to budget a worker count.
+    Returns {"n_days", "disk_mb", "est_mb"} — n_days counts the primary
+    dataset only.
     """
     files   = _range_files(folder_path, start_date, end_date)
     disk_mb = sum(f.stat().st_size for f in files) / 1e6
+    for folder in extra_folders:
+        disk_mb += sum(f.stat().st_size
+                       for f in _range_files(folder, start_date, end_date)) / 1e6
     return {
         "n_days":  len(files),
         "disk_mb": disk_mb,

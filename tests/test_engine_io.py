@@ -13,6 +13,7 @@ import pytest
 from optimization.engine import (
     WORKER_BASELINE_MB, WORKER_MB_PER_DISK_MB, check_param_columns,
     estimate_worker_memory, median_split_date, run_grid,
+    sibling_dataset_folders,
 )
 from optimization.io import list_runs, load_run, save_run
 from optimization.loader import load_strategy
@@ -245,15 +246,46 @@ def test_parallel_requires_strategy_name():
 
 
 def test_estimate_worker_memory(tmp_path):
-    (tmp_path / "2026-01-05.parquet").write_bytes(b"x" * 1_000_000)
-    (tmp_path / "2026-01-06.parquet").write_bytes(b"y" * 500_000)
-    (tmp_path / "2026-02-01.parquet").write_bytes(b"z" * 700_000)  # out of range
-    (tmp_path / "meta.parquet").write_bytes(b"m" * 900_000)        # not a day file
-    est = estimate_worker_memory(tmp_path, "2026-01-01", "2026-01-31")
+    data = tmp_path / "ES_1m"
+    data.mkdir()
+    (data / "2026-01-05.parquet").write_bytes(b"x" * 1_000_000)
+    (data / "2026-01-06.parquet").write_bytes(b"y" * 500_000)
+    (data / "2026-02-01.parquet").write_bytes(b"z" * 700_000)   # out of range
+    (data / "meta.parquet").write_bytes(b"m" * 900_000)         # not a day file
+    est = estimate_worker_memory(data, "2026-01-01", "2026-01-31")
     assert est["n_days"] == 2
     assert est["disk_mb"] == pytest.approx(1.5)
     assert est["est_mb"] == pytest.approx(
         WORKER_BASELINE_MB + 1.5 * WORKER_MB_PER_DISK_MB)
+
+    # sibling datasets the strategy also reads count toward the estimate
+    indicators = tmp_path / "ES_indicators"
+    indicators.mkdir()
+    (indicators / "2026-01-05.parquet").write_bytes(b"i" * 400_000)
+    (indicators / "2026-03-01.parquet").write_bytes(b"i" * 900_000)  # out of range
+    est = estimate_worker_memory(data, "2026-01-01", "2026-01-31",
+                                 extra_folders=[indicators])
+    assert est["n_days"] == 2                                   # primary only
+    assert est["disk_mb"] == pytest.approx(1.9)
+    assert est["est_mb"] == pytest.approx(
+        WORKER_BASELINE_MB + 1.9 * WORKER_MB_PER_DISK_MB)
+
+
+def test_sibling_dataset_folders(tmp_path):
+    data = tmp_path / "ES_1m"
+    indicators = tmp_path / "ES_indicators"
+    data.mkdir()
+    indicators.mkdir()
+    params = {
+        "indicators_folder": "ES_indicators",   # exists -> included
+        "big_trades_folder": "ES_missing",      # doesn't exist -> skipped
+        "vwap_session": "globex",               # not a folder -> skipped
+        "dup": "ES_indicators",                 # deduped
+        "self": "ES_1m",                        # the dataset itself -> skipped
+        "rr": 1.0,
+        "empty": "",
+    }
+    assert sibling_dataset_folders(data, params) == [indicators]
 
 
 def test_loader_custom_dir(toy_strategy_dir):

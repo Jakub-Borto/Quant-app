@@ -22,6 +22,7 @@ from optimization.buckets import (
 )
 from optimization.engine import (
     check_param_columns, estimate_worker_memory, median_split_date, run_grid,
+    sibling_dataset_folders,
 )
 from optimization.loader import load_strategy
 from optimization.metrics import METRIC_LABELS, METRIC_ORDER, compute_metrics_by_cell
@@ -555,9 +556,11 @@ def render_setup():
         n_workers = c3.number_input(
             "Parallel workers", value=1, min_value=1, max_value=max_workers,
             step=1, key="opt_workers",
-            help="1 = serial (in-process, reuses the warm day cache across "
-                 "runs). >1 = separate processes, each building its OWN day "
-                 "cache — pays off from ~100s of combos.",
+            help=f"1 = serial (in-process, reuses the warm day cache across "
+                 f"runs). >1 = separate processes, each building its OWN day "
+                 f"cache — pays off from ~100s of combos. Capped at your "
+                 f"{max_workers} logical cores: backtests are CPU-bound, so "
+                 f"extra processes only add memory, not speed.",
         )
         mem_budget_gb = c4.number_input(
             "Memory budget (GB)", value=4.0, min_value=0.5, step=0.5,
@@ -566,15 +569,19 @@ def render_setup():
         )
 
         folder_path = Path("data/parquet") / asset_type / asset / dataset
-        est = estimate_worker_memory(folder_path, start_date, end_date)
+        # sibling datasets the strategy also reads (e.g. ivb's
+        # indicators_folder) count toward the estimate
+        siblings = sibling_dataset_folders(folder_path, fixed_params)
+        est = estimate_worker_memory(folder_path, start_date, end_date,
+                                     extra_folders=siblings)
         allowed = max(1, int(mem_budget_gb * 1024 // est["est_mb"])) \
             if est["est_mb"] > 0 else 1
         effective_workers = min(int(n_workers), allowed)
+        datasets_desc = dataset + "".join(f" + {p.name}" for p in siblings)
         st.caption(
             f"≈ {est['est_mb']:.0f} MB/worker for {est['n_days']} days "
-            f"({est['disk_mb']:.0f} MB on disk) → budget allows {allowed} "
-            f"worker(s). Heuristic only — ignores strategy extras like "
-            f"indicator folders."
+            f"({est['disk_mb']:.0f} MB on disk: {datasets_desc}) → budget "
+            f"allows {allowed} worker(s). Rough estimate."
         )
         if effective_workers < int(n_workers):
             st.warning(f"Worker count clamped to {effective_workers} by the "
@@ -691,6 +698,21 @@ def _cell_text_color(v_norm: float) -> str:
     return "rgba(20,20,20,0.9)" if luminance > 140 else "rgba(255,255,255,0.92)"
 
 
+def _curved_colorscale(gamma: float) -> list:
+    """
+    HEATMAP_COLORSCALE with a gamma curve bent into the value->color mapping
+    (the data and colorbar ticks stay in true units — only where the colors
+    sit changes). gamma < 1 pulls the yellow->red band down to lower values
+    (log-like: reds arrive sooner); gamma > 1 pushes it toward the top
+    (exp-like: only the best cells go red); 1 = the base linear scale.
+    """
+    if gamma == 1.0:
+        return HEATMAP_COLORSCALE
+    positions = np.linspace(0.0, 1.0, 33)
+    return [[float(v), "rgb({},{},{})".format(*_colorscale_rgb(v ** gamma))]
+            for v in positions]
+
+
 def _fmt_cell(value: float, metric: str) -> str:
     """Compact in-cell label."""
     if value is None or np.isnan(value):
@@ -708,7 +730,8 @@ def _fmt_cell(value: float, metric: str) -> str:
 
 
 def _render_heatmap(arrays: dict, metric: str, x_param, x_values, y_param,
-                    y_values, slider_desc: str, min_trades: int):
+                    y_values, slider_desc: str, min_trades: int,
+                    color_gamma: float = 1.0):
     nx, ny = len(x_values), len(y_values)
     counts = np.nan_to_num(arrays["total_trades"], nan=0.0)
     masked = counts < min_trades
@@ -765,8 +788,11 @@ def _render_heatmap(arrays: dict, metric: str, x_param, x_values, y_param,
                 text = _fmt_cell(raw, metric)
                 if not text:
                     continue
+                # same curve as the colorscale, so text contrast tracks the
+                # color actually shown
                 color = ("rgba(150,150,150,0.85)" if not np.isfinite(raw)
-                         else _cell_text_color((z[j, i] - zmin) / span))
+                         else _cell_text_color(
+                             max(0.0, (z[j, i] - zmin) / span) ** color_gamma))
                 annotations.append(dict(
                     x=i, y=j, text=text, showarrow=False,
                     font=dict(size=font_size, color=color),
@@ -778,7 +804,7 @@ def _render_heatmap(arrays: dict, metric: str, x_param, x_values, y_param,
         z=z,
         x=list(range(nx)),
         y=list(range(ny)),
-        colorscale=HEATMAP_COLORSCALE,
+        colorscale=_curved_colorscale(color_gamma),
         zmin=zmin, zmax=zmax,
         hovertext=hover,
         hovertemplate="%{hovertext}<extra></extra>",
@@ -1004,7 +1030,7 @@ def render_explore():
         return
 
     # ── controls ──────────────────────────────────────────────────────────────
-    c1, c2, c3 = st.columns([2, 2, 1])
+    c1, c2, c3, c4 = st.columns([2, 2, 1, 2])
     metric = c1.selectbox("Metric", METRIC_ORDER,
                           format_func=METRIC_LABELS.get, key="opt_metric")
     half = c2.radio("Data half", ["both", "1st", "2nd"], horizontal=True,
@@ -1016,6 +1042,14 @@ def render_explore():
         key=f"opt_min_trades_{run_key}",
         help="cells with fewer trades (after filtering) are hatched",
     )
+    color_curve = c4.slider(
+        "Color curve", min_value=-2.0, max_value=2.0, value=0.0, step=0.25,
+        key="opt_color_curve",
+        help="Bends the value→color mapping (recolor only, values unchanged). "
+             "0 = linear · < 0 = log-like, the yellow→red band arrives at "
+             "lower values · > 0 = exp-like, only the top cells go red.",
+    )
+    color_gamma = 2.0 ** color_curve
 
     slider_values, slider_descs = {}, []
     if slider_axes:
@@ -1074,7 +1108,8 @@ def render_explore():
                                 y_axis["values"] if y_axis else None)
 
     _render_heatmap(arrays, metric, x_axis["param"], x_values, y_param,
-                    y_values, slider_desc, int(min_trades))
+                    y_values, slider_desc, int(min_trades),
+                    color_gamma=color_gamma)
 
 
 # ── Main render ───────────────────────────────────────────────────────────────
