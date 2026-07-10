@@ -47,7 +47,8 @@ strategies/                backtest strategies (single-file or package); base.py
 position_sizing/           fixed.py, kelly.py, risk_based.py
 monte_carlo/               base.py (utilities), bootstrap.py
 optimization/              Strategy Optimizer core (param_space, engine, metrics, buckets, io, loader) — pure, tested;
-                           engine runs grids serially or on a process pool (per-worker strategy caches, memory-budgeted worker count)
+                           engine runs grids serially or on a process pool (per-worker strategy caches, memory-budgeted worker count);
+                           combine/ = Strategy Combiner (no-overlap merge of saved runs' variants, greedy IS selection + sealed OOS path)
 ff_data_scraper/           Forex Factory calendar text -> ff_usd_events.parquet
 heatmap_rs/                Rust (PyO3) L3 order-book replay kernel
 tests/                     pytest suite (optimization package + optimizer view smoke)
@@ -65,6 +66,7 @@ data/
 raw_dbn/  --(Data Formatter + a transform)-->  parquet/  (one YYYY-MM-DD.parquet per day)
 parquet/  --(Backtester + a strategy)-------->  trades/{name}.parquet  (+ day_type from FF data)
 parquet/  --(Optimizer + a strategy grid)---->  optimizations/{run}/  (all cells' trades + meta)
+optimizations/{container}/ --(Combine)------->  {container}/_combined/{run}/  (variant-set selection path, no re-runs)
 trades/   --(Analytics + a sizer)------------>  sized equity curve + $ metrics
 trades/   --(Monte Carlo + a sizer)---------->  equity_matrix -> fan chart + stats
 ```

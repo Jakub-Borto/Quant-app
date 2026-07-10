@@ -86,6 +86,12 @@ def test_explore_mode_renders(app):
     at = _run(at)  # either run selector or the "no saved runs" notice — no crash
 
 
+def test_combine_mode_renders(app):
+    at = _run(app)
+    at.radio(key="opt_mode").set_value("Combine")
+    at = _run(at)  # container selector or the empty-state notice — no crash
+
+
 def test_run_grid_lands_in_explore_unsaved(app):
     """Regression: Run grid must not raise on the opt_mode hand-off
     (StreamlitAPIException) and must land in Explore WITHOUT writing to disk.

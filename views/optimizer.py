@@ -25,6 +25,11 @@ from optimization.engine import (
     sibling_dataset_folders,
 )
 from optimization.loader import load_strategy
+from optimization.combine import io as cmb_io
+from optimization.combine.compat import check_compatibility
+from optimization.combine.pool import discover_entry_runs, list_containers, \
+    load_entry_runs
+from optimization.combine.runner import run_combine
 from views.trade_report import (
     DAY_TYPE_ORDER, render_chart_view_controls, render_equity_curve,
     render_market_exposure, render_metrics, render_news_holiday_breakdown,
@@ -1260,6 +1265,292 @@ def render_explore():
                             selected_buckets)
 
 
+# ── Combine: cross-run variant selection (3rd optimizer sub-module) ──────────
+
+IS_COLOR, OOS_COLOR = "#1f77b4", "#ff7f0e"   # app's two-series pair (CVD-safe)
+
+_SELECTION_TOOLTIP = """\
+**Redundancy penalty λ (ticks per unit correlation).** Greedy scores each
+candidate as `marginal merged ticks − λ × corr`, where corr is the daily-P&L
+correlation with the MOST similar already-selected member. λ=0 accepts any
+positive gain — near-duplicate param nudges (corr ≈ 1, tiny gains) pile up.
+λ=30 means a perfect clone must beat an uncorrelated alternative by 30+ ticks.
+Calibrate against the marginal gains in the run log (early picks ~100+, late
+clones ~5-30): λ ≈ 20-40 kills clone-padding without blocking genuinely
+additive variants.
+
+**Max set size.** A ceiling on the greedy path, not a target — greedy already
+stops when no candidate adds positive score. Bounds runtime (≈ pool × k merge
+evaluations) and keeps the chart readable; the OOS peak usually lands far
+below it. Raise it only if the OOS line is still climbing when the path ends.
+
+**Greedy seeds.** Insurance against first-pick lock-in: the forward pass is
+re-run N times, forcing the first pick to each of the top-N standalone
+in-sample variants; the best-ending path wins. 1 = plain greedy; 3-5 is a
+cheap robustness check (runtime × N). Seeds converging to similar paths =
+a stable selection. The swap step runs afterwards in every case.
+"""
+
+
+def _render_path_chart(path_df: pd.DataFrame):
+    """IS vs OOS total ticks per set size k, OOS peak starred. Both series
+    share one unit (ticks) — one axis, never dual."""
+    fwd = path_df[path_df["stage"] == "forward"]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=fwd["k"], y=fwd["is_ticks"], name="In-sample",
+        mode="lines+markers", line=dict(width=2, color=IS_COLOR),
+        marker=dict(size=8),
+        hovertemplate="k=%{x} · IS %{y:.0f} ticks<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=fwd["k"], y=fwd["oos_ticks"], name="Out-of-sample",
+        mode="lines+markers", line=dict(width=2, color=OOS_COLOR),
+        marker=dict(size=8),
+        hovertemplate="k=%{x} · OOS %{y:.0f} ticks<extra></extra>",
+    ))
+    peak = path_df[path_df["is_oos_peak"]]
+    if len(peak):
+        fig.add_trace(go.Scatter(
+            x=peak["k"], y=peak["oos_ticks"], mode="markers+text",
+            marker=dict(symbol="star", size=15, color=OOS_COLOR,
+                        line=dict(width=2, color="rgba(255,255,255,0.9)")),
+            text=["OOS peak"], textposition="top center",
+            showlegend=False, hoverinfo="skip",
+        ))
+    fig.update_layout(
+        xaxis=dict(title="set size k", dtick=1),
+        yaxis_title="total ticks (merged, no-overlap)",
+        hovermode="x unified", height=420,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1),
+    )
+    st.plotly_chart(fig, width='stretch', key="opt_cmb_chart")
+
+
+def _render_combine_results(container: str):
+    """Saved combine runs under {container}/_combined/: path chart + table +
+    member inspector. Reloads without re-running anything."""
+    if st.session_state.pop("opt_cmb_reset_select", False):
+        st.session_state.pop("opt_cmb_result_select", None)
+
+    saved = cmb_io.list_combine_runs(container)
+    if not saved:
+        return
+    st.write("")
+    st.divider()
+    st.subheader("Saved combine runs")
+    st.caption("These are snapshots — the controls above only shape the "
+               "NEXT “Run combine”. Check which run you're viewing here.")
+    name = st.selectbox("Combine run", saved, key="opt_cmb_result_select")
+    path_df, members_df, meta = cmb_io.load_combine_run(container, name)
+
+    st.caption(
+        f"**{meta.get('ticker')}** · {len(meta.get('runs', []))} entry runs · "
+        f"{meta.get('shared_start')} → {meta.get('shared_end')} · "
+        f"IS through {meta.get('split_boundary')} "
+        f"({meta.get('is_fraction', 0):.0%}) · λ={meta.get('lambda', 0):g} · "
+        f"pool {meta.get('pool_size')} variants"
+    )
+    with st.expander("This run's inputs (entry runs · floors · day types)",
+                     expanded=False):
+        st.markdown("**Entry runs pooled:**\n"
+                    + "\n".join(f"- {r}" for r in meta.get("runs", [])))
+        floors_used = meta.get("min_trades_floors", {})
+        st.markdown("**Min-trades floors (in-sample):** "
+                    + (", ".join(f"{k}={v}" for k, v in floors_used.items())
+                       if floors_used else "none"))
+        st.markdown("**Day types included:** "
+                    + ", ".join(meta.get("enabled_day_buckets", [])))
+
+    _render_path_chart(path_df)
+    peak_k = path_df.loc[path_df["is_oos_peak"], "k"]
+    st.caption(
+        f"OOS peak at k = {int(peak_k.iloc[0]) if len(peak_k) else '—'} — "
+        "read it as “look around here”: the exact argmax is one noisy "
+        "realization, prefer the plateau. Selection saw only the in-sample "
+        "slice; judge sets by the orange line."
+    )
+
+    table = path_df[["k", "stage", "is_ticks", "oos_ticks", "is_sharpe",
+                     "oos_sharpe", "is_max_dd", "oos_max_dd",
+                     "n_trades_is", "n_trades_oos", "is_oos_peak"]].copy()
+    for col in ("is_ticks", "oos_ticks", "is_max_dd", "oos_max_dd"):
+        table[col] = table[col].round(0)
+    for col in ("is_sharpe", "oos_sharpe"):
+        table[col] = table[col].round(2)
+    st.dataframe(table, width='stretch', hide_index=True)
+    if path_df["oos_empty"].any():
+        st.warning("Some sets have an empty out-of-sample slice "
+                   "(all member trades fall in-sample) — their OOS ticks "
+                   "read 0 by convention.")
+
+    # member inspector — the user picks k(s); nothing is auto-chosen
+    st.write("")
+    options = [f"k={row.k} ({row.stage})"
+               for row in path_df.itertuples()]
+    pick = st.selectbox("Inspect member variants of…", options,
+                        index=int(path_df["is_oos_peak"].idxmax()),
+                        key="opt_cmb_inspect")
+    row = path_df.iloc[options.index(pick)]
+    members = members_df[(members_df["k"] == row["k"])
+                         & (members_df["stage"] == row["stage"])]
+    st.dataframe(
+        members[["trade_type", "params", "run", "n_is", "n_oos"]],
+        width='stretch', hide_index=True,
+    )
+
+
+def render_combine():
+    containers = list_containers()
+    if not containers:
+        st.info("No containers with entry runs under `data/optimizations/` — "
+                "save some optimizer runs into a folder first.")
+        return
+
+    container = st.selectbox("Container folder", containers,
+                             key="opt_cmb_container")
+    entry_runs = discover_entry_runs(container)
+    selected_runs = st.multiselect(
+        "Entry runs to pool", entry_runs, default=entry_runs,
+        key=f"opt_cmb_runs_{container}",
+        help="every child folder holding meta.json + trades.parquet; "
+             "_combined/ and incomplete folders are excluded",
+    )
+    if not selected_runs:
+        st.info("Tick at least one entry run.")
+        _render_combine_results(container)
+        return
+
+    # load once per selection (cached in session_state)
+    cache_key = (container, tuple(sorted(selected_runs)))
+    if st.session_state.get("opt_cmb_cache_key") != cache_key:
+        st.session_state.opt_cmb_loaded    = load_entry_runs(container,
+                                                             selected_runs)
+        st.session_state.opt_cmb_cache_key = cache_key
+    loaded = st.session_state.opt_cmb_loaded
+
+    # ── compatibility gate ────────────────────────────────────────────────────
+    gate = check_compatibility({n: meta for n, (meta, _) in loaded.items()})
+    if not gate["ok"]:
+        st.error("**Incompatible runs — cannot combine:**\n\n"
+                 + "\n".join(f"- {e}" for e in gate["errors"]))
+        _render_combine_results(container)
+        return
+    st.success(
+        f"Compatible: **{gate['ticker']}** on `{gate['dataset']}` · "
+        f"ticks/point {gate['ticks_per_point']:g} · shared window "
+        f"{gate['shared_start'].date()} → {gate['shared_end'].date()}"
+    )
+    for w in gate["warnings"]:
+        st.warning(w)
+
+    # ── pre-run controls (order matters: day filter -> split -> floors) ───────
+    st.caption("Day types included (dropped from the pool before the split)")
+    bucket_cols = st.columns(len(BUCKET_ORDER))
+    enabled_buckets = set()
+    for i, (key, label) in enumerate(BUCKET_ORDER):
+        with bucket_cols[i]:
+            if st.checkbox(label, value=True, key=f"opt_cmb_bucket_{key}"):
+                enabled_buckets.add(key)
+    if not enabled_buckets:
+        st.warning("No day types selected.")
+        return
+
+    trade_types = sorted({
+        str(t) for _, (meta, trades) in loaded.items()
+        for t in (trades["trade_type"].dropna().unique()
+                  if "trade_type" in trades.columns else ["unknown"])
+    })
+    st.caption("Per-entry min-trades floor (in-sample trade count)")
+    floors = {}
+    floor_cols = st.columns(min(len(trade_types), 6))
+    for i, tt in enumerate(trade_types):
+        with floor_cols[i % 6]:
+            floors[tt] = st.number_input(tt, value=10, min_value=0, step=5,
+                                         key=f"opt_cmb_floor_{tt}")
+
+    st.markdown("**Selection settings**", help=_SELECTION_TOOLTIP)
+    c1, c2, c3, c4 = st.columns(4)
+    split_label = c1.selectbox("IS/OOS split", ["50/50", "60/40", "70/30",
+                                                "80/20"], index=2,
+                               key="opt_cmb_split",
+                               help="chronological: train = earliest X% of "
+                                    "trading dates")
+    is_fraction = int(split_label.split("/")[0]) / 100
+    lam = c2.number_input("Redundancy penalty λ", value=0.0, min_value=0.0,
+                          step=5.0, key="opt_cmb_lambda",
+                          help="ticks subtracted per unit of daily-P&L "
+                               "correlation with the closest selected member; "
+                               "0 = off, ~20-40 suppresses near-duplicate "
+                               "param nudges (see the ⓘ above)")
+    max_k = c3.number_input("Max set size", value=30, min_value=1,
+                            max_value=200, step=5, key="opt_cmb_max_k",
+                            help="ceiling on the greedy path, not a target — "
+                                 "greedy stops on its own when nothing adds "
+                                 "positive score; the OOS peak usually lands "
+                                 "far below this")
+    n_seeds = c4.number_input("Greedy seeds", value=1, min_value=1,
+                              max_value=10, step=1, key="opt_cmb_seeds",
+                              help="re-run forward selection forcing the "
+                                   "first pick to each of the top-N "
+                                   "standalone variants; best path wins — "
+                                   "insurance against first-pick lock-in "
+                                   "(runtime × N)")
+
+    run_name = st.text_input(
+        "Combine run name",
+        value=f"combine_{split_label.replace('/', '-')}_lam{lam:g}",
+        key="opt_cmb_name",
+    )
+
+    st.write("")
+    _, _, btn_col, _, _ = st.columns(5)
+    with btn_col:
+        run = st.button("Run combine", type="primary", width='stretch',
+                        key="opt_cmb_run_btn")
+
+    if run:
+        log_container = st.container(height=260)
+        log_box = log_container.empty()
+        logs = deque(maxlen=200)
+        last_paint = [0.0]
+
+        def log(msg):
+            logs.append(msg)
+            now = time.monotonic()
+            if now - last_paint[0] >= 0.25:
+                last_paint[0] = now
+                log_box.code("\n".join(logs), language=None)
+
+        try:
+            with st.spinner("Selecting…"):
+                result = run_combine(
+                    container, selected_runs,
+                    enabled_buckets=enabled_buckets, floors=floors,
+                    is_fraction=is_fraction, lam=float(lam),
+                    max_k=int(max_k), n_seeds=int(n_seeds), log=log,
+                )
+        except ValueError as e:
+            log_box.code("\n".join(logs), language=None)
+            st.error(str(e))
+            return
+        log_box.code("\n".join(logs), language=None)
+
+        run_dir = cmb_io.save_combine_run(
+            container, run_name, result["path_df"], result["members_df"],
+            result["meta"])
+        st.session_state.opt_cmb_reset_select = True
+        st.session_state.opt_cmb_success = f"Saved to {run_dir}"
+        st.rerun()
+
+    success = st.session_state.pop("opt_cmb_success", None)
+    if success:
+        st.success(success)
+
+    _render_combine_results(container)
+
+
 # ── Main render ───────────────────────────────────────────────────────────────
 
 def render():
@@ -1275,11 +1566,13 @@ def render():
     if st.session_state.pop("opt_switch_to_explore", False):
         st.session_state.opt_mode = "Explore"
 
-    mode = st.radio("Mode", ["New Run", "Explore"], horizontal=True,
+    mode = st.radio("Mode", ["New Run", "Explore", "Combine"], horizontal=True,
                     key="opt_mode", label_visibility="collapsed")
     st.write("")
 
     if mode == "New Run":
         render_setup()
-    else:
+    elif mode == "Explore":
         render_explore()
+    else:
+        render_combine()
