@@ -1,64 +1,117 @@
 # CLAUDE.md — Quant Research Platform
 
 Orientation for Claude Code working in this repo. A companion PDF
-(`Quant_app_documentation.pdf`) holds the long-form version; this file is the fast map.
+(`Quant_app_documentation.pdf`) holds the long-form version of the ORIGINAL
+Streamlit-era design (module contracts and data schemas in it still apply;
+UI/file-layout sections are outdated since the PySide6 rebuild).
 
 ## What this is
 
-A modular **intraday futures research platform** (Python + Streamlit) for 30+ instruments.
-It turns raw Databento market data into enriched candle datasets, runs vectorized backtests,
-applies position sizing, and runs Monte-Carlo stress tests.
+A modular **intraday futures research platform**, now a native **PySide6
+desktop app** (rebuilt from Streamlit in July 2026, zero logic changes) for
+30+ instruments. It turns raw Databento market data into enriched candle
+datasets, runs vectorized backtests, applies position sizing, runs
+Monte-Carlo stress tests, and sweeps strategy parameter grids.
 
 Run it:
 
 ```bash
-streamlit run app.py
+python main.py
 ```
 
-`app.py` is a single Streamlit process. It routes between **views** via `st.session_state.page`;
-each view exposes one `render()` function and navigates with a local `go_page(page)` helper
-(no cross-view imports).
+`main.py` is spawn-safe (nothing outside its `__main__` guard — optimizer
+pool workers re-import it). It boots `modules/app.py`: dark theme, settings,
+and the **main menu** — a card launcher where every module opens in its own
+window. The same module can be opened multiple times; instances are fully
+independent, and long-running work runs on worker threads (windows never
+freeze; the menu's gear opens the folder settings).
 
 ## Plugin-drop architecture (the core idea)
 
-Four plugin folders are scanned dynamically (`importlib.util.spec_from_file_location` →
-`exec_module`) — **drop a file in the folder and it appears in the UI**. No registration, no
-imports to edit. The filename stem becomes the UI display name. `__init__.py` / `base.py` are
-excluded.
+Plugin folders are scanned dynamically (`importlib.util.spec_from_file_location`
+→ `exec_module`) — **drop a file in the folder and it appears in the UI**.
+No registration. The filename stem becomes the UI display name;
+`__init__.py` / `base.py` are excluded. Strategies may also be **packages**
+(folder with `__init__.py` exposing `run`, `PARAMS`, `PARAM_SECTIONS`) — see
+`strategies/ivb_model/` and its own `CLAUDE.md`.
 
-| Folder | Loaded by | Contract |
+| Folder | Used by | Contract |
 |---|---|---|
-| `transforms/` | Data Formatter | `run_all(input_folder, output_folder, skip_existing, on_progress) -> None` |
-| `strategies/` | Backtester, Optimizer | `run(folder_path, start_date, end_date, params) -> pd.DataFrame` (+ `PARAMS`; the Optimizer sweeps any int/float param over a UI-chosen min/max/step, str params over a value list) |
+| `data_transforms/` | Data Formatter | `run_all(input_folder, output_folder, skip_existing, on_progress) -> None` |
+| `strategies/` | Backtester, Optimizer | `run(folder_path, start_date, end_date, params) -> pd.DataFrame` (+ `PARAMS`; the Optimizer sweeps int/float params over min/max/step, str params over a value list) |
 | `position_sizing/` | Analytics, Monte Carlo | `apply(trades, params) -> pd.DataFrame` (+ `PARAMS`) |
-| `monte_carlo/` | Monte Carlo view | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`) |
+| `modules/monte_carlo/methods/` | Monte Carlo | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`; `PROP_FIRM = True` opts into the dedicated prop-firm UI) |
 
-A strategy may also be a **package** (a folder with `__init__.py` exposing `run`, `PARAMS`,
-`PARAM_SECTIONS`) — see `strategies/ivb_model/` and its own `CLAUDE.md`.
+The first three folders are **configurable in Settings** (gear icon): each
+category searches the in-repo default folder plus any extra folders you add.
+MC methods are internal (not a settings category).
+
+`on_progress(current, total, message)` is the universal progress callback
+(transforms + optimizer engine). Cancellation = an exception raised INSIDE
+the callback (`modules/common/ui/workers.py` does this) — the engine's pool
+shutdown depends on it.
+
+## Settings & data roots
+
+`settings.json` (repo root, gitignored, auto-created) holds the extra plugin
+folders and the **data roots**. Each data root is a full tree:
+
+```
+<root>/raw_dbn/{type}/{ASSET}/{dataset}/   *.dbn.zst   (immutable inputs)
+<root>/parquet/{type}/{asset}/{dataset}/   YYYY-MM-DD.parquet (working layer)
+<root>/trades/{name}.parquet               backtest outputs (flat)
+<root>/optimizations/{run}/                optimizer runs (trades.parquet + meta.json)
+<root>/news_and_holidays/ff_usd_events.parquet
+```
+
+Pickers show the union across roots; **outputs are written to the root the
+input came from**. The shipped default root is the in-repo `data/`.
 
 ## Repo map
 
 ```
-app.py                     Streamlit entry point / router
-views/                     UI pages (home, data_formatter, backtester, analytics, monte_carlo, optimizer);
-                           trade_report.py = shared report components (metrics, exposure, equity/trade charts) — not a view
-transforms/                raw DBN -> enriched parquet (the run_all plugins)
-strategies/                backtest strategies (single-file or package); base.py = helpers
+main.py                    entry point (spawn-safe __main__ guard only)
+modules/
+  app.py                   QApplication bootstrap
+  main_menu/               launcher window (cards, settings gear)
+  common/
+    backend/               pure, Qt-free: settings, asset_info (THE single
+                           ASSET_INFO + HIDDEN_PARAMS), plugins (multi-folder
+                           discovery/loading), data_roots (multi-root scans,
+                           output routing, ff-events resolution), trade_stats
+                           (compute_metrics, DAY_TYPE_ORDER, RR series),
+                           benchmark (α/β regression), chart_window
+    ui/                    shared Qt: theme, workers (FunctionWorker +
+                           cancellation), widgets, params_form, dataframe
+                           model, settings dialog, charts/ (pyqtgraph:
+                           equity, candlestick, histogram, fan, heatmap,
+                           path), trade_report/ (the shared report panel
+                           used by Backtester AND Optimizer cell detail)
+  data_formatter/          backend/scan.py + window.py
+  backtester/              backend/{run,day_types,persistence}.py + window.py
+  analytics/               backend/{io,sizing,costs,metrics}.py +
+                           instance_editor/results_view/window.py
+  monte_carlo/             methods/ (plugin dir) + backend/{stats,cost_ctx}.py
+                           + prop_firm_panel/window.py
+  optimizer/               backend/ = the former optimization/ package
+                           (engine, param_space, metrics, buckets, io, loader,
+                           combine/, + heatmap_model, run_setup) — pure,
+                           tested; UI: sweep_panel, new_run_tab, explore_tab,
+                           cell_detail, combine_tab, window.py
+strategies/                strategy plugins (single-file or package)
+data_transforms/           raw DBN -> enriched parquet plugins
 position_sizing/           fixed.py, kelly.py, risk_based.py
-monte_carlo/               base.py (utilities), bootstrap.py
-optimization/              Strategy Optimizer core (param_space, engine, metrics, buckets, io, loader) — pure, tested;
-                           engine runs grids serially or on a process pool (per-worker strategy caches, memory-budgeted worker count);
-                           combine/ = Strategy Combiner (no-overlap merge of saved runs' variants, greedy IS selection + sealed OOS path)
-ff_data_scraper/           Forex Factory calendar text -> ff_usd_events.parquet
-heatmap_rs/                Rust (PyO3) L3 order-book replay kernel
-tests/                     pytest suite (optimization package + optimizer view smoke)
-data/
-  raw_dbn/{type}/{asset}/{dataset}/   *.dbn.zst   (immutable inputs)
-  parquet/{type}/{asset}/{dataset}/   YYYY-MM-DD.parquet  (working layer)
-  trades/{name}.parquet               backtest outputs (flat, no hierarchy)
-  optimizations/{run}/                optimizer runs: trades.parquet (all cells) + meta.json
-  news_and_holidays/ff_usd_events.parquet
+forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
+orderbook_replay_rs/       Rust (PyO3) L3 order-book replay kernel
+legacy_streamlit/          FROZEN reference copy of the old Streamlit app —
+                           intentionally not runnable, never import from it
+tests/                     pytest suite (optimizer backend + metrics + Qt smoke)
+data/                      default data root (gitignored)
 ```
+
+**Convention:** inside every module, `backend/` is pure computation with NO
+Qt imports (safe for process-pool workers and tests); `window.py` + other UI
+files are the PySide6 frontend.
 
 ## The pipeline (how modules cross-connect)
 
@@ -66,44 +119,66 @@ data/
 raw_dbn/  --(Data Formatter + a transform)-->  parquet/  (one YYYY-MM-DD.parquet per day)
 parquet/  --(Backtester + a strategy)-------->  trades/{name}.parquet  (+ day_type from FF data)
 parquet/  --(Optimizer + a strategy grid)---->  optimizations/{run}/  (all cells' trades + meta)
-optimizations/{container}/ --(Combine)------->  {container}/_combined/{run}/  (variant-set selection path, no re-runs)
+optimizations/{container}/ --(Combine)------->  {container}/_combined/{run}/  (variant-set selection, no re-runs)
 trades/   --(Analytics + a sizer)------------>  sized equity curve + $ metrics
 trades/   --(Monte Carlo + a sizer)---------->  equity_matrix -> fan chart + stats
 ```
 
-Data is passed **as files on disk** between stages (parquet), and **as DataFrames** within a
-stage. The contract between stages is the parquet column schema, not Python imports.
+Data passes **as files on disk** between stages (parquet) and **as
+DataFrames** within a stage. The contract between stages is the parquet
+column schema, not Python imports.
 
 ## Conventions that bite if ignored
 
-- **Three-level hierarchy** `type/asset/dataset` is enforced everywhere. Asset folders are
-  UPPERCASE tickers (`ES`, `NQ`, `GC`). One parquet **per calendar day**, named `YYYY-MM-DD.parquet`.
-- **Index** of every candle parquet is a tz-aware `DatetimeIndex` in `America/New_York`.
-- **`direction`** is lowercase `"long"` / `"short"` everywhere — exact string matching.
-- **`pnl_points`, not ticks.** Strategies output `pnl_points` only; the backtester converts to
-  ticks via `ticks = pnl_points * ticks_per_point` from `ASSET_INFO`. Never store `ticks` in a strategy.
+- **Three-level hierarchy** `type/asset/dataset` is enforced everywhere.
+  Asset folders are UPPERCASE tickers (`ES`, `NQ`, `GC`). One parquet **per
+  calendar day**, named `YYYY-MM-DD.parquet`.
+- **Index** of every candle parquet is a tz-aware `DatetimeIndex` in
+  `America/New_York`. (Charts convert to NY-wall-clock epoch for pyqtgraph —
+  display only.)
+- **`direction`** is lowercase `"long"` / `"short"` everywhere.
+- **`pnl_points`, not ticks.** Strategies output `pnl_points` only; the
+  backtester converts via `ticks = pnl_points * ticks_per_point` from
+  `ASSET_INFO`. Never store `ticks` in a strategy.
 - **OHLC is float64.**
-- **`volume_delta_pct`** is `volume_delta / volume * 100` — signed order-flow imbalance as a
-  percent of total bar volume, bounded to `±100`. Zero-volume bars = `0.0`.
-- **Enriched columns** (`tick_volume`, `passive_orders`) exist only for **ES/NQ** (Databento
-  subscription window). Plain OHLCV exists for ~30 assets. Order-flow strategies need the enriched set.
+- **`volume_delta_pct`** = `volume_delta / volume * 100`, bounded ±100;
+  zero-volume bars = `0.0`.
+- **Enriched columns** (`tick_volume`, `passive_orders`) exist only for
+  **ES/NQ**. Order-flow strategies need the enriched set.
+- **Asset from filename:** Analytics / Monte Carlo derive the asset from the
+  trades filename's FIRST underscore token (`ES_...parquet` → ES).
+- **Qt spin boxes need explicit ranges** — the 0..99.99 default silently
+  clamps real values (a logic bug, not a cosmetic one).
+- **Backend never imports Qt** — a worker-process import chain that pulls in
+  PySide6 is a bug (tests/test_qt_smoke.py enforces this).
 
 ## ASSET_INFO / HIDDEN_PARAMS
 
-`ASSET_INFO` (defined in `views/backtester.py`, and mirrored in the other views) maps each
-ticker → `{tick_size, ticks_per_point, dollars_per_tick}`. The backtester injects `tick_size`
-into strategy params automatically; `HIDDEN_PARAMS = {"tick_size"}` suppresses its UI widget.
-Analytics / Monte Carlo derive `dollars_per_tick` from the **first token of the trades filename**
-(e.g. `ES_...parquet` → ES) and inject it into sizer params.
+`modules/common/backend/asset_info.py` is the ONE copy (the old app had four)
+mapping ticker → `{tick_size, ticks_per_point, dollars_per_tick,
+commissions_per_contract, parent}` (`parent` links micros to full-size
+contracts). `HIDDEN_PARAMS = {"tick_size"}` lives there too — auto-injected
+into strategy params, never shown in the UI.
 
-## Rust extension (`heatmap_rs`)
+## Rust extension (`orderbook_replay_rs`)
 
-PyO3/maturin module used by the `1s_mbo_*` transforms to replay L3 (MBO) events into per-second
-book snapshots. Two functions: `replay_full(...)` and `replay_cropped(...)`. To rebuild it see the
-`heatmap-rs-build` memory note (maturin + PATH/VIRTUAL_ENV gotchas). `1s_mbo_cropped.py` **requires**
-the built extension; `1s_mbo_full_book.py` has a pure-Python fallback.
+PyO3/maturin module (renamed from `heatmap_rs`) used by the `1s_mbo_*`
+transforms to replay L3 (MBO) events into per-second book snapshots
+(`replay_full`, `replay_cropped`). Rebuild:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+export VIRTUAL_ENV="D:/Quant_app/venv"
+./venv/Scripts/python.exe -m maturin develop --release -m orderbook_replay_rs/Cargo.toml
+```
+
+`1s_mbo_cropped.py` **requires** it; `1s_mbo_full_book.py` has a pure-Python
+fallback.
 
 ## Where to read more
 
-- `Quant_app_documentation.pdf` — full module-by-module contracts, schemas, data-flow.
-- `IVB_Model_Documentation.pdf` + `strategies/ivb_model/CLAUDE.md` — the flagship strategy.
+- `Quant_app_documentation.pdf` — module contracts & schemas (Streamlit-era
+  UI sections outdated).
+- `IVB_Model_Documentation.pdf` + `strategies/ivb_model/CLAUDE.md` — the
+  flagship strategy.
+- `legacy_streamlit/README.md` — why the frozen old frontend is not runnable.
