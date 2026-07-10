@@ -58,13 +58,13 @@ class OverlaidHistogram(QWidget):
             self._counts[label] = counts
             color = pg.mkColor(SERIES_COLORS.get(label, "#cccccc"))
             color.setAlphaF(0.6)
+            # NOTE: name= makes plot.addItem register the legend entry itself —
+            # never ALSO call legend.addItem or every series shows up twice
             bars = pg.BarGraphItem(
                 x=(self._edges[:-1] + self._edges[1:]) / 2.0,
                 height=counts, width=w * 0.97,
                 brush=pg.mkBrush(color), pen=pg.mkPen(None), name=label)
             self._plot.addItem(bars)
-            if legend is not None:
-                legend.addItem(bars, label)
 
         self._plot.addItem(pg.InfiniteLine(
             pos=0, angle=90,

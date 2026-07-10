@@ -33,6 +33,7 @@ from modules.optimizer.backend.heatmap_model import (_cell_text_color,
                                                      _fmt_axis_value,
                                                      _fmt_cell,
                                                      build_hover_texts)
+from .base import attach_lock_button
 
 
 class HeatmapChart(QWidget):
@@ -44,7 +45,8 @@ class HeatmapChart(QWidget):
         self._plot = self._glw.addPlot(row=0, col=0)
         self._plot.setMenuEnabled(False)
         self._plot.getViewBox().setAspectLocked(True)
-        self._plot.getViewBox().setMouseEnabled(x=False, y=False)
+        # default LOCKED like every chart; the padlock overlay can unlock it
+        attach_lock_button(self._glw, self._plot.getViewBox())
         self._colorbar: pg.ColorBarItem | None = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)

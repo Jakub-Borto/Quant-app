@@ -4,7 +4,8 @@ Equity-curve charts.
 EquityCurveChart — the backtester/optimizer report curve: cumulative_ticks vs
 entry_time as line + clickable scatter (the old Plotly on_select click becomes
 the pointClicked(int) signal → trade-detail drill-down), dashed zero line,
-hover tooltip with date + cumulative ticks.
+hover tooltip with date + cumulative ticks. A toggle button switches the
+X axis between calendar time and plain trade number (no calendar gaps).
 
 MultiLineEquityChart — analytics' dollar-equity charts: any number of labeled
 curves (the 4-curve per-instance figure and the combined overlay), a dotted
@@ -16,9 +17,9 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
-from .base import HoverTooltip, make_plot, nearest_index, ny_epoch_seconds
+from .base import HoverTooltip, date_axis, make_plot, nearest_index, ny_epoch_seconds
 
 
 class EquityCurveChart(QWidget):
@@ -28,10 +29,24 @@ class EquityCurveChart(QWidget):
         super().__init__(parent)
         self._plot = make_plot("Date", "Cumulative Ticks", datetime_x=True)
         self._plot.setMinimumHeight(360)
+
+        # X-axis mode toggle: calendar time vs plain trade number (no gaps)
+        self._trade_number_mode = False
+        self._axis_btn = QPushButton("X axis: Date")
+        self._axis_btn.setToolTip("Toggle the X axis between calendar time "
+                                  "and trade number (removes calendar gaps)")
+        self._axis_btn.clicked.connect(self._toggle_axis_mode)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(self._axis_btn)
+
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lay.addLayout(btn_row)
         lay.addWidget(self._plot)
 
+        self._trades: pd.DataFrame | None = None
         self._x = np.array([])
         self._y = np.array([])
         self._dates: list[str] = []
@@ -39,8 +54,13 @@ class EquityCurveChart(QWidget):
         HoverTooltip(self._plot, self._hover_text)
 
     def set_trades(self, trades: pd.DataFrame) -> None:
+        self._trades = trades
         self._plot.clear()
-        self._x = np.asarray(ny_epoch_seconds(trades["entry_time"]), dtype=float)
+        if self._trade_number_mode:
+            self._x = np.arange(1, len(trades) + 1, dtype=float)
+        else:
+            self._x = np.asarray(ny_epoch_seconds(trades["entry_time"]),
+                                 dtype=float)
         self._y = trades["cumulative_ticks"].to_numpy(dtype=float)
         self._dates = [str(pd.Timestamp(t)) for t in trades["entry_time"]]
 
@@ -53,6 +73,21 @@ class EquityCurveChart(QWidget):
         self._scatter.sigClicked.connect(self._on_clicked)
         self._plot.addItem(self._scatter)
         self._plot.autoRange()
+
+    def _toggle_axis_mode(self) -> None:
+        self._trade_number_mode = not self._trade_number_mode
+        self._axis_btn.setText("X axis: Trade #" if self._trade_number_mode
+                               else "X axis: Date")
+        # swap the bottom axis item, then re-plot the stored trades
+        if self._trade_number_mode:
+            axis, label = pg.AxisItem(orientation="bottom"), "Trade #"
+        else:
+            axis, label = date_axis(), "Date"
+        self._plot.getPlotItem().setAxisItems({"bottom": axis})
+        self._plot.setLabel("bottom", label)
+        self._plot.showGrid(x=True, y=True, alpha=0.18)   # grid lives on the axes
+        if self._trades is not None:
+            self.set_trades(self._trades)
 
     # ── interactions ──────────────────────────────────────────────────────────
     def _on_clicked(self, _item, points) -> None:

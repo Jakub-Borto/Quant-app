@@ -15,23 +15,83 @@ Chart plumbing shared by every pyqtgraph widget:
 
 import pandas as pd
 import pyqtgraph as pg
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import QToolTip
+from PySide6.QtWidgets import QToolButton, QToolTip
 
 
 # ── time helpers ──────────────────────────────────────────────────────────────
 
 def ny_epoch_seconds(values) -> "pd.Index":
-    """tz-aware (or naive) datetimes -> NY-wall-clock-as-epoch float seconds."""
+    """tz-aware (or naive) datetimes -> NY-wall-clock-as-epoch float seconds.
+
+    as_unit("ns") first: datetimes loaded from parquet come back at
+    MICROsecond resolution (pandas 3 keeps arrow's unit), and int64 on a
+    us-resolution index would yield epoch/1000 — a 1970s date axis."""
     idx = pd.DatetimeIndex(values)
     if idx.tz is not None:
         idx = idx.tz_localize(None)
-    return idx.astype("int64") / 1e9
+    return idx.as_unit("ns").astype("int64") / 1e9
 
 
 def date_axis() -> pg.DateAxisItem:
     """Bottom axis that renders our NY-wall-clock epoch values as NY time."""
     return pg.DateAxisItem(orientation="bottom", utcOffset=0)
+
+
+# ── pan/zoom lock ─────────────────────────────────────────────────────────────
+
+class ChartLockButton(QToolButton):
+    """
+    Padlock overlay in a chart's top-right corner. Every chart starts LOCKED
+    (mouse pan/zoom disabled — accidental drags/wheels can't wreck the view;
+    the wheel falls through to the page scroll instead). Clicking the padlock
+    toggles interaction on the given ViewBox(es).
+    """
+
+    def __init__(self, host, viewboxes):
+        super().__init__(host)
+        self._viewboxes = viewboxes if isinstance(viewboxes, (list, tuple)) \
+            else [viewboxes]
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet(
+            "QToolButton { background: rgba(23, 26, 33, 0.75); "
+            "border: 1px solid #2a2f3a; border-radius: 6px; padding: 3px 7px; "
+            "font-size: 13px; } "
+            "QToolButton:hover { border-color: #3450e0; }")
+        self.setChecked(True)          # checked == locked
+        self.toggled.connect(self._apply)
+        self._apply(True)
+        host.installEventFilter(self)  # reposition on host resizes
+        self.raise_()
+        self.show()
+
+    def _apply(self, locked: bool) -> None:
+        for vb in self._viewboxes:
+            vb.setMouseEnabled(x=not locked, y=not locked)
+        self.setText("🔒" if locked else "🔓")
+        self.setToolTip("Chart locked — click to enable pan/zoom" if locked
+                        else "Chart unlocked — drag/wheel moves the view; "
+                             "click to lock")
+
+    def _reposition(self) -> None:
+        host = self.parentWidget()
+        self.adjustSize()
+        self.move(host.width() - self.width() - 8, 8)
+        self.raise_()
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() in (QEvent.Resize, QEvent.Show):
+            self._reposition()
+        return False
+
+
+def attach_lock_button(host, viewboxes) -> ChartLockButton:
+    """Overlay a pan/zoom padlock (default locked) on a chart widget."""
+    button = ChartLockButton(host, viewboxes)
+    host._chart_lock_ref = button   # keep alive alongside the host
+    return button
 
 
 # ── plot factory ──────────────────────────────────────────────────────────────
@@ -46,6 +106,7 @@ def make_plot(x_label: str = "", y_label: str = "",
     if y_label:
         plot.setLabel("left", y_label)
     plot.setMenuEnabled(False)
+    attach_lock_button(plot, plot.getPlotItem().getViewBox())
     return plot
 
 
