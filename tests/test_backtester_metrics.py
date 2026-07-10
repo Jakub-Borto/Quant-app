@@ -11,12 +11,7 @@ import math
 import pandas as pd
 import pytest
 
-# TEMPORARY (PyQt rebuild phase 1): views/ moved to legacy_streamlit/ and is
-# frozen. compute_metrics gets a proper backend home in phase 3, when this
-# import is pointed at modules.common.backend.trade_stats.
-compute_metrics = pytest.importorskip(
-    "views.backtester", reason="views frozen during PyQt rebuild (until phase 3)"
-).compute_metrics
+from modules.common.backend.trade_stats import compute_metrics
 
 SQRT252 = math.sqrt(252)
 
