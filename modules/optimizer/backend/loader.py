@@ -14,7 +14,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]   # modules/optimizer/backend -> repo root
 STRATEGIES_DIR = REPO_ROOT / "strategies"
 
 

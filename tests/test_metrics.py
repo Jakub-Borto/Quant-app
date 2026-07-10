@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from optimization.metrics import (
+from modules.optimizer.backend.metrics import (
     ANNUALIZATION_DAYS, METRIC_ORDER, compute_metrics, compute_metrics_by_cell,
 )
 

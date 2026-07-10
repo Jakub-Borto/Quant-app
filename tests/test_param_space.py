@@ -2,7 +2,7 @@
 
 import pytest
 
-from optimization.param_space import (
+from modules.optimizer.backend.param_space import (
     build_range, combo_count, enumerate_combos, parse_values, sweep_kind,
 )
 

@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from optimization.buckets import (
+from modules.optimizer.backend.buckets import (
     BUCKET_KEYS, build_bucket_map, bucket_for_date, classify_red_event,
     load_bucket_map, tag_day_bucket,
 )

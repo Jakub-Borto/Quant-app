@@ -10,14 +10,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from optimization.engine import (
+from modules.optimizer.backend.engine import (
     WORKER_BASELINE_MB, WORKER_MB_PER_DISK_MB, check_param_columns,
     estimate_worker_memory, median_split_date, run_grid,
     sibling_dataset_folders,
 )
-from optimization.io import list_runs, load_run, save_run
-from optimization.loader import load_strategy
-from optimization.metrics import METRIC_ORDER, compute_metrics, compute_metrics_by_cell
+from modules.optimizer.backend.io import list_runs, load_run, save_run
+from modules.optimizer.backend.loader import load_strategy
+from modules.optimizer.backend.metrics import METRIC_ORDER, compute_metrics, compute_metrics_by_cell
 
 TICKS_PER_POINT = 4
 DAYS = ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
@@ -173,7 +173,7 @@ def test_all_empty_grid():
 # ── parallel execution ────────────────────────────────────────────────────────
 
 # File twin of ToyStrategy — written to tmp_path so pool workers (separate
-# processes) can load it by name via optimization.loader without polluting
+# processes) can load it by name via modules.optimizer.backend.loader without polluting
 # the real strategies/ folder (whose contents feed the UI dropdown).
 TOY_STRATEGY_SOURCE = '''
 import pandas as pd
@@ -341,7 +341,7 @@ def test_save_name_collision_suffix(tmp_path):
 
 
 def test_save_into_folders(tmp_path):
-    from optimization.io import list_folders
+    from modules.optimizer.backend.io import list_folders
 
     _, trades = grid_run()
     # new folder is created on demand; a second save reuses it

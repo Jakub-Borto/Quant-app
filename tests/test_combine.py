@@ -9,18 +9,18 @@ import math
 import pandas as pd
 import pytest
 
-from optimization.combine.compat import check_compatibility
-from optimization.combine.evaluate import evaluate_set
-from optimization.combine.io import (list_combine_runs, load_combine_run,
+from modules.optimizer.backend.combine.compat import check_compatibility
+from modules.optimizer.backend.combine.evaluate import evaluate_set
+from modules.optimizer.backend.combine.io import (list_combine_runs, load_combine_run,
                                      save_combine_run)
-from optimization.combine.merge import (merge_streams, merged_total,
+from modules.optimizer.backend.combine.merge import (merge_streams, merged_total,
                                         no_overlap_walk, trades_to_tuples)
-from optimization.combine.pool import (apply_min_trades, build_pool,
+from modules.optimizer.backend.combine.pool import (apply_min_trades, build_pool,
                                        discover_entry_runs, list_containers,
                                        load_entry_runs, split_date_boundary,
                                        split_pool)
-from optimization.combine.runner import run_combine
-from optimization.combine.select import correlation_matrix, greedy_select
+from modules.optimizer.backend.combine.runner import run_combine
+from modules.optimizer.backend.combine.select import correlation_matrix, greedy_select
 
 TZ = "America/New_York"
 
