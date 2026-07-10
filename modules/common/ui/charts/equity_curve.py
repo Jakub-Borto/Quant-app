@@ -79,7 +79,8 @@ class MultiLineEquityChart(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._plot)
-        self._series: list[tuple[str, np.ndarray, np.ndarray]] = []
+        # (label, x, y, per-point extra hover lines or None)
+        self._series: list[tuple[str, np.ndarray, np.ndarray, list | None]] = []
         HoverTooltip(self._plot, self._hover_text)
 
     def clear(self) -> None:
@@ -89,14 +90,26 @@ class MultiLineEquityChart(QWidget):
             legend.clear()
         self._series = []
 
-    def add_series(self, label: str, x_datetimes, y_values, color: str,
-                   width: float = 2.0, dash: bool = False) -> None:
+    _STYLES = {"solid": pg.QtCore.Qt.SolidLine,
+               "dash":  pg.QtCore.Qt.DashLine,
+               "dot":   pg.QtCore.Qt.DotLine}
+
+    # plotly's default categorical cycle — used when no color is given
+    _PALETTE = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+                "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+
+    def add_series(self, label: str, x_datetimes, y_values, color: str | None = None,
+                   width: float = 2.0, style: str = "solid",
+                   hover_extra: list | None = None) -> None:
+        """hover_extra: optional per-point extra tooltip line (e.g. contracts)."""
+        if color is None:
+            color = self._PALETTE[len(self._series) % len(self._PALETTE)]
         x = np.asarray(ny_epoch_seconds(x_datetimes), dtype=float)
         y = np.asarray(y_values, dtype=float)
-        style = pg.QtCore.Qt.DashLine if dash else pg.QtCore.Qt.SolidLine
-        self._plot.plot(x, y, pen=pg.mkPen(color, width=width, style=style),
+        self._plot.plot(x, y, pen=pg.mkPen(color, width=width,
+                                           style=self._STYLES[style]),
                         name=label)
-        self._series.append((label, x, y))
+        self._series.append((label, x, y, hover_extra))
 
     def add_start_line(self, account_size: float) -> None:
         line = pg.InfiniteLine(
@@ -111,15 +124,18 @@ class MultiLineEquityChart(QWidget):
 
     def _hover_text(self, x: float, y: float) -> str | None:
         best = None
-        for label, xs, ys in self._series:
+        for label, xs, ys, extra in self._series:
             i = nearest_index(xs, x)
             if i is None:
                 continue
             d = abs(ys[i] - y)
             if best is None or d < best[0]:
-                best = (d, label, xs[i], ys[i])
+                best = (d, label, xs[i], ys[i], extra[i] if extra is not None else None)
         if best is None:
             return None
-        _d, label, xi, yi = best
+        _d, label, xi, yi, extra_line = best
         stamp = pd.Timestamp(xi, unit="s")
-        return f"<b>{label}</b><br>{stamp}<br>${yi:,.2f}"
+        text = f"<b>{label}</b><br>{stamp}<br>Equity: ${yi:,.2f}"
+        if extra_line is not None:
+            text += f"<br>{extra_line}"
+        return text
