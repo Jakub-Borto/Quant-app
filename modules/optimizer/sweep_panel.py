@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
 from modules.common.backend.asset_info import HIDDEN_PARAMS
 from modules.common.ui import theme
 from modules.common.ui.params_form import make_param_widget
-from modules.common.ui.widgets import Caption
+from modules.common.ui.widgets import Caption, CollapsibleSection
 from modules.optimizer.backend.param_space import (MAX_SWEPT, ROLE_LABELS,
                                                    ROLES, build_range,
                                                    parse_values, sweep_kind)
@@ -217,11 +217,17 @@ class SweepPanel(QWidget):
             f"min/max/step, text params a comma-separated value list; "
             f"everything else is held at the value shown."))
 
-        # sections honoring PARAM_SECTIONS (the old _param_layout), rows of 3
+        # sections honoring PARAM_SECTIONS (the old _param_layout), rows of 3.
+        # Every section is a collapsible drop-down box — collapsed by default
+        # when there are several, expanded when the strategy has just one.
+        # Collapsed sections keep working: checked sweeps / fixed values are
+        # read from the widgets whether visible or not.
         sections = self._param_layout(strategy, visible)
+        expanded = len(sections) == 1
         for section_label, keys in sections:
-            lay.addWidget(Caption(section_label))
-            grid = QGridLayout()
+            box_widget = QWidget()
+            grid = QGridLayout(box_widget)
+            grid.setContentsMargins(0, 0, 0, 0)
             grid.setHorizontalSpacing(18)
             grid.setVerticalSpacing(10)
             for n, param in enumerate(keys):
@@ -233,7 +239,9 @@ class SweepPanel(QWidget):
                 grid.addWidget(cell, n // 3, n % 3)
             for c in range(3):
                 grid.setColumnStretch(c, 1)
-            lay.addLayout(grid)
+            section = CollapsibleSection(section_label, expanded=expanded)
+            section.add_widget(box_widget)
+            lay.addWidget(section)
 
         # role assignment row
         lay.addWidget(Caption("Axis roles"))

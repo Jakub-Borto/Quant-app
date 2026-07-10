@@ -41,7 +41,9 @@ class ModuleWindowBase(QWidget):
         outer.addWidget(scroll)
 
         self.content = QVBoxLayout(page)
-        self.content.setContentsMargins(26, 20, 26, 24)
+        # generous side margins — module windows open maximized, and content
+        # glued to the screen edges reads badly
+        self.content.setContentsMargins(48, 22, 48, 30)
         self.content.setSpacing(10)
 
         title_lbl = QLabel(title)

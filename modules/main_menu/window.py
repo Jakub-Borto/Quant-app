@@ -107,7 +107,7 @@ class MainMenuWindow(QWidget):
         window.destroyed.connect(
             lambda _=None, w=window: self._forget_window(w))
         self._open_windows.append(window)
-        window.show()
+        window.showMaximized()
 
     def _forget_window(self, window) -> None:
         self._open_windows = [w for w in self._open_windows if w is not window]

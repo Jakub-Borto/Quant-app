@@ -178,7 +178,12 @@ QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
 
 
 def apply_theme(app: QApplication) -> None:
-    """Fusion style + dark palette + QSS + pyqtgraph global config."""
+    """Fusion style + dark palette + QSS + pyqtgraph global config + the
+    app-wide wheel guard (scrolling must scroll the page, not edit whatever
+    combo/spinbox the cursor passes over)."""
+    from .wheel_guard import install_wheel_guard
+    install_wheel_guard(app)
+
     app.setStyle("Fusion")
 
     pal = QPalette()

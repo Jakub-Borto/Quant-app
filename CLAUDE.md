@@ -103,8 +103,6 @@ data_transforms/           raw DBN -> enriched parquet plugins
 position_sizing/           fixed.py, kelly.py, risk_based.py
 forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
 orderbook_replay_rs/       Rust (PyO3) L3 order-book replay kernel
-legacy_streamlit/          FROZEN reference copy of the old Streamlit app —
-                           intentionally not runnable, never import from it
 tests/                     pytest suite (optimizer backend + metrics + Qt smoke)
 data/                      default data root (gitignored)
 ```
@@ -181,4 +179,5 @@ fallback.
   UI sections outdated).
 - `IVB_Model_Documentation.pdf` + `strategies/ivb_model/CLAUDE.md` — the
   flagship strategy.
-- `legacy_streamlit/README.md` — why the frozen old frontend is not runnable.
+- The pre-rebuild Streamlit frontend lives only in git history (main branch,
+  commit 468c843 and earlier).

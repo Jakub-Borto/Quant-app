@@ -11,9 +11,11 @@ bool is checked BEFORE int because bool is an int subclass):
     str   -> QLineEdit
     other -> warning label; the default value is passed through unchanged
 
-Layout mirrors the old views: with PARAM_SECTIONS, one captioned row per
-section (params not in any section land under "Other"); without sections,
-rows of up to 10. `numeric_only=True` reproduces Monte Carlo's
+Layout: with PARAM_SECTIONS every section is a collapsible drop-down box
+titled with the section label (params not in any section land under
+"Other"); without sections, plain rows of up to 10. Collapsed sections still
+report their values — the widgets exist either way. `numeric_only=True`
+reproduces Monte Carlo's
 _param_widgets: ONLY int/float params get widgets and only those keys appear
 in values().
 
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QGridLayout, QLabel,
                                QLineEdit, QSpinBox, QVBoxLayout, QWidget)
 
 from . import theme
+from .widgets import CollapsibleSection
 
 INT_RANGE = (-1_000_000_000, 1_000_000_000)
 FLOAT_RANGE = (-1e12, 1e12)
@@ -84,45 +87,55 @@ class ParamsForm(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(8)
 
-        def add_row_grid(keys: list[str], caption: str | None):
-            if caption:
-                cap = QLabel(caption)
-                cap.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 12px;")
-                outer.addWidget(cap)
-            grid = QGridLayout()
+        def build_grid(keys: list[str]) -> QWidget:
+            """One widget holding the param name/editor grid (rows of per_row)."""
+            box = QWidget()
+            grid = QGridLayout(box)
+            grid.setContentsMargins(0, 0, 0, 0)
             grid.setHorizontalSpacing(10)
             grid.setVerticalSpacing(4)
-            for col, key in enumerate(keys):
+            for n, key in enumerate(keys):
+                row, col = (n // per_row) * 2, n % per_row
                 default = visible[key]
                 widget, getter = make_param_widget(default)
                 name = QLabel(key)
                 name.setStyleSheet("font-size: 12px;")
-                grid.addWidget(name, 0, col, alignment=Qt.AlignBottom)
+                grid.addWidget(name, row, col, alignment=Qt.AlignBottom)
                 if widget is None:
                     warn = QLabel(f"unsupported type: {type(default).__name__}")
                     warn.setStyleSheet(f"color: {theme.WARN}; font-size: 11px;")
-                    grid.addWidget(warn, 1, col)
+                    grid.addWidget(warn, row + 1, col)
                     self._passthrough[key] = default
                 else:
-                    grid.addWidget(widget, 1, col)
+                    grid.addWidget(widget, row + 1, col)
                     self._getters[key] = getter
-            outer.addLayout(grid)
+            return box
 
         if sections and not numeric_only:
+            # each PARAM_SECTIONS section is a collapsible drop-down box;
+            # collapsed by default when there are several (a strategy like ivb
+            # has ~18 sections — showing all at once floods the page), expanded
+            # when the strategy only has one
             rendered = set()
+            section_specs = []
             for section_label, keys in sections.items():
                 section_keys = [k for k in keys if k in visible]
-                if not section_keys:
-                    continue
-                add_row_grid(section_keys, section_label)
-                rendered.update(section_keys)
+                if section_keys:
+                    section_specs.append((section_label, section_keys))
+                    rendered.update(section_keys)
             unassigned = [k for k in visible if k not in rendered]
             if unassigned:
-                add_row_grid(unassigned, "Other")
+                section_specs.append(("Other", unassigned))
+
+            expanded = len(section_specs) == 1
+            for section_label, keys in section_specs:
+                box = CollapsibleSection(section_label, expanded=expanded)
+                box.add_widget(build_grid(keys))
+                outer.addWidget(box)
         else:
             items = list(visible.keys())
-            for i in range(0, len(items), per_row):
-                add_row_grid(items[i:i + per_row], None)
+            if items:
+                outer.addWidget(build_grid(items))
 
     def values(self) -> dict:
         out = {k: g() for k, g in self._getters.items()}
