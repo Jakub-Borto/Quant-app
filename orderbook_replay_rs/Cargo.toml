@@ -1,10 +1,10 @@
 [package]
-name = "heatmap_rs"
+name = "orderbook_replay_rs"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "heatmap_rs"
+name = "orderbook_replay_rs"
 crate-type = ["cdylib"]
 
 [dependencies]

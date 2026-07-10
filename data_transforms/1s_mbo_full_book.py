@@ -7,7 +7,7 @@
 # One output file = one Globex session = two input files (prev + curr day).
 # Trade-derived fields (OHLCV, volume, aggressor_volume) are vectorized.
 # Book-derived fields (best_bid/ask, bid_depth, ask_depth) come from one
-# sequential L3 replay implemented in Rust (heatmap_rs.replay_full); a pure
+# sequential L3 replay implemented in Rust (orderbook_replay_rs.replay_full); a pure
 # Python fallback (_replay_book_py) is used if the extension isn't built.
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 try:
-    import heatmap_rs
+    import orderbook_replay_rs
     _HAS_RUST = True
 except ImportError:
     _HAS_RUST = False
@@ -481,7 +481,7 @@ def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
     prep = perf_counter() - t
 
     t = perf_counter()
-    secs, bb, ba, bj, aj = heatmap_rs.replay_full(acode, scode, price_i, size, oid, sec)
+    secs, bb, ba, bj, aj = orderbook_replay_rs.replay_full(acode, scode, price_i, size, oid, sec)
     rust = perf_counter() - t
 
     _tlog(
@@ -498,7 +498,7 @@ def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _replay_book_py(session_df: pd.DataFrame) -> pd.DataFrame:
-    """Pure-Python fallback for _replay_book (used if heatmap_rs isn't built)."""
+    """Pure-Python fallback for _replay_book (used if orderbook_replay_rs isn't built)."""
     t_prep = perf_counter()
     actions = session_df["action"].to_numpy()
     sides   = session_df["side"].to_numpy()

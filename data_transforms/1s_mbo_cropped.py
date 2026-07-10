@@ -11,8 +11,8 @@
 # Empty levels are never written.
 #
 # The sequential L3 replay + cropping + JSON emission run in Rust
-# (heatmap_rs.replay_cropped). This transform REQUIRES the heatmap_rs extension
-# (build with: maturin develop --release -m heatmap_rs/Cargo.toml).
+# (orderbook_replay_rs.replay_cropped). This transform REQUIRES the orderbook_replay_rs extension
+# (build with: maturin develop --release -m orderbook_replay_rs/Cargo.toml).
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 try:
-    import heatmap_rs
+    import orderbook_replay_rs
     _HAS_RUST = True
 except ImportError:
     _HAS_RUST = False
@@ -92,8 +92,8 @@ def run_all(
     output_path.mkdir(parents=True, exist_ok=True)
 
     if not _HAS_RUST:
-        on_progress(1, 1, "ERROR: heatmap_rs extension not built. Run: "
-                          "maturin develop --release -m heatmap_rs/Cargo.toml")
+        on_progress(1, 1, "ERROR: orderbook_replay_rs extension not built. Run: "
+                          "maturin develop --release -m orderbook_replay_rs/Cargo.toml")
         return
 
     files = sorted(input_path.glob("*.dbn.zst"))
@@ -525,7 +525,7 @@ def _replay_book(session_df: pd.DataFrame, trades: pd.DataFrame, tick: float) ->
     window_sec  = int(BASELINE_WINDOW_MIN * 60)
 
     t = perf_counter()
-    secs, bb, ba, bj, aj = heatmap_rs.replay_cropped(
+    secs, bb, ba, bj, aj = orderbook_replay_rs.replay_cropped(
         acode, scode, price_i, size, oid, sec,
         int(N_TICKS), tick_i, float(BIG_ORDER_MULT), window_sec,
         trade_sec, trade_lo, trade_hi,

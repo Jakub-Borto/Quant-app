@@ -1,4 +1,4 @@
-// heatmap_rs — sequential L3 order-book replay for the 1s MBO heatmap transforms.
+// orderbook_replay_rs — sequential L3 order-book replay for the 1s MBO heatmap transforms.
 //
 // Two entry points, both replay the full event stream maintaining an aggregated
 // depth ladder (price_i -> total resting qty) and emit one end-of-second
@@ -328,7 +328,7 @@ fn replay_cropped<'py>(
 }
 
 #[pymodule]
-fn heatmap_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn orderbook_replay_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(replay_full, m)?)?;
     m.add_function(wrap_pyfunction!(replay_cropped, m)?)?;
     Ok(())

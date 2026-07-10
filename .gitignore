@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 
 # Rust extension build artifacts
-heatmap_rs/target/
+orderbook_replay_rs/target/
 *.pyd
 *.so
 
@@ -21,5 +21,8 @@ tests.py
 
 github_notes.txt
 
-ff_data_scraper/data_usd/
+forex_factory_scraper/data_usd/
+
+# PyQt app user settings
+settings.json
 

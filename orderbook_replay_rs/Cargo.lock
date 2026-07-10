@@ -9,15 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "heatmap_rs"
-version = "0.1.0"
-dependencies = [
- "numpy",
- "pyo3",
- "rustc-hash",
-]
-
-[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -120,6 +111,15 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "orderbook_replay_rs"
+version = "0.1.0"
+dependencies = [
+ "numpy",
+ "pyo3",
+ "rustc-hash",
+]
 
 [[package]]
 name = "portable-atomic"
