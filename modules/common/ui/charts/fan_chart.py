@@ -75,12 +75,16 @@ class FanChart(QWidget):
             hi = np.percentile(equity_matrix, hi_pct, axis=0)
             lo_c = pg.PlotDataItem(x, lo, pen=None)
             hi_c = pg.PlotDataItem(x, hi, pen=None)
-            fill = pg.FillBetweenItem(
-                hi_c, lo_c,
-                brush=pg.mkBrush(*_BAND_RGB, int(alpha * 255)))
+            brush = pg.mkBrush(*_BAND_RGB, int(alpha * 255))
+            fill = pg.FillBetweenItem(hi_c, lo_c, brush=brush)
             plot.addItem(fill)
             if legend is not None:
-                legend.addItem(fill, label)
+                # NEVER hand the FillBetweenItem itself to the legend — its
+                # ItemSample crashes the paint (access violation). A detached
+                # PlotDataItem with a fill swatch renders the same legend entry.
+                proxy = pg.PlotDataItem(pen=pg.mkPen(*_BAND_RGB, 160),
+                                        fillLevel=0, fillBrush=brush)
+                legend.addItem(proxy, label)
             self._bands.append((label, lo, hi))
         self._bands.reverse()   # tooltip reads 1σ→3σ order
 
