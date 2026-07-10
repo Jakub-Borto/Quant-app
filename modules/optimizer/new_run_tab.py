@@ -26,7 +26,8 @@ from modules.common.backend.data_roots import (DatasetRef, available_dates,
                                                resolve_ff_events,
                                                scan_structure)
 from modules.common.backend.plugins import PluginRef, list_strategies, load_strategy
-from modules.common.ui.widgets import Banner, Caption, ProgressLogPanel
+from modules.common.ui.widgets import (Banner, Caption, ProgressLogPanel,
+                                       wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.optimizer.backend.engine import (check_param_columns,
                                               estimate_worker_memory,
@@ -88,7 +89,7 @@ class NewRunTab(QWidget):
         grid.addWidget(self._end, 1, 3)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
-        lay.addLayout(grid)
+        lay.addWidget(wrap_card(grid))
 
         self._banner = Banner()
         lay.addWidget(self._banner)

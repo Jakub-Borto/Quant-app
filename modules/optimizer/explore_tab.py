@@ -26,7 +26,7 @@ from modules.common.ui import theme
 from modules.common.ui.charts.heatmap import HeatmapChart
 from modules.common.ui.trade_report.filters import CheckboxFilterRow
 from modules.common.ui.widgets import (Banner, Caption, CollapsibleSection,
-                                       SectionHeader)
+                                       SectionHeader, wrap_card)
 from modules.optimizer.backend import io as opt_io
 from modules.optimizer.backend.buckets import BUCKET_ORDER
 from modules.optimizer.backend.heatmap_model import (MIN_TRADES_DEFAULT,
@@ -72,7 +72,7 @@ class ExploreTab(QWidget):
         sel.addWidget(QLabel("Optimization run"), 0, 2)
         sel.addWidget(self._run, 1, 2)
         sel.setColumnStretch(2, 2)
-        lay.addLayout(sel)
+        lay.addWidget(wrap_card(sel))
         self._empty_banner = Banner()
         lay.addWidget(self._empty_banner)
 
@@ -160,7 +160,7 @@ class ExploreTab(QWidget):
         curve_box.addWidget(self._color_value)
         controls.addWidget(QLabel("Color curve"), 0, 3)
         controls.addLayout(curve_box, 1, 3)
-        lay.addLayout(controls)
+        lay.addWidget(wrap_card(controls))
 
         # slider axes + bucket filter
         self._sliders_holder = QVBoxLayout()

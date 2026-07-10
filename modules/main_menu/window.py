@@ -13,8 +13,8 @@ quits when the last window is gone.
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QMessageBox,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel,
+                               QMessageBox, QToolButton, QVBoxLayout, QWidget)
 
 from modules.common.backend.settings import Settings
 from modules.common.ui import theme
@@ -31,21 +31,31 @@ class MainMenuWindow(QWidget):
         self._instance_counters: dict[str, int] = {}
 
         self.setWindowTitle("Quant Research Platform")
-        self.resize(900, 660)
+        self.setObjectName("menuRoot")   # gradient backdrop (theme.py)
+        # custom QWidget subclasses only paint QSS backgrounds with this set
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.resize(920, 680)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 24, 28, 16)
+        lay.setContentsMargins(32, 28, 32, 18)
         lay.setSpacing(16)
 
         # ── header ────────────────────────────────────────────────────────────
         header = QHBoxLayout()
         title_box = QVBoxLayout()
+        title_box.setSpacing(4)
         title = QLabel("Research Engine")
-        title.setStyleSheet("font-size: 26px; font-weight: 700;")
+        title.setStyleSheet("font-size: 29px; font-weight: 700; "
+                            "background: transparent;")
         subtitle = QLabel("ES · NQ · Intraday Futures")
-        subtitle.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 13px;")
+        subtitle.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 13px; "
+                               f"background: transparent;")
+        accent = QFrame()
+        accent.setObjectName("accentBar")
+        accent.setFixedSize(46, 3)
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
+        title_box.addWidget(accent)
         header.addLayout(title_box)
         header.addStretch()
 

@@ -25,7 +25,7 @@ from modules.common.backend.asset_info import get_dollars_per_tick
 from modules.common.backend.data_roots import TradesRef, list_trades_files
 from modules.common.backend.plugins import PluginRef, list_plugins
 from modules.common.ui.module_window import ModuleWindowBase
-from modules.common.ui.widgets import Banner, Caption, SectionHeader
+from modules.common.ui.widgets import Banner, Caption, SectionHeader, wrap_card
 from modules.common.ui.workers import FunctionWorker
 
 _SLIPPAGE_HELP = ("Entry-side ticks slipped per trade; market exits (losers) "
@@ -118,7 +118,8 @@ class AnalyticsWindow(ModuleWindowBase):
         grid.addLayout(slip_row, 1, 2)
         for c in range(3):
             grid.setColumnStretch(c, 1)
-        self.content.addLayout(grid)
+        shared_card = wrap_card(grid)
+        self.content.addWidget(shared_card)
 
         # ── stats-curve selector ──────────────────────────────────────────────
         curve_row = QHBoxLayout()

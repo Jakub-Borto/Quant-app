@@ -40,7 +40,7 @@ from modules.common.ui.trade_report.filters import (make_day_type_filter,
                                                     make_trade_type_filter)
 from modules.common.ui.trade_report.news_section import NewsBreakdownTable
 from modules.common.ui.trade_report.panel import TradeReportPanel
-from modules.common.ui.widgets import Banner, Caption, SectionHeader
+from modules.common.ui.widgets import Banner, Caption, SectionHeader, wrap_card
 from modules.common.ui.workers import FunctionWorker
 
 
@@ -89,7 +89,7 @@ class BacktesterWindow(ModuleWindowBase):
         grid.addWidget(self._end, 1, 3)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
-        self.content.addLayout(grid)
+        self.content.addWidget(wrap_card(grid))
 
         # params form placeholder (rebuilt per strategy)
         self._params_header = SectionHeader("Parameters")

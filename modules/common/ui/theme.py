@@ -25,19 +25,20 @@ from PySide6.QtWidgets import QApplication
 ACCENT        = "#273fc4"
 ACCENT_HOVER  = "#3450e0"
 ACCENT_ACTIVE = "#1d329f"
-BG            = "#0f1115"   # window background
-SURFACE       = "#171a21"   # cards / inputs
-SURFACE_2     = "#1e222b"   # hover / headers
-SURFACE_3     = "#262b36"   # pressed / stronger hover
-BORDER        = "#2a2f3a"
-BORDER_LIGHT  = "#3a4150"   # hover borders, checkbox boxes
+ACCENT_SOFT   = "#8fa2ff"   # accent-tinted text (card numbers, links)
+BG            = "#0d0f14"   # window background (page behind the cards)
+SURFACE       = "#151924"   # cards / inputs
+SURFACE_2     = "#1c2130"   # hover / headers
+SURFACE_3     = "#262c3d"   # pressed / stronger hover
+BORDER        = "#262c39"
+BORDER_LIGHT  = "#3a4358"   # hover borders, checkbox boxes
 TEXT          = "#e8eaf0"
-TEXT_MUTED    = "#98a0b3"
+TEXT_MUTED    = "#96a0b5"
 GOOD          = "#2ca02c"
 BAD           = "#d64545"
 WARN          = "#d9a441"
 
-CHART_BG = "#12151c"
+CHART_BG = "#11141c"
 CHART_FG = "#c8cdd8"
 
 _ASSETS  = Path(__file__).resolve().parent / "assets"
@@ -50,39 +51,123 @@ _QSS = f"""
 QWidget {{
     background-color: {BG};
     color: {TEXT};
+    font-family: "Segoe UI", "Inter", sans-serif;
     font-size: 13px;
 }}
 QLabel {{ background: transparent; }}
 QLabel[muted="true"] {{ color: {TEXT_MUTED}; }}
 
+/* ── design-system pieces (referenced by objectName from widgets.py) ──────── */
+QLabel#pageTitle {{
+    font-size: 25px;
+    font-weight: 700;
+    background: transparent;
+}}
+QLabel#pageCaption {{
+    color: {TEXT_MUTED};
+    font-size: 13px;
+    background: transparent;
+}}
+QFrame#accentBar {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 {ACCENT_HOVER}, stop:1 {ACCENT});
+    border: none;
+    border-radius: 2px;
+}}
+QLabel#sectionHeader {{
+    font-size: 15px;
+    font-weight: 600;
+    padding: 2px 0 2px 10px;
+    border-left: 3px solid {ACCENT_HOVER};
+    margin-top: 8px;
+    background: transparent;
+}}
+QFrame#card {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 12px;
+}}
+QFrame#cardBody {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+}}
+/* plain QWidget CONTAINERS inside cards must not paint the page background
+   over the card surface (.QWidget = exactly QWidget, inputs unaffected) */
+QFrame#card .QWidget, QFrame#cardBody .QWidget {{ background: transparent; }}
+/* inputs sitting ON a card need contrast against the card surface: darker
+   "wells" instead of surface-on-surface */
+QFrame#card QComboBox, QFrame#card QLineEdit, QFrame#card QAbstractSpinBox,
+QFrame#cardBody QComboBox, QFrame#cardBody QLineEdit,
+QFrame#cardBody QAbstractSpinBox, QFrame#card QListWidget,
+QFrame#cardBody QPlainTextEdit {{
+    background-color: #10131a;
+}}
+QFrame#metricTile {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+}}
+QFrame#metricTile:hover {{ border-color: {BORDER_LIGHT}; }}
+QLabel#metricCaption {{
+    color: {TEXT_MUTED};
+    font-size: 11px;
+    background: transparent;
+}}
+QLabel#metricValue {{
+    font-size: 18px;
+    font-weight: 600;
+    background: transparent;
+}}
+QPlainTextEdit#console {{
+    background-color: #0a0c11;
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+}}
+QWidget#menuRoot {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #141927, stop:0.35 #10131c, stop:1 {BG});
+}}
+
 /* ── buttons ──────────────────────────────────────────────────────────────── */
 QPushButton {{
     background-color: {SURFACE_2};
     border: 1px solid {BORDER};
-    border-radius: 6px;
-    padding: 6px 16px;
+    border-radius: 7px;
+    padding: 7px 18px;
 }}
 QPushButton:hover {{ background-color: {SURFACE_3}; border-color: {BORDER_LIGHT}; }}
 QPushButton:pressed {{ background-color: {SURFACE}; }}
 QPushButton:disabled {{ color: {TEXT_MUTED}; background-color: {SURFACE}; }}
 QPushButton[primary="true"] {{
-    background-color: {ACCENT};
-    border: 1px solid {ACCENT};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 {ACCENT_HOVER}, stop:1 {ACCENT});
+    border: 1px solid {ACCENT_HOVER};
     color: white;
     font-weight: 600;
+    padding: 8px 22px;
 }}
-QPushButton[primary="true"]:hover {{ background-color: {ACCENT_HOVER}; }}
-QPushButton[primary="true"]:pressed {{ background-color: {ACCENT_ACTIVE}; }}
+QPushButton[primary="true"]:hover {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #4059e8, stop:1 {ACCENT_HOVER});
+}}
+QPushButton[primary="true"]:pressed {{ background: {ACCENT_ACTIVE}; }}
 QPushButton[primary="true"]:disabled {{
-    background-color: {SURFACE_2}; border-color: {BORDER}; color: {TEXT_MUTED};
+    background: {SURFACE_2}; border-color: {BORDER}; color: {TEXT_MUTED};
 }}
 QToolButton {{
     background-color: transparent;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: 7px;
     padding: 4px 8px;
 }}
 QToolButton:hover {{ background-color: {SURFACE_2}; border-color: {BORDER}; }}
+
+/* ── charts (pyqtgraph widgets are QGraphicsViews) ────────────────────────── */
+QGraphicsView {{
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+}}
 
 /* ── text/number inputs ───────────────────────────────────────────────────── */
 QComboBox, QLineEdit, QAbstractSpinBox {{

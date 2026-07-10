@@ -15,10 +15,9 @@ Every module window subclasses this and builds its page inside self.content
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QLabel, QMessageBox, QScrollArea, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QFrame, QLabel, QMessageBox, QScrollArea,
+                               QVBoxLayout, QWidget)
 
-from . import theme
 from .workers import FunctionWorker, start_worker
 
 
@@ -47,11 +46,16 @@ class ModuleWindowBase(QWidget):
         self.content.setSpacing(10)
 
         title_lbl = QLabel(title)
-        title_lbl.setStyleSheet("font-size: 22px; font-weight: 700;")
+        title_lbl.setObjectName("pageTitle")
         caption_lbl = QLabel(caption)
-        caption_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 13px;")
+        caption_lbl.setObjectName("pageCaption")
+        accent = QFrame()
+        accent.setObjectName("accentBar")
+        accent.setFixedSize(46, 3)
         self.content.addWidget(title_lbl)
         self.content.addWidget(caption_lbl)
+        self.content.addWidget(accent)
+        self.content.addSpacing(8)
 
     # ── workers ───────────────────────────────────────────────────────────────
     def track_worker(self, worker: FunctionWorker) -> None:

@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout,
 from modules.common.backend.data_roots import scan_structure
 from modules.common.backend.plugins import PluginRef, list_plugins, load_module
 from modules.common.ui.module_window import ModuleWindowBase
-from modules.common.ui.widgets import Banner, Caption, ProgressLogPanel
+from modules.common.ui.widgets import (Banner, Caption, ProgressLogPanel,
+                                       wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.data_formatter.backend.scan import get_output_folders
 
@@ -70,7 +71,8 @@ class DataFormatterWindow(ModuleWindowBase):
         grid.addWidget(self._new_name, 2, 3)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
-        self.content.addLayout(grid)
+        controls_card = wrap_card(grid)
+        self.content.addWidget(controls_card)
 
         self._skip = QCheckBox("Skip already processed files")
         self._skip.setChecked(True)

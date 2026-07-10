@@ -30,7 +30,7 @@ from modules.common.ui.dataframe_model import make_table_view, update_table_view
 from modules.common.ui.module_window import ModuleWindowBase
 from modules.common.ui.params_form import ParamsForm
 from modules.common.ui.widgets import (Banner, Caption, CollapsibleSection,
-                                       SectionHeader)
+                                       SectionHeader, wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.monte_carlo.backend.cost_ctx import build_cost_ctx
 from modules.monte_carlo.backend.stats import (_compute_metrics,
@@ -98,7 +98,7 @@ class MonteCarloWindow(ModuleWindowBase):
         grid.addWidget(self._sizer, 1, 1)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
-        self.content.addLayout(grid)
+        self.content.addWidget(wrap_card(grid))
         self._sizer_section = CollapsibleSection("Sizer parameters")
         self._sizer_section.setVisible(False)
         self.content.addWidget(self._sizer_section)

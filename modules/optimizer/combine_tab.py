@@ -24,7 +24,8 @@ from modules.common.ui.charts.path_chart import CombinePathChart
 from modules.common.ui.dataframe_model import make_table_view, update_table_view
 from modules.common.ui.trade_report.filters import CheckboxFilterRow
 from modules.common.ui.widgets import (Banner, Caption, CollapsibleSection,
-                                       ProgressLogPanel, SectionHeader, hline)
+                                       ProgressLogPanel, SectionHeader,
+                                       hline, wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.optimizer.backend.buckets import BUCKET_ORDER
 from modules.optimizer.backend.combine import io as cmb_io
@@ -71,7 +72,7 @@ class CombineTab(QWidget):
         sel.addWidget(QLabel("Container folder"), 0, 1)
         sel.addWidget(self._container, 1, 1)
         sel.setColumnStretch(1, 2)
-        lay.addLayout(sel)
+        lay.addWidget(wrap_card(sel))
         self._info = Banner()
         lay.addWidget(self._info)
 
@@ -135,7 +136,7 @@ class CombineTab(QWidget):
                                         ("Greedy seeds", self._seeds)]):
             srow.addWidget(QLabel(label), 0, c)
             srow.addWidget(w, 1, c)
-        lay.addLayout(srow)
+        lay.addWidget(wrap_card(srow))
 
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("Combine run name"))

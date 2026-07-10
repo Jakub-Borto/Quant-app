@@ -32,7 +32,7 @@ class ModuleCard(QFrame):
 
         num = QLabel(number)
         num.setStyleSheet(
-            f"color: {theme.TEXT_MUTED}; font-size: 26px; font-weight: 700; "
+            f"color: {theme.ACCENT_SOFT}; font-size: 26px; font-weight: 700; "
             f"border: none; background: transparent;")
         title_lbl = QLabel(title)
         title_lbl.setStyleSheet(
