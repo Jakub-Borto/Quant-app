@@ -37,7 +37,7 @@ No registration. The filename stem becomes the UI display name;
 
 | Folder | Used by | Contract |
 |---|---|---|
-| `data_transforms/` | Data Formatter | `run_all(input_folder, output_folder, skip_existing, on_progress) -> None` |
+| `data_transforms/` | Data Formatter | `run_all(input_folder, output_folder, skip_existing, on_progress[, params]) -> None` (a transform MAY declare `PARAMS` like a strategy — the UI renders widgets from it and passes the values as `params`; transforms without `PARAMS` get the plain 4-arg call) |
 | `strategies/` | Backtester, Optimizer | `run(folder_path, start_date, end_date, params) -> pd.DataFrame` (+ `PARAMS`; the Optimizer sweeps int/float params over min/max/step, str params over a value list) |
 | `position_sizing/` | Analytics, Monte Carlo | `apply(trades, params) -> pd.DataFrame` (+ `PARAMS`) |
 | `modules/monte_carlo/methods/` | Monte Carlo | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`; `PROP_FIRM = True` opts into the dedicated prop-firm UI) |

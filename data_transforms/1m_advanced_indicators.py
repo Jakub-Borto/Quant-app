@@ -20,6 +20,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+# UI-configurable parameters (Data Formatter renders widgets from this
+# dict, exactly like strategy PARAMS in the Backtester). Defaults
+# reproduce the original hardcoded 09:30-16:00 RTH anchor window.
+PARAMS = {
+    "rth_start": "09:30",
+    "rth_end":   "16:00",
+}
+
 ASSET_INFO = {
     # Equity Index
     "ES":  {"tick_size": 0.25},
@@ -108,7 +116,8 @@ def _round_vwap_to_tick(indicators: pd.DataFrame, tick_size: float) -> pd.DataFr
 # BAR VWAP
 # ---------------------------------------------------------------------------
 
-def _compute_bar_vwap(candles: pd.DataFrame) -> pd.DataFrame:
+def _compute_bar_vwap(candles: pd.DataFrame, rth_start=time(9, 30),
+                      rth_end=time(16, 0)) -> pd.DataFrame:
     """
     Compute bar-based VWAP and +/-1/2/3 sigma bands for two anchors:
       - globex : first bar of the file (18:00 NY)
@@ -164,9 +173,9 @@ def _compute_bar_vwap(candles: pd.DataFrame) -> pd.DataFrame:
     # RTH anchor — accumulate only from 09:30 NY onward
     # =======================================================================
 
-    # Boolean mask: True for every bar at or after 09:30
+    # Boolean mask: True for every bar inside the RTH window
     rth_mask = pd.Series(
-        (candles.index.time >= time(9, 30)) & (candles.index.time < time(16, 0)),
+        (candles.index.time >= rth_start) & (candles.index.time < rth_end),
         index=candles.index
     )
 
@@ -236,7 +245,8 @@ def _parse_tick_volume(tv_json: str) -> tuple:
         return np.array([]), np.array([])
 
 
-def _compute_tick_vwap(candles: pd.DataFrame) -> pd.DataFrame:
+def _compute_tick_vwap(candles: pd.DataFrame, rth_start=time(9, 30),
+                       rth_end=time(16, 0)) -> pd.DataFrame:
     """
     Compute tick-level VWAP and +/-1/2/3 sigma bands for globex and RTH anchors.
 
@@ -318,8 +328,8 @@ def _compute_tick_vwap(candles: pd.DataFrame) -> pd.DataFrame:
     # RTH
     # =======================================================================
     rth_mask = (
-        (candles.index.time >= time(9, 30)) &
-        (candles.index.time < time(16, 0))
+        (candles.index.time >= rth_start) &
+        (candles.index.time < rth_end)
     )
 
     vwap_r, std_r = _build(bar_wt, bar_wpx, bar_wpx2, rth_mask)
@@ -448,6 +458,8 @@ def _process_file(
     skip_existing: bool = True,
     on_log: callable = None,
     tick_size: float = None,
+    rth_start: time = time(9, 30),
+    rth_end:   time = time(16, 0),
 ) -> None:
     """
     Read one candle Parquet, compute all 29 indicator columns,
@@ -477,8 +489,8 @@ def _process_file(
     if candles.empty:
         raise ValueError("Empty candle file")
 
-    bar_vwap  = _compute_bar_vwap(candles)        # 14 columns
-    tick_vwap = _compute_tick_vwap(candles)        # 14 columns
+    bar_vwap  = _compute_bar_vwap(candles, rth_start, rth_end)   # 14 columns
+    tick_vwap = _compute_tick_vwap(candles, rth_start, rth_end)  # 14 columns
     cvd       = _compute_cumulative_delta(candles) #  1 column
     absorption = _compute_absorption(candles)       # 3 columns
 
@@ -503,6 +515,7 @@ def run_all(
     output_folder: str,
     skip_existing: bool = True,
     on_progress:   callable = None,
+    params:        dict = None,
 ) -> None:
     """
     Process all daily candle Parquet files in input_folder.
@@ -511,6 +524,11 @@ def run_all(
     Standard transform interface:
         on_progress(current, total, message)
     """
+    # same merge convention as strategies: UI values over PARAMS defaults
+    p = {**PARAMS, **(params or {})}
+    rth_start = pd.Timestamp(p["rth_start"]).time()
+    rth_end   = pd.Timestamp(p["rth_end"]).time()
+
     input_path  = Path(input_folder)
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -543,6 +561,8 @@ def run_all(
                 skip_existing = skip_existing,
                 on_log        = on_log,
                 tick_size     = tick_size,
+                rth_start     = rth_start,
+                rth_end       = rth_end,
             )
         except Exception as e:
             if on_progress:

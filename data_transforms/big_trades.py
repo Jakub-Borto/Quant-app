@@ -5,9 +5,15 @@ from pathlib import Path
 import gc
 
 
-RTH_START         = pd.Timestamp("09:30").time()
-PRE_RTH_THRESHOLD = 10
-RTH_THRESHOLD     = 10
+# UI-configurable parameters (Data Formatter renders widgets from this dict,
+# exactly like strategy PARAMS in the Backtester). Defaults reproduce the
+# original hardcoded behavior.
+PARAMS = {
+    "rth_start":         "09:30",
+    "rth_end":           "16:00",
+    "pre_rth_threshold": 10,
+    "rth_threshold":     10,
+}
 
 
 def _get_front_month(df: pd.DataFrame) -> str | None:
@@ -27,8 +33,12 @@ def _load_and_clean(path: Path) -> pd.DataFrame:
 
 def _process_day(
         prev_df: pd.DataFrame, curr_df: pd.DataFrame,
-        out_file: Path, date_str: str, log: callable
+        out_file: Path, date_str: str, log: callable, p: dict
         ):
+    rth_start         = pd.Timestamp(p["rth_start"]).time()
+    rth_end           = pd.Timestamp(p["rth_end"]).time()
+    pre_rth_threshold = p["pre_rth_threshold"]
+    rth_threshold     = p["rth_threshold"]
 
     # stitch full globex session
     prev_date     = prev_df.index[0].date()
@@ -51,16 +61,16 @@ def _process_day(
     session_df.index = session_df.index.tz_convert("America/New_York")
 
     # require an RTH session (skip holidays / data gaps)
-    rth_mask  = (session_df.index.time >= RTH_START) & \
-                (session_df.index.time <= pd.Timestamp("16:00").time())
+    rth_mask  = (session_df.index.time >= rth_start) & \
+                (session_df.index.time <= rth_end)
     if not rth_mask.any():
         log("No RTH bars found — skipping")
         return None
 
     # filter big trades
     big = session_df[
-        ((session_df["size"] >= PRE_RTH_THRESHOLD) & (session_df.index.time < RTH_START)) |
-        ((session_df["size"] >= RTH_THRESHOLD)     & (session_df.index.time >= RTH_START))
+        ((session_df["size"] >= pre_rth_threshold) & (session_df.index.time < rth_start)) |
+        ((session_df["size"] >= rth_threshold)     & (session_df.index.time >= rth_start))
     ][["price", "size", "side"]].copy()
 
     if big.empty:
@@ -75,8 +85,11 @@ def _process_day(
 
 def run_all(
         input_folder: str, output_folder: str,
-        skip_existing: bool = True, on_progress: callable = None
+        skip_existing: bool = True, on_progress: callable = None,
+        params: dict = None,
         ):
+    # same merge convention as strategies: UI values over PARAMS defaults
+    p = {**PARAMS, **(params or {})}
 
     input_path  = Path(input_folder)
     output_path = Path(output_folder)
@@ -140,6 +153,7 @@ def run_all(
                 out_file = out_file,
                 date_str = date_str,
                 log      = on_log,
+                p        = p,
             )
         except Exception as e:
             if on_progress:

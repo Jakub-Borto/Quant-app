@@ -7,6 +7,11 @@ choose (or create) an output folder under <root>/parquet/<type>/<asset>/,
 then Run — the transform's run_all() executes on a worker thread with live
 progress + log, and Cancel aborts via the on_progress callback.
 
+Transforms may declare a PARAMS dict (same convention as strategy PARAMS in
+the Backtester): a form is auto-rendered from the defaults and its values are
+passed to run_all(..., params=...). Transforms without PARAMS keep the plain
+4-argument call, so third-party transform scripts are unaffected.
+
 Output always lands in the SAME data root the input came from.
 """
 
@@ -14,13 +19,14 @@ import time
 from pathlib import Path
 
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QPushButton)
+                               QLabel, QLineEdit, QPushButton, QVBoxLayout)
 
 from modules.common.backend.data_roots import scan_structure
 from modules.common.backend.plugins import PluginRef, list_plugins, load_module
 from modules.common.ui.module_window import ModuleWindowBase
+from modules.common.ui.params_form import ParamsForm
 from modules.common.ui.widgets import (Banner, Caption, ProgressLogPanel,
-                                       wrap_card)
+                                       SectionHeader, wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.data_formatter.backend.scan import get_output_folders
 
@@ -74,6 +80,14 @@ class DataFormatterWindow(ModuleWindowBase):
         controls_card = wrap_card(grid)
         self.content.addWidget(controls_card)
 
+        # transform params form (only for transforms declaring PARAMS)
+        self._params_header = SectionHeader("Transform parameters")
+        self._params_header.setVisible(False)
+        self.content.addWidget(self._params_header)
+        self._params_holder = QVBoxLayout()
+        self.content.addLayout(self._params_holder)
+        self._params_form: ParamsForm | None = None
+
         self._skip = QCheckBox("Skip already processed files")
         self._skip.setChecked(True)
         self.content.addWidget(self._skip)
@@ -108,6 +122,7 @@ class DataFormatterWindow(ModuleWindowBase):
         self._type.currentIndexChanged.connect(self._on_type_changed)
         self._asset.currentIndexChanged.connect(self._on_asset_changed)
         self._output.currentIndexChanged.connect(self._on_output_changed)
+        self._transform.currentIndexChanged.connect(self._on_transform_changed)
         self._rescan()
 
     # ── scanning / cascading pickers ──────────────────────────────────────────
@@ -117,6 +132,7 @@ class DataFormatterWindow(ModuleWindowBase):
             self.settings.plugin_dirs("data_transforms"))
         self._transform.clear()
         self._transform.addItems([t.label for t in self._transforms])
+        self._on_transform_changed()
 
         self._root.blockSignals(True)
         self._root.clear()
@@ -172,6 +188,30 @@ class DataFormatterWindow(ModuleWindowBase):
         self._new_name.setVisible(is_new)
         self._new_name_label.setVisible(is_new)
 
+    def _on_transform_changed(self) -> None:
+        """Rebuild the params form from the selected transform's PARAMS
+        (same auto-widget convention as the Backtester's strategy params)."""
+        while self._params_holder.count():
+            item = self._params_holder.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._params_form = None
+        self._params_header.setVisible(False)
+        if self._transform.currentIndex() < 0:
+            return
+        try:
+            module = load_module(self._transforms[self._transform.currentIndex()])
+        except Exception as e:  # noqa: BLE001 — a broken plugin shouldn't kill the window
+            self._banner.show_message("error", f"Could not load transform: {e}")
+            return
+        params = getattr(module, "PARAMS", None)
+        if params:
+            self._params_form = ParamsForm(
+                params, sections=getattr(module, "PARAM_SECTIONS", None))
+            self._params_holder.addWidget(self._params_form)
+            self._params_header.setVisible(True)
+
     # ── run flow ──────────────────────────────────────────────────────────────
     def _on_run(self) -> None:
         self._banner.clear_message()
@@ -202,10 +242,16 @@ class DataFormatterWindow(ModuleWindowBase):
         self._start_time = time.time()
         self._output_path_str = output_path
 
+        # transforms that declare PARAMS get the form's values; plain
+        # transforms keep the original 4-argument call
+        extra = {}
+        if getattr(transform, "PARAMS", None) and self._params_form is not None:
+            extra["params"] = self._params_form.values()
+
         worker = FunctionWorker(transform.run_all, input_folder=input_path,
                                 output_folder=output_path,
                                 skip_existing=self._skip.isChecked(),
-                                needs_progress=True)
+                                needs_progress=True, **extra)
         worker.signals.progress.connect(self._progress.on_progress)
         worker.signals.finished.connect(self._on_finished)
         worker.signals.error.connect(self._on_error)

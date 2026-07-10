@@ -43,6 +43,10 @@ BIG_ORDER_MULT     = 2.0   # a far level is "big" if size >= MULT × baseline
 BASELINE_WINDOW_MIN = 30   # rolling window (minutes) for the near-book baseline
 DEFAULT_TICK_SIZE  = 0.25  # fallback if the asset's tick isn't in TICK_SIZES
 
+# UI-configurable parameters (Data Formatter renders widgets from this dict,
+# exactly like strategy PARAMS in the Backtester). run_all() writes the merged
+# values back onto the module constants above — every use-site (the Rust call,
+# the log lines, the parquet metadata) reads those.
 PARAMS = {
     "n_ticks":            N_TICKS,
     "big_order_mult":     BIG_ORDER_MULT,
@@ -86,7 +90,17 @@ def run_all(
     output_folder: str,
     skip_existing: bool,
     on_progress,
+    params: dict = None,
 ) -> None:
+    # same merge convention as strategies: UI values over PARAMS defaults.
+    # Applied to the module constants FIRST so every downstream use-site
+    # (rust kernel call, logs, parquet metadata) sees the chosen values.
+    global N_TICKS, BIG_ORDER_MULT, BASELINE_WINDOW_MIN
+    p = {**PARAMS, **(params or {})}
+    N_TICKS             = int(p["n_ticks"])
+    BIG_ORDER_MULT      = float(p["big_order_mult"])
+    BASELINE_WINDOW_MIN = int(p["baseline_window_min"])
+
     input_path  = Path(input_folder)
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
