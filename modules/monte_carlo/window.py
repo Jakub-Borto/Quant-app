@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
                                QSlider, QVBoxLayout, QWidget)
 
 from modules.common.backend.asset_info import get_dollars_per_tick
-from modules.common.backend.data_roots import TradesRef, list_trades_files
+from modules.common.backend.data_roots import (TradesRef, list_trades_files,
+                                               temp_trades_ref)
 from modules.common.backend.plugins import PluginRef, list_plugins, load_module
 from modules.common.ui.charts.fan_chart import FanChart
 from modules.common.ui.dataframe_model import make_table_view, update_table_view
@@ -56,10 +57,14 @@ _COSTS_CAPTION = (
 
 
 class MonteCarloWindow(ModuleWindowBase):
-    def __init__(self, settings, parent=None):
+    def __init__(self, settings, parent=None,
+                 initial_trades: Path | None = None):
         super().__init__(settings, "Monte Carlo Simulation",
                          "Resample saved trades into thousands of equity "
                          "paths and study the distribution.", parent)
+        # Temp handoff file (e.g. from the Backtester's "Go to Monte Carlo"
+        # button) — injected into the picker and preselected by _rescan().
+        self._initial_trades = Path(initial_trades) if initial_trades else None
         self._trades_refs: list[TradesRef] = []
         self._sizer_refs: list[PluginRef] = []
         self._method_refs: list[PluginRef] = []
@@ -197,6 +202,10 @@ class MonteCarloWindow(ModuleWindowBase):
     # ── scanning ──────────────────────────────────────────────────────────────
     def _rescan(self) -> None:
         self._trades_refs = list_trades_files(self.settings.data_roots)
+        if (self._initial_trades is not None and self._initial_trades.exists()
+                and not any(r.path == self._initial_trades
+                            for r in self._trades_refs)):
+            self._trades_refs.append(temp_trades_ref(self._initial_trades))
         self._sizer_refs = list_plugins(self.settings.plugin_dirs("position_sizing"))
         self._method_refs = list_plugins([METHODS_DIR])
         self._banner.clear_message()
@@ -213,6 +222,12 @@ class MonteCarloWindow(ModuleWindowBase):
         self._file.clear()
         for ref in self._trades_refs:
             self._file.addItem(ref.label, ref)
+        if self._initial_trades is not None:
+            for i in range(self._file.count()):
+                ref = self._file.itemData(i)
+                if ref is not None and ref.path == self._initial_trades:
+                    self._file.setCurrentIndex(i)
+                    break
         self._sizer.blockSignals(True)
         self._sizer.clear()
         for ref in self._sizer_refs:

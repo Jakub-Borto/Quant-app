@@ -11,6 +11,8 @@ overlay, comparison table). Changing account size / slippage / stats curve
 re-enriches the existing runs without re-running the sizers.
 """
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDoubleSpinBox,
                                QGridLayout, QHBoxLayout, QLabel, QPushButton,
@@ -22,7 +24,8 @@ from modules.analytics.backend.sizing import run_instance
 from modules.analytics.instance_editor import InstanceEditor
 from modules.analytics.results_view import ResultsView
 from modules.common.backend.asset_info import get_dollars_per_tick
-from modules.common.backend.data_roots import TradesRef, list_trades_files
+from modules.common.backend.data_roots import (TradesRef, list_trades_files,
+                                               temp_trades_ref)
 from modules.common.backend.plugins import PluginRef, list_plugins
 from modules.common.ui.module_window import ModuleWindowBase
 from modules.common.ui.widgets import Banner, Caption, SectionHeader, wrap_card
@@ -78,10 +81,14 @@ def _execute_all(configs: list[dict], on_progress=None) -> dict:
 
 
 class AnalyticsWindow(ModuleWindowBase):
-    def __init__(self, settings, parent=None):
+    def __init__(self, settings, parent=None,
+                 initial_trades: Path | None = None):
         super().__init__(settings, "Analytics",
                          "Apply position sizing to saved backtest trades and "
                          "compare runs.", parent)
+        # Temp handoff file (e.g. from the Backtester's "Go to Analytics"
+        # button) — injected into the picker and preselected by _rescan().
+        self._initial_trades = Path(initial_trades) if initial_trades else None
         self._trades_refs: list[TradesRef] = []
         self._sizer_refs: list[PluginRef] = []
         self._editors: list[InstanceEditor] = []
@@ -190,6 +197,10 @@ class AnalyticsWindow(ModuleWindowBase):
     # ── scanning ──────────────────────────────────────────────────────────────
     def _rescan(self) -> None:
         self._trades_refs = list_trades_files(self.settings.data_roots)
+        if (self._initial_trades is not None and self._initial_trades.exists()
+                and not any(r.path == self._initial_trades
+                            for r in self._trades_refs)):
+            self._trades_refs.append(temp_trades_ref(self._initial_trades))
         self._sizer_refs = list_plugins(self.settings.plugin_dirs("position_sizing"))
         self._banner.clear_message()
         if not self._trades_refs:
@@ -204,6 +215,12 @@ class AnalyticsWindow(ModuleWindowBase):
         self._default_file.clear()
         for ref in self._trades_refs:
             self._default_file.addItem(ref.label, ref)
+        if self._initial_trades is not None:
+            for i in range(self._default_file.count()):
+                ref = self._default_file.itemData(i)
+                if ref is not None and ref.path == self._initial_trades:
+                    self._default_file.setCurrentIndex(i)
+                    break
         self._default_file.blockSignals(False)
 
         # rebuild editors against the fresh file/sizer lists

@@ -12,6 +12,9 @@ filter ordering:
     -> shared TradeReportPanel (metrics / exposure / equity / detail / RR)
     -> trades table + Save Trades (strips the derived day_type column;
        kv-metadata + dedup; saves into the run's data root trades/)
+    -> Go to Analytics / Go to Monte Carlo (save the filtered trades to the
+       run root's temp/ as {ASSET}_temp_file_N.parquet, then open the module
+       in a new window with that file preselected)
 
 Save uses the dataset/strategy/dates captured AT RUN TIME (the old page read
 the current widget values, which could drift after the run — same values in
@@ -19,18 +22,19 @@ every normal flow).
 """
 
 import pandas as pd
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (QComboBox, QDateEdit, QGridLayout, QHBoxLayout,
                                QLabel, QPushButton, QVBoxLayout, QWidget)
 
 from modules.backtester.backend.day_types import (load_day_classifications,
                                                   tag_trades)
-from modules.backtester.backend.persistence import save_trades
+from modules.backtester.backend.persistence import save_temp_trades, save_trades
 from modules.backtester.backend.run import run_backtest
 from modules.common.backend.asset_info import ASSET_INFO, HIDDEN_PARAMS
 from modules.common.backend.data_roots import (DatasetRef, available_dates,
                                                resolve_ff_events,
-                                               scan_structure, trades_dir)
+                                               scan_structure, temp_dir,
+                                               trades_dir)
 from modules.common.backend.plugins import PluginRef, list_strategies, load_strategy
 from modules.common.backend.trade_stats import DAY_TYPE_ORDER
 from modules.common.ui.dataframe_model import make_table_view, update_table_view
@@ -42,6 +46,20 @@ from modules.common.ui.trade_report.news_section import NewsBreakdownTable
 from modules.common.ui.trade_report.panel import TradeReportPanel
 from modules.common.ui.widgets import Banner, Caption, SectionHeader, wrap_card
 from modules.common.ui.workers import FunctionWorker
+
+# Strong refs to windows spawned by the "Go to ..." buttons. MODULE-level on
+# purpose: the main menu sets WA_DeleteOnClose on the backtester, so closing
+# it drops its Python wrapper — an instance-level list would be GC'd with it
+# and PySide6 would then delete the ownerless spawned top-level windows.
+# Module scope lets spawned Analytics/MC windows outlive their spawner.
+# (Known caveat: the main menu's close-all doesn't track these windows; the
+# app quits when the user closes the last one.)
+_SPAWNED_WINDOWS: list = []
+
+
+def _forget_spawned(window) -> None:
+    if window in _SPAWNED_WINDOWS:
+        _SPAWNED_WINDOWS.remove(window)
 
 
 class BacktesterWindow(ModuleWindowBase):
@@ -155,9 +173,15 @@ class BacktesterWindow(ModuleWindowBase):
         save_row = QHBoxLayout()
         self._save_btn = QPushButton("Save Trades")
         self._save_btn.clicked.connect(self._on_save)
+        self._goto_analytics_btn = QPushButton("Go to Analytics")
+        self._goto_analytics_btn.clicked.connect(self._on_go_analytics)
+        self._goto_mc_btn = QPushButton("Go to Monte Carlo")
+        self._goto_mc_btn.clicked.connect(self._on_go_monte_carlo)
         self._save_banner = Banner()
         save_row.addStretch()
         save_row.addWidget(self._save_btn)
+        save_row.addWidget(self._goto_analytics_btn)
+        save_row.addWidget(self._goto_mc_btn)
         save_row.addStretch()
         lay.addLayout(save_row)
         lay.addWidget(self._save_banner)
@@ -388,6 +412,8 @@ class BacktesterWindow(ModuleWindowBase):
         self._panel.setVisible(visible)
         self._table.setVisible(visible)
         self._save_btn.setVisible(visible)
+        self._goto_analytics_btn.setVisible(visible)
+        self._goto_mc_btn.setVisible(visible)
 
     # ══ save ═══════════════════════════════════════════════════════════════════
     def _on_save(self) -> None:
@@ -406,3 +432,50 @@ class BacktesterWindow(ModuleWindowBase):
                 "info", "Identical trades file already exists — not saved.")
         else:
             self._save_banner.show_message("success", f"Saved to {result}")
+
+    # ══ go to Analytics / Monte Carlo ═══════════════════════════════════════════
+    def _save_temp_file(self):
+        """Write the CURRENT filtered trades to <run root>/temp/ and return
+        the path, or None on failure (error shown in the save banner)."""
+        trades = getattr(self, "_filtered_trades", None)
+        if trades is None or trades.empty:
+            return None  # buttons are hidden in this state; belt and braces
+        # Strip day_type before saving — it's derived, not strategy output
+        save_cols = [c for c in trades.columns if c != "day_type"]
+        try:
+            return save_temp_trades(
+                temp_dir(self._run_ref.root), trades[save_cols],
+                self._run_asset, self._filtered, self._selected_day_types,
+                self._selected_trade_types_meta)
+        except Exception as e:  # noqa: BLE001 — disk errors surface in the banner
+            self._save_banner.show_message(
+                "error", f"Could not write temp trades file: {e}")
+            return None
+
+    def _spawn_module_window(self, window_cls, title: str, path) -> None:
+        try:
+            window = window_cls(self.settings, initial_trades=path)
+        except Exception as e:  # noqa: BLE001 — a broken module must not kill us
+            self._save_banner.show_message("error", f"Could not open {title}: {e}")
+            return
+        window.setAttribute(Qt.WA_DeleteOnClose)
+        window.destroyed.connect(lambda _=None, w=window: _forget_spawned(w))
+        _SPAWNED_WINDOWS.append(window)
+        window.showMaximized()
+        self._save_banner.show_message(
+            "success", f"Using trades file {path} — opened in {title}.")
+
+    def _on_go_analytics(self) -> None:
+        path = self._save_temp_file()
+        if path is None:
+            return
+        # lazy import — no import-time coupling between module windows
+        from modules.analytics.window import AnalyticsWindow
+        self._spawn_module_window(AnalyticsWindow, "Analytics", path)
+
+    def _on_go_monte_carlo(self) -> None:
+        path = self._save_temp_file()
+        if path is None:
+            return
+        from modules.monte_carlo.window import MonteCarloWindow
+        self._spawn_module_window(MonteCarloWindow, "Monte Carlo", path)

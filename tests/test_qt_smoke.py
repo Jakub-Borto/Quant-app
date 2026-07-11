@@ -102,6 +102,42 @@ def test_monte_carlo_window(qtbot, settings):
     assert "bootstrap" in methods
 
 
+def _make_temp_trades(tmp_path):
+    """A hermetic data root holding only a temp handoff file (no trades/)."""
+    import pandas as pd
+    root = tmp_path / "root"
+    (root / "temp").mkdir(parents=True)
+    p = root / "temp" / "ES_temp_file_1.parquet"
+    pd.DataFrame({"date": ["2026-01-05"], "direction": ["long"],
+                  "pnl_points": [1.0], "ticks": [4.0]}).to_parquet(p)
+    return root, p
+
+
+def test_analytics_window_initial_trades(qtbot, tmp_path):
+    from modules.analytics.window import AnalyticsWindow
+    from modules.common.backend.settings import Settings
+    root, p = _make_temp_trades(tmp_path)
+    win = AnalyticsWindow(Settings({}, [str(root)]), initial_trades=p)
+    qtbot.addWidget(win)
+    win.show()
+    assert win._default_file.currentData().path == p
+    assert win._editors[0]._file.findText(p.name) >= 0
+    win._rescan()  # "Refresh files" must not lose or deselect the temp file
+    assert win._default_file.currentData().path == p
+
+
+def test_monte_carlo_window_initial_trades(qtbot, tmp_path):
+    from modules.common.backend.settings import Settings
+    from modules.monte_carlo.window import MonteCarloWindow
+    root, p = _make_temp_trades(tmp_path)
+    win = MonteCarloWindow(Settings({}, [str(root)]), initial_trades=p)
+    qtbot.addWidget(win)
+    win.show()
+    assert win._file.currentData().path == p
+    win._rescan()
+    assert win._file.currentData().path == p
+
+
 @needs_data
 def test_optimizer_window_three_tabs(qtbot, settings):
     from modules.optimizer.window import OptimizerWindow

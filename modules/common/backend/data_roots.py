@@ -127,6 +127,39 @@ def trades_dir(root: Path) -> Path:
     return Path(root) / "trades"
 
 
+def temp_dir(root: Path) -> Path:
+    return Path(root) / "temp"
+
+
+def temp_trades_ref(path: Path) -> TradesRef:
+    """Ref for a temp handoff file at <root>/temp/<name> — never produced by
+    list_trades_files (temp files don't appear in regular pickers)."""
+    p = Path(path)
+    return TradesRef(root=p.parent.parent, path=p, label=p.name)
+
+
+def clear_temp_files(roots: list[Path]) -> int:
+    """
+    Delete every {ASSET}_temp_file_{N}.parquet in every root's temp/ folder
+    (app-startup cleanup — temp handoff files live for one app session).
+    Only the app's own naming pattern is touched; anything else a user drops
+    into temp/ is left alone. Best effort: locked/undeletable files are
+    skipped. Returns the number of files deleted.
+    """
+    deleted = 0
+    for root in roots:
+        tdir = Path(root) / "temp"
+        if not tdir.exists():
+            continue
+        for p in tdir.glob("*_temp_file_*.parquet"):
+            try:
+                p.unlink()
+                deleted += 1
+            except OSError:
+                pass
+    return deleted
+
+
 def optimizations_root(root: Path) -> Path:
     return Path(root) / "optimizations"
 
