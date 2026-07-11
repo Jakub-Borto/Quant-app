@@ -1,6 +1,7 @@
 """
-Backend tests for the backtester's trades persistence — the temp-file
-handoff writer used by the "Go to Analytics" / "Go to Monte Carlo" buttons.
+Backend tests for the shared trades persistence (modules/common/backend/
+trade_files.py) — the regular saver and the temp-file handoff writer used by
+the shared Save Trades / Go to Analytics / Go to Monte Carlo action row.
 Pure backend: no Qt.
 """
 
@@ -8,8 +9,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from modules.analytics.backend.io import read_filter_metadata
-from modules.backtester.backend.persistence import save_temp_trades
 from modules.common.backend.data_roots import clear_temp_files, list_trades_files
+from modules.common.backend.trade_files import save_temp_trades, save_trades
 
 
 def _trades() -> pd.DataFrame:
@@ -20,6 +21,30 @@ def _trades() -> pd.DataFrame:
         "ticks": [10.0, -4.0],
     })
 
+
+# ── save_trades (regular saves into trades/) ──────────────────────────────────
+
+def test_save_trades_names_and_filtered_suffix(tmp_path):
+    p1 = save_trades(tmp_path, _trades(), "ES_1m_ivb_2026-01-01_2026-01-31",
+                     False, ["normal"], "all")
+    p2 = save_trades(tmp_path, _trades(), "ES_1m_ivb_2026-01-01_2026-01-31",
+                     True, ["normal"], "all")
+    assert p1.endswith("ES_1m_ivb_2026-01-01_2026-01-31.parquet")
+    assert p2.endswith("ES_1m_ivb_2026-01-01_2026-01-31_filtered.parquet")
+
+
+def test_save_trades_dedup_and_collision_suffix(tmp_path):
+    base = "ES_1m_ivb_2026-01-01_2026-01-31"
+    save_trades(tmp_path, _trades(), base, False, ["normal"], "all")
+    # identical rows + identical filter metadata -> dedup, no write
+    assert save_trades(tmp_path, _trades(), base, False, ["normal"], "all") is None
+    # same name, different content -> _2 suffix
+    other = _trades().assign(ticks=[1.0, 2.0])
+    p = save_trades(tmp_path, other, base, False, ["normal"], "all")
+    assert p.endswith(f"{base}_2.parquet")
+
+
+# ── save_temp_trades (handoff files into temp/) ───────────────────────────────
 
 def test_save_temp_trades_increments_n(tmp_path):
     temp = tmp_path / "root" / "temp"

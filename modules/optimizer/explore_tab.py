@@ -203,7 +203,7 @@ class ExploreTab(QWidget):
         self._reading.setVisible(False)
         lay.addWidget(self._reading)
 
-        self.cell_detail = CellDetailPanel()
+        self.cell_detail = CellDetailPanel(settings)
         lay.addWidget(self.cell_detail)
         lay.addStretch()
 

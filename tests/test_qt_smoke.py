@@ -26,15 +26,36 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
 REPO = Path(__file__).resolve().parents[1]
-HAS_DATA = (REPO / "data" / "parquet").exists()
 
-needs_data = pytest.mark.skipif(not HAS_DATA, reason="data/parquet not present")
+
+def _configured_data_roots() -> list[str]:
+    """Data roots from the repo's real settings.json (falls back to the
+    in-repo default data/) so data-dependent smoke tests follow the machine's
+    actual data location."""
+    cfg = REPO / "settings.json"
+    if cfg.exists():
+        try:
+            return json.loads(cfg.read_text(encoding="utf-8")).get(
+                "data_roots", ["data"])
+        except (json.JSONDecodeError, OSError):
+            pass
+    return ["data"]
+
+
+DATA_ROOTS = _configured_data_roots()
+HAS_DATA = any(
+    ((Path(r) if Path(r).is_absolute() else REPO / r) / "parquet").exists()
+    for r in DATA_ROOTS
+)
+
+needs_data = pytest.mark.skipif(
+    not HAS_DATA, reason="no configured data root has a parquet/ folder")
 
 
 @pytest.fixture()
-def settings(tmp_path):
-    from modules.common.backend.settings import load_settings
-    return load_settings(tmp_path / "settings.json")
+def settings():
+    from modules.common.backend.settings import Settings
+    return Settings({}, DATA_ROOTS)
 
 
 @pytest.fixture(autouse=True)
@@ -52,14 +73,14 @@ def test_main_menu_constructs(qtbot, settings):
 
 
 def test_settings_dialog_round_trip(qtbot, tmp_path):
-    from modules.common.backend.settings import load_settings
+    from modules.common.backend.settings import DEFAULT_DATA_ROOT, load_settings
     from modules.common.ui.settings_dialog import SettingsDialog
     s = load_settings(tmp_path / "settings.json")
     dlg = SettingsDialog(s)
     qtbot.addWidget(dlg)
     dlg._on_ok()
     reloaded = load_settings(tmp_path / "settings.json")
-    assert reloaded.data_roots_raw == ["data"]
+    assert reloaded.data_roots_raw == [DEFAULT_DATA_ROOT]
     assert [p.name for p in reloaded.plugin_dirs("strategies")] == ["strategies"]
     assert json.loads((tmp_path / "settings.json").read_text())["version"] == 1
 

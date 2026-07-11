@@ -65,7 +65,9 @@ folders and the **data roots**. Each data root is a full tree:
 ```
 
 Pickers show the union across roots; **outputs are written to the root the
-input came from**. The shipped default root is the in-repo `data/`.
+input came from**. The default root is `D:/market_data` (machine-local;
+`DEFAULT_DATA_ROOT` in `modules/common/backend/settings.py` — the data tree
+moved out of the in-repo `data/` in July 2026).
 
 ## Repo map
 
@@ -78,17 +80,21 @@ modules/
     backend/               pure, Qt-free: settings, asset_info (THE single
                            ASSET_INFO + HIDDEN_PARAMS), plugins (multi-folder
                            discovery/loading), data_roots (multi-root scans,
-                           output routing, ff-events resolution), trade_stats
-                           (compute_metrics, DAY_TYPE_ORDER, RR series),
-                           benchmark (α/β regression), chart_window
+                           output routing, ff-events resolution), trade_files
+                           (save_trades + save_temp_trades + filter
+                           kv-metadata), trade_stats (compute_metrics,
+                           DAY_TYPE_ORDER, RR series), benchmark (α/β
+                           regression), chart_window
     ui/                    shared Qt: theme, workers (FunctionWorker +
                            cancellation), widgets, params_form, dataframe
                            model, settings dialog, charts/ (pyqtgraph:
                            equity, candlestick, histogram, fan, heatmap,
-                           path), trade_report/ (the shared report panel
-                           used by Backtester AND Optimizer cell detail)
+                           path), trade_report/ (the shared report panel +
+                           TradeActionsRow (Save Trades / Go to Analytics /
+                           Go to Monte Carlo), used by Backtester AND
+                           Optimizer cell detail)
   data_formatter/          backend/scan.py + window.py
-  backtester/              backend/{run,day_types,persistence}.py + window.py
+  backtester/              backend/{run,day_types}.py + window.py
   analytics/               backend/{io,sizing,costs,metrics}.py +
                            instance_editor/results_view/window.py
   monte_carlo/             methods/ (plugin dir) + backend/{stats,cost_ctx}.py
@@ -104,8 +110,9 @@ position_sizing/           fixed.py, kelly.py, risk_based.py
 forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
 orderbook_replay_rs/       Rust (PyO3) L3 order-book replay kernel
 tests/                     pytest suite (optimizer backend + metrics + Qt smoke)
-data/                      default data root (gitignored)
 ```
+
+(The data root lives OUTSIDE the repo at `D:/market_data` since July 2026.)
 
 **Convention:** inside every module, `backend/` is pure computation with NO
 Qt imports (safe for process-pool workers and tests); `window.py` + other UI

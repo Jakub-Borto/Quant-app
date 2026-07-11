@@ -44,10 +44,14 @@ CATEGORY_LABELS = {
     "position_sizing": "Position-sizing folders",
 }
 
+# Default data root — the machine's dedicated data drive location (the data
+# tree moved out of the in-repo data/ folder in July 2026).
+DEFAULT_DATA_ROOT = "D:/market_data"
+
 _DEFAULTS = {
     "version": 1,
     "extra_plugin_dirs": {key: [] for key in PLUGIN_CATEGORIES},
-    "data_roots": ["data"],
+    "data_roots": [DEFAULT_DATA_ROOT],
 }
 
 
@@ -65,7 +69,7 @@ class Settings:
         self.extra_plugin_dirs = {
             key: list(extra_plugin_dirs.get(key, [])) for key in PLUGIN_CATEGORIES
         }
-        self.data_roots_raw = list(data_roots_raw) or ["data"]
+        self.data_roots_raw = list(data_roots_raw) or [DEFAULT_DATA_ROOT]
 
     # ── plugin folders ────────────────────────────────────────────────────────
     def default_plugin_dir(self, category: str) -> Path:
@@ -107,6 +111,6 @@ def load_settings(path: Path = SETTINGS_PATH) -> Settings:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         return Settings(raw.get("extra_plugin_dirs", {}),
-                        raw.get("data_roots", ["data"]))
+                        raw.get("data_roots", [DEFAULT_DATA_ROOT]))
     except (json.JSONDecodeError, OSError):
         return Settings(_DEFAULTS["extra_plugin_dirs"], _DEFAULTS["data_roots"])

@@ -1,13 +1,21 @@
 """
-Trades persistence for the Backtester module.
+Saved-trades parquet persistence — shared by the Backtester and the
+Optimizer cell detail (the Save Trades / Go to Analytics / Go to Monte Carlo
+action row).
 
-Extracted verbatim from legacy_streamlit/views/backtester.py. Saved trades
-carry parquet key-value metadata recording the filter state under which they
-were saved (read back by Analytics), and a filter-aware dedup prevents saving
-byte-identical results twice.
+Two writers, same filter kv-metadata (read back by Analytics):
 
-Change vs the old view: the output directory is passed in (`trades_dir`,
-usually `<data_root>/trades`) instead of the old hardcoded data/trades.
+- save_trades: regular saves into <data_root>/trades/ under a caller-built
+  base name, with a filter-aware dedup (extracted verbatim from
+  legacy_streamlit/views/backtester.py, generalized so the base name is the
+  caller's: {dataset}_{strategy}_{start}_{end} for the backtester,
+  ticker + run + cell params for the optimizer).
+- save_temp_trades: one-session handoff files into <data_root>/temp/ as
+  {ASSET}_temp_file_{N}.parquet (asset prefix keeps the "asset = first
+  underscore token of the filename" convention working downstream; app boot
+  clears them via data_roots.clear_temp_files).
+
+Qt-free.
 """
 
 import json
@@ -18,8 +26,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-def _build_filter_metadata(filtered: bool, selected_day_types: list,
-                           selected_trade_types) -> dict:
+def build_filter_metadata(filtered: bool, selected_day_types: list,
+                          selected_trade_types) -> dict:
     """
     Build the parquet key-value metadata (bytes->bytes) recording the active
     filter state. selected_trade_types is either the string "all" or a list.
@@ -36,14 +44,14 @@ def _build_filter_metadata(filtered: bool, selected_day_types: list,
     }
 
 
-def _read_filter_metadata(path: Path) -> dict:
+def read_filter_metadata(path: Path) -> dict:
     """Return the filter kv-metadata subset of an existing trades parquet."""
     schema_meta = pq.read_schema(path).metadata or {}
     keys = (b"filtered", b"selected_day_types", b"selected_trade_types")
     return {k: schema_meta.get(k) for k in keys}
 
 
-def _write_with_metadata(path: Path, trades: pd.DataFrame, kv_meta: dict) -> None:
+def write_with_metadata(path: Path, trades: pd.DataFrame, kv_meta: dict) -> None:
     # Write via pyarrow so we can attach kv metadata; from_pandas keeps the
     # b'pandas' schema metadata so pd.read_parquet reconstructs the frame.
     table = pa.Table.from_pandas(trades)
@@ -52,12 +60,12 @@ def _write_with_metadata(path: Path, trades: pd.DataFrame, kv_meta: dict) -> Non
     pq.write_table(table.replace_schema_metadata(meta), path)
 
 
-def save_trades(trades_dir: Path, trades: pd.DataFrame, dataset: str,
-                strategy: str, start_date, end_date, filtered: bool,
-                selected_day_types: list, selected_trade_types) -> str | None:
+def save_trades(trades_dir: Path, trades: pd.DataFrame, base_name: str,
+                filtered: bool, selected_day_types: list,
+                selected_trade_types) -> str | None:
     """
-    Write trades to {trades_dir}/{dataset}_{strategy}_{start}_{end}
-    [_filtered][_N].parquet with the filter kv-metadata attached.
+    Write trades to {trades_dir}/{base_name}[_filtered][_N].parquet with the
+    filter kv-metadata attached.
 
     Returns the written path as str, or None when an identical file (same row
     content AND same filter metadata) already exists.
@@ -65,15 +73,14 @@ def save_trades(trades_dir: Path, trades: pd.DataFrame, dataset: str,
     trades_path = Path(trades_dir)
     trades_path.mkdir(parents=True, exist_ok=True)
 
-    base_name = f"{dataset}_{strategy}_{start_date}_{end_date}"
-    stem      = base_name + ("_filtered" if filtered else "")
+    stem = base_name + ("_filtered" if filtered else "")
 
-    new_meta = _build_filter_metadata(filtered, selected_day_types, selected_trade_types)
+    new_meta = build_filter_metadata(filtered, selected_day_types, selected_trade_types)
 
     # Filter-aware dedup: a re-save is a duplicate only when BOTH the row
     # content and the filter metadata match an existing file.
     for f in sorted(trades_path.glob(f"{stem}*.parquet")):
-        if pd.read_parquet(f).equals(trades) and _read_filter_metadata(f) == new_meta:
+        if pd.read_parquet(f).equals(trades) and read_filter_metadata(f) == new_meta:
             return None
 
     output_path = trades_path / f"{stem}.parquet"
@@ -82,7 +89,7 @@ def save_trades(trades_dir: Path, trades: pd.DataFrame, dataset: str,
         output_path = trades_path / f"{stem}_{n}.parquet"
         n += 1
 
-    _write_with_metadata(output_path, trades, new_meta)
+    write_with_metadata(output_path, trades, new_meta)
 
     return str(output_path)
 
@@ -92,9 +99,7 @@ def save_temp_trades(temp_dir: Path, trades: pd.DataFrame, asset: str,
                      selected_trade_types) -> Path:
     """
     Write trades to {temp_dir}/{asset}_temp_file_{N}.parquet (first free N,
-    starting at 1) with the same filter kv-metadata as save_trades. The asset
-    prefix keeps the "asset = first underscore token of the filename"
-    convention working downstream.
+    starting at 1) with the filter kv-metadata attached.
 
     Filter-aware dedup, reuse-flavoured: when an existing temp file has the
     same row content AND the same filter metadata, no new file is written —
@@ -103,15 +108,15 @@ def save_temp_trades(temp_dir: Path, trades: pd.DataFrame, asset: str,
     temp_path = Path(temp_dir)
     temp_path.mkdir(parents=True, exist_ok=True)
 
-    new_meta = _build_filter_metadata(filtered, selected_day_types, selected_trade_types)
+    new_meta = build_filter_metadata(filtered, selected_day_types, selected_trade_types)
 
     for f in sorted(temp_path.glob(f"{asset}_temp_file_*.parquet")):
-        if pd.read_parquet(f).equals(trades) and _read_filter_metadata(f) == new_meta:
+        if pd.read_parquet(f).equals(trades) and read_filter_metadata(f) == new_meta:
             return f
 
     n = 1
     while (output_path := temp_path / f"{asset}_temp_file_{n}.parquet").exists():
         n += 1
 
-    _write_with_metadata(output_path, trades, new_meta)
+    write_with_metadata(output_path, trades, new_meta)
     return output_path
