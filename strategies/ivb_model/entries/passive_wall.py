@@ -2,119 +2,84 @@
 
 No absorption candle and no delta confirmation — the wall of stacked liquidity is the signal.
 Mirrors consecutive_absorption's price-cluster logic, but counts big passive orders (by raw
-resting size) instead of absorption candles. The wall builds across bars: a running `seen` list
-of qualifying levels is never cleared.
+resting size) instead of absorption candles. The wall builds across bars: a running `seen`
+list of qualifying levels is never cleared.
 """
 
-import json
-import pandas as pd
+import numpy as np
+
+_NO_ENTRY = (None, None, None, None, None)
 
 
-def find_entry(
-    post_retest:            pd.DataFrame,
-    direction:              str,
-    ivb_high:               float,
-    ivb_low:                float,
-    poc:                    float,
-    vah:                    float,
-    val:                    float,
-    sell_baseline:          pd.Series,
-    buy_baseline:           pd.Series,
-    passive_baseline_long:  pd.Series,
-    passive_baseline_short: pd.Series,
-    cvd_series:             pd.Series,
-    cvd_change_std:         pd.Series,
-    params:                 dict,
-) -> tuple:
+def find_entry(win, params: dict) -> tuple:
     """
-    Scans post_retest bar by bar, accumulating big passive orders on the defended side
-    (long: resting bids below candle open; short: resting asks above candle open) whose raw
-    size >= passive_baseline * passive_wall_mult. When passive_wall_n of them cluster within
-    passive_wall_ticks of one level, a wall is confirmed and we enter on the next bar's open.
+    Accumulates big passive orders on the defended side (long: resting bids below candle
+    open; short: resting asks above candle open) whose raw size >= passive_baseline *
+    passive_wall_mult. When passive_wall_n of them cluster within passive_wall_ticks of one
+    level, a wall is confirmed and we enter on the next bar's open.
 
-    Returns (entry_ts, entry_price, invalidation_ts, entry_notes, trade_type).
+    The candidate prefilter (per-bar max defended-side size from DayData) only skips bars
+    that could not contribute any level — identical accumulation to the original loop.
+
+    Returns (entry_rel, entry_price, invalidation_rel, entry_notes, trade_type).
     """
-    if post_retest.empty:
-        return None, None, None, None, None
+    n = win.n
+    if n == 0:
+        return _NO_ENTRY
 
-    if direction == "long":
-        invalid_whole    = post_retest["close"] < val
-        passive_baseline = passive_baseline_long
-    else:
-        invalid_whole    = post_retest["close"] > vah
-        passive_baseline = passive_baseline_short
+    first_inv = win.first_inv
+    if first_inv == 0:                   # breakout bar: invalidation only
+        return None, None, 0, None, None
 
-    n          = len(post_retest)
+    o          = win.o
+    long_      = win.direction == "long"
     tick_size  = params["tick_size"]
     level_tol  = params["passive_wall_ticks"] * tick_size
     required_n = params["passive_wall_n"]
+    wall_mult  = params["passive_wall_mult"]
 
-    # (price_level, ts) of every big passive order seen so far — spans all bars, never cleared
-    seen: list[tuple[float, pd.Timestamp]] = []
+    with np.errstate(invalid="ignore"):
+        cand = (win.p_base > 0) & (win.best_passive >= win.p_base * wall_mult)
+    cand[0] = False
 
-    # breakout bar (index 0): invalidation only
-    if invalid_whole.iloc[0]:
-        return None, None, post_retest.index[0], None, None
+    # (price_level, window bar index) of every big passive order seen — never cleared
+    seen: list[tuple] = []
 
-    for i in range(1, n):
-        bar = post_retest.iloc[i]
-        ts  = post_retest.index[i]
+    for i in map(int, np.flatnonzero(cand)):
+        if i >= first_inv:
+            break
 
-        if invalid_whole.iloc[i]:
-            return None, None, ts, None, None
-
-        p_baseline = passive_baseline.get(ts, float("nan"))
-        if pd.isna(p_baseline) or p_baseline <= 0:
+        prices, sizes, counts = win.po[i]
+        required = float(win.p_base[i]) * wall_mult
+        if long_:
+            m = (counts > 0) & (prices < o[i]) & (sizes >= required)
+        else:
+            m = (counts > 0) & (prices > o[i]) & (sizes >= required)
+        if not m.any():
             continue
 
-        po = bar.get("passive_orders", None)
-        if not po or po == "{}":
-            continue
-        try:
-            raw_po = json.loads(po)
-        except Exception:
-            continue
-
-        bar_open = float(bar["open"])
-        required = p_baseline * params["passive_wall_mult"]
-
-        # collect every qualifying defended-side level on this bar (raw size, not size/count)
-        new_levels = []
-        for price_str, (size, count) in raw_po.items():
-            price = float(price_str)
-            if count <= 0:
-                continue
-            if direction == "long" and price >= bar_open:
-                continue
-            if direction == "short" and price <= bar_open:
-                continue
-            if size >= required:
-                new_levels.append(price)
-
-        # append each, re-clustering by price; trigger at the earliest level that completes a wall
-        for lvl in new_levels:
-            seen.append((lvl, ts))
+        # append each qualifying level (document order); trigger at the earliest level
+        # that completes a wall
+        for lvl in prices[m].tolist():
+            seen.append((lvl, i))
 
             nearby = [(p, t) for p, t in seen if abs(p - lvl) <= level_tol]
             if len(nearby) < required_n:
                 continue
 
-            entry_bar_idx = i + 1
-            if entry_bar_idx >= n:
-                return None, None, None, None, None
-
-            if invalid_whole.iloc[entry_bar_idx]:
-                return None, None, post_retest.index[entry_bar_idx], None, None
-
-            entry_ts    = post_retest.index[entry_bar_idx]
-            entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
+            entry_rel = i + 1
+            if entry_rel >= n:
+                return _NO_ENTRY
+            if entry_rel >= first_inv:
+                return None, None, entry_rel, None, None
 
             entry_notes = {
                 "wall_levels": [round(p, 2) for p, _ in nearby],
-                "wall_times":  [t.strftime("%H:%M") for _, t in nearby],
+                "wall_times":  [win.ts(t).strftime("%H:%M") for _, t in nearby],
                 "wall_count":  len(nearby),
             }
+            return entry_rel, float(o[entry_rel]), None, entry_notes, "passive_wall"
 
-            return entry_ts, entry_price, None, entry_notes, "passive_wall"
-
-    return None, None, None, None, None
+    if first_inv < n:
+        return None, None, first_inv, None, None
+    return _NO_ENTRY

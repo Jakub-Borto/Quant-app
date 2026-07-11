@@ -1,94 +1,37 @@
-"""Shared absorption grading used by all absorption-based entry finders."""
+"""Shared absorption grading used by all absorption-based entry finders.
 
-import json
-import pandas as pd
+Vectorized split of the original is_absorption_candle / find_absorption_trigger pair:
+
+  - The scalar prechecks (valid baseline, bar range > 0, defended wick fraction >=
+    wick_threshold) are done VECTORIZED by the callers over the whole window
+    (see EntryWindow.wick_frac / abs_base in _daydata).
+  - absorption_scan() does the remaining per-bar work on the pre-parsed tick_volume
+    arrays: find the FIRST price level inside the defended wick whose aggressive volume
+    against the trade direction crosses baseline * absorption_mult. "First" is JSON
+    document order — exactly the dict-iteration order the original used — so it doubles
+    as find_absorption_trigger (same scan, same first hit).
+"""
+
+import numpy as np
 
 
-def is_absorption_candle(bar: pd.Series, baseline: float, direction: str, params: dict) -> bool:
-    """
-    True if the bar has a qualifying wick on the defended side AND a price level
-    inside that wick with aggressive volume against the direction >= baseline * absorption_mult.
-    """
-    if pd.isna(baseline) or baseline <= 0:
-        return False
+def absorption_scan(tv, wick_low: float, wick_high: float, required: float, direction: str):
+    """Returns (found, trigger_price, trigger_volume) for the first level in
+    [wick_low, wick_high] with counter-volume >= required. tv is the pre-parsed
+    (prices, buys, sells) tuple or None."""
+    if tv is None:
+        return False, None, None
+    prices, buys, sells = tv
+    vols = sells if direction == "long" else buys
+    hit  = (prices >= wick_low) & (prices <= wick_high) & (vols >= required)
+    if not hit.any():
+        return False, None, None
+    k = int(hit.argmax())
+    return True, float(prices[k]), vols[k].item()
 
-    high  = float(bar["high"])
-    low   = float(bar["low"])
-    op    = float(bar["open"])
-    close = float(bar["close"])
 
-    bar_range = high - low
-    if bar_range <= 0:
-        return False
-
-    threshold = params["wick_threshold"]
-    required  = baseline * params["absorption_mult"]
-
+def wick_bounds(o: float, h: float, l: float, c: float, direction: str) -> tuple:
+    """Defended-wick price bounds of a bar: (low, body_bottom) long / (body_top, high) short."""
     if direction == "long":
-        body_bottom = min(op, close)
-        wick_size   = body_bottom - low
-        if wick_size / bar_range < threshold:
-            return False
-        wick_low  = low
-        wick_high = body_bottom
-    else:
-        body_top  = max(op, close)
-        wick_size = high - body_top
-        if wick_size / bar_range < threshold:
-            return False
-        wick_low  = body_top
-        wick_high = high
-
-    tv = bar.get("tick_volume", None)
-    if not tv or tv == "{}":
-        return False
-
-    try:
-        raw = json.loads(tv)
-    except Exception:
-        return False
-
-    for price_str, (buy_qty, sell_qty) in raw.items():
-        price = float(price_str)
-        if not (wick_low <= price <= wick_high):
-            continue
-        volume_at_level = sell_qty if direction == "long" else buy_qty
-        if volume_at_level >= required:
-            return True
-
-    return False
-
-
-def find_absorption_trigger(bar: pd.Series, baseline: float, direction: str, params: dict) -> tuple:
-    """
-    Returns (trigger_price, trigger_volume) for the first wick price level that
-    crosses baseline * absorption_mult. Returns (None, None) if none found or on error.
-    Use after is_absorption_candle has already confirmed absorption.
-    """
-    tv = bar.get("tick_volume", None)
-    if not tv or tv == "{}":
-        return None, None
-
-    try:
-        raw = json.loads(tv)
-    except Exception:
-        return None, None
-
-    required = baseline * params["absorption_mult"]
-
-    if direction == "long":
-        wick_low  = float(bar["low"])
-        wick_high = min(float(bar["open"]), float(bar["close"]))
-    else:
-        wick_low  = max(float(bar["open"]), float(bar["close"]))
-        wick_high = float(bar["high"])
-
-    for price_str, (buy_qty, sell_qty) in raw.items():
-        price = float(price_str)
-        if not (wick_low <= price <= wick_high):
-            continue
-        volume_at_level = sell_qty if direction == "long" else buy_qty
-        if volume_at_level >= required:
-            return price, volume_at_level
-
-    return None, None
+        return l, min(o, c)
+    return max(o, c), h

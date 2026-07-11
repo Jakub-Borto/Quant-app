@@ -1,225 +1,169 @@
 """Two bar absorption entry: reversal pair merged into a synthetic candle + confirmation.
 
-The 2-bar-specific helpers (merge_tick_volume, build_two_bar_baseline) live here because this
-is their only consumer.
+The 2-bar-specific helpers (merge_tv, the strided pair-density baseline) live here because
+this is their only entry-side consumer (vwap_trailing_risk keeps its own copies per the
+risk-script convention).
 """
 
-import json
-import pandas as pd
+import numpy as np
+
+_NO_ENTRY = (None, None, None, None, None)
 
 
-def merge_tick_volume(tv1: str, tv2: str) -> str:
-    """Merge two tick_volume JSON strings by summing volumes at each price level."""
-    merged = {}
+def merge_tv(tv1, tv2) -> dict:
+    """Merge two pre-parsed tick_volume tuples into {price: [buy, sell]}, summing volumes.
+
+    Insertion order (bar1's levels, then bar2's unseen levels) matches the original
+    JSON-string merge, so a first-qualifying-level scan picks the same level.
+    """
+    merged: dict = {}
     for tv in (tv1, tv2):
-        if not tv or tv == "{}":
+        if tv is None:
             continue
-        try:
-            raw = json.loads(tv)
-        except Exception:
-            continue
-        for price_str, (buy_qty, sell_qty) in raw.items():
-            if price_str not in merged:
-                merged[price_str] = [0, 0]
-            merged[price_str][0] += buy_qty
-            merged[price_str][1] += sell_qty
-    return json.dumps({k: v for k, v in merged.items()})
+        prices, buys, sells = tv
+        pl, bl, sl_ = prices.tolist(), buys.tolist(), sells.tolist()
+        for k in range(len(pl)):
+            p = pl[k]
+            e = merged.get(p)
+            if e is None:
+                merged[p] = [bl[k], sl_[k]]
+            else:
+                e[0] += bl[k]
+                e[1] += sl_[k]
+    return merged
 
 
-def build_two_bar_baseline(pre_bars: pd.DataFrame, direction: str, params: dict) -> float:
-    """
-    Build baseline from merged 2-bar pairs ending at the last bar of pre_bars.
-    Window = absorption_window // 2 pairs. Anchored backwards from the pattern bars.
-    """
-    tick_size = params["tick_size"]
-    n_pairs   = params["absorption_baseline_window"] // 2
+def pair_densities(h, l, vol, tick_size: float) -> np.ndarray:
+    """density[j] of the merged pair (bars j, j+1): summed counter-volume / merged range in
+    ticks; NaN where the merged range is 0 (the original skipped those pairs)."""
+    vol_pair = vol[:-1] + vol[1:]
+    rng = (np.maximum(h[:-1], h[1:]) - np.minimum(l[:-1], l[1:])) / tick_size
+    with np.errstate(divide="ignore", invalid="ignore"):
+        d = vol_pair / rng
+    d[rng <= 0] = np.nan
+    return d
 
-    bars = pre_bars.iloc[::-1].reset_index(drop=True)
-    n    = len(bars)
-    densities = []
 
-    for k in range(n_pairs):
-        i1 = k * 2
-        i2 = k * 2 + 1
-        if i2 >= n:
-            break
-
-        bar1 = bars.iloc[i1]
-        bar2 = bars.iloc[i2]
-
-        merged_high  = max(float(bar1["high"]),  float(bar2["high"]))
-        merged_low   = min(float(bar1["low"]),   float(bar2["low"]))
-        merged_range = merged_high - merged_low
-        range_ticks  = merged_range / tick_size
-
-        if range_ticks <= 0:
-            continue
-
-        if direction == "long":
-            volume = float(bar1["sell_volume"]) + float(bar2["sell_volume"])
-        else:
-            volume = float(bar1["buy_volume"])  + float(bar2["buy_volume"])
-
-        densities.append(volume / range_ticks)
-
-    if not densities:
+def baseline_from_densities(dens: np.ndarray, i: int, n_pairs: int, lowest_j: int) -> float:
+    """Mean pair density anchored backwards from bar i: pairs (i-1,i-2), (i-3,i-4), ...
+    — i.e. dens[i-2], dens[i-4], ... down to j >= lowest_j, first n_pairs of them, NaN pairs
+    skipped. Summation order matches the original loop exactly."""
+    js   = np.arange(i - 2, lowest_j - 1, -2)[:n_pairs]
+    if js.size == 0:
         return float("nan")
+    vals = dens[js]
+    vals = vals[~np.isnan(vals)].tolist()
+    if not vals:
+        return float("nan")
+    return sum(vals) / len(vals)
 
-    return sum(densities) / len(densities)
 
-
-def find_entry(
-    post_retest:            pd.DataFrame,
-    direction:              str,
-    ivb_high:               float,
-    ivb_low:                float,
-    poc:                    float,
-    vah:                    float,
-    val:                    float,
-    sell_baseline:          pd.Series,
-    buy_baseline:           pd.Series,
-    passive_baseline_long:  pd.Series,
-    passive_baseline_short: pd.Series,
-    cvd_series:             pd.Series,
-    cvd_change_std:         pd.Series,
-    params:                 dict,
-) -> tuple:
+def find_entry(win, params: dict) -> tuple:
     """
     Pattern (long bias):
       - Bar i:   bearish, small bottom wick (<= two_bar_wick_ticks)
       - Bar i+1: bullish, small bottom wick (<= two_bar_wick_ticks), just positive delta
 
-    Pattern (short bias):
-      - Bar i:   bullish, small upper wick (<= two_bar_wick_ticks)
-      - Bar i+1: bearish, small upper wick (<= two_bar_wick_ticks), just negative delta
+    Pattern (short bias): mirrored.
 
-    Merges both bars, checks absorption in defended wick against 2-bar paired baseline.
-    Then scans from bar i+1 (inclusive) for a confirmation candle:
-    correct direction + body_threshold + delta_threshold.
-    Enters on open of the bar after the confirmation candle.
+    Merges both bars, checks absorption in the defended wick against the 2-bar paired
+    baseline (pairs anchored backwards from the pattern, breakout bar excluded), then scans
+    from bar i+1 (inclusive) for a confirmation candle. Enters on the open of the bar after
+    the confirmation candle.
 
-    Returns (entry_ts, entry_price, invalidation_ts, entry_notes, trade_type).
+    Returns (entry_rel, entry_price, invalidation_rel, entry_notes, trade_type).
     """
-    if post_retest.empty:
-        return None, None, None, None, None
+    n = win.n
+    if n == 0:
+        return _NO_ENTRY
 
-    if direction == "long":
-        invalid_whole = post_retest["close"] < val
+    inv       = win.invalid
+    first_inv = win.first_inv
+    if first_inv == 0:                   # breakout bar: invalidation only
+        return None, None, 0, None, None
+
+    o, h, l, c = win.o, win.h, win.l, win.c
+    vdp        = win.vdp
+    long_      = win.direction == "long"
+    tick_size  = params["tick_size"]
+    max_wick   = params["two_bar_wick_ticks"] * tick_size
+    req_mult   = params["two_bar_abs_mult"]
+    confirm    = win.confirm_dir
+    K          = params["entry_after_absorption"]
+    n_pairs    = params["absorption_baseline_window"] // 2
+
+    # vectorized bar1/bar2 pattern masks; pair candidate at i = bars (i, i+1)
+    if long_:
+        wick = np.minimum(o, c) - l
+        bar1_ok = (c < o) & (wick <= max_wick)
+        bar2_ok = (c > o) & (wick <= max_wick) & (vdp > 0)
     else:
-        invalid_whole = post_retest["close"] > vah
+        wick = h - np.maximum(o, c)
+        bar1_ok = (c > o) & (wick <= max_wick)
+        bar2_ok = (c < o) & (wick <= max_wick) & (vdp < 0)
+    pair = bar1_ok[:-1] & bar2_ok[1:]
 
-    n             = len(post_retest)
-    tick_size     = params["tick_size"]
-    max_wick      = params["two_bar_wick_ticks"] * tick_size
-    required_mult = params["two_bar_abs_mult"]
+    # the original returns invalidation at pair index i when EITHER bar of the pair is
+    # invalid — note the reported bar is i even when the invalid bar is i+1
+    if n >= 3:
+        pinv = inv[1 : n - 1] | inv[2:n]
+        fi2  = 1 + int(pinv.argmax()) if pinv.any() else n
+    else:
+        fi2 = n
 
-    # breakout bar (index 0): invalidation only
-    if invalid_whole.iloc[0]:
-        return None, None, post_retest.index[0], None, None
+    dens = None                          # lazy: only built when a pattern candidate exists
 
-    for i in range(1, n - 1):
-        bar1 = post_retest.iloc[i]
-        bar2 = post_retest.iloc[i + 1]
-        ts1  = post_retest.index[i]
-        ts2  = post_retest.index[i + 1]
-
-        if invalid_whole.iloc[i] or invalid_whole.iloc[i + 1]:
-            return None, None, post_retest.index[i], None, None
-
-        # --- bar1: direction + small wick ---
-        open1  = float(bar1["open"])
-        close1 = float(bar1["close"])
-        high1  = float(bar1["high"])
-        low1   = float(bar1["low"])
-
-        if direction == "long":
-            if close1 >= open1:
-                continue
-            wick1 = min(open1, close1) - low1
-        else:
-            if close1 <= open1:
-                continue
-            wick1 = high1 - max(open1, close1)
-
-        if wick1 > max_wick:
+    for i in map(int, np.flatnonzero(pair)):
+        if i == 0:                       # breakout bar can never start the pair
             continue
-
-        # --- bar2: direction + small wick + just positive/negative delta ---
-        open2  = float(bar2["open"])
-        close2 = float(bar2["close"])
-        high2  = float(bar2["high"])
-        low2   = float(bar2["low"])
-
-        if direction == "long":
-            if close2 <= open2:
-                continue
-            wick2    = min(open2, close2) - low2
-            delta_ok = float(bar2["volume_delta_pct"]) > 0
-        else:
-            if close2 >= open2:
-                continue
-            wick2    = high2 - max(open2, close2)
-            delta_ok = float(bar2["volume_delta_pct"]) < 0
-
-        if wick2 > max_wick:
-            continue
-        if not delta_ok:
-            continue
-
-        # --- build merged synthetic candle ---
-        merged_open  = open1
-        merged_high  = max(high1, high2)
-        merged_low   = min(low1,  low2)
-        merged_close = close2
-        merged_tv    = merge_tick_volume(
-            bar1.get("tick_volume", "{}"),
-            bar2.get("tick_volume", "{}"),
-        )
+        if i >= fi2:
+            return None, None, fi2, None, None
 
         # --- 2-bar baseline from bars before bar i (excludes breakout bar at index 0) ---
-        pre_bars = post_retest.iloc[1:i]
-        baseline = build_two_bar_baseline(pre_bars, direction, params)
+        if dens is None:
+            vol  = win.day.sell_vol[win.pos] if long_ else win.day.buy_vol[win.pos]
+            dens = pair_densities(h, l, vol, tick_size)
+        baseline = baseline_from_densities(dens, i, n_pairs, lowest_j=1)
 
-        if pd.isna(baseline) or baseline <= 0:
+        if np.isnan(baseline) or baseline <= 0:
             continue
 
-        required = baseline * required_mult
+        required = baseline * req_mult
+
+        # --- build merged synthetic candle ---
+        merged_open  = float(o[i])
+        merged_high  = float(max(h[i], h[i + 1]))
+        merged_low   = float(min(l[i], l[i + 1]))
+        merged_close = float(c[i + 1])
 
         # --- absorption in defended wick of merged candle ---
-        if direction == "long":
-            body_bottom = min(merged_open, merged_close)
-            wick_low    = merged_low
-            wick_high   = body_bottom
+        if long_:
+            wick_low  = merged_low
+            wick_high = min(merged_open, merged_close)
         else:
-            body_top  = max(merged_open, merged_close)
-            wick_low  = body_top
+            wick_low  = max(merged_open, merged_close)
             wick_high = merged_high
 
         if wick_high <= wick_low:
             continue
 
         # absorption must register in the defended half of the full merged candle
-        # (long: lower 50%, short: upper 50%), measured high->low
         mid_price = (merged_low + merged_high) / 2.0
 
-        try:
-            raw_tv = json.loads(merged_tv)
-        except Exception:
-            continue
+        merged = merge_tv(win.tv[i], win.tv[i + 1])
 
         absorbed       = False
         trigger_price  = None
         trigger_volume = None
 
-        for price_str, (buy_qty, sell_qty) in raw_tv.items():
-            price = float(price_str)
+        for price, (buy_qty, sell_qty) in merged.items():
             if not (wick_low <= price <= wick_high):
                 continue
-            if direction == "long" and price > mid_price:
+            if long_ and price > mid_price:
                 continue
-            if direction == "short" and price < mid_price:
+            if (not long_) and price < mid_price:
                 continue
-            volume_at_level = sell_qty if direction == "long" else buy_qty
+            volume_at_level = sell_qty if long_ else buy_qty
             if volume_at_level >= required:
                 absorbed       = True
                 trigger_price  = price
@@ -230,53 +174,28 @@ def find_entry(
             continue
 
         # --- confirmation candle scan starting from bar2 (inclusive) ---
-        conf_scan_end = min(i + 1 + params["entry_after_absorption"], n)
+        conf_scan_end = min(i + 1 + K, n)
         for j in range(i + 1, conf_scan_end):
-            conf_bar   = post_retest.iloc[j]
-            conf_open  = float(conf_bar["open"])
-            conf_close = float(conf_bar["close"])
-            conf_high  = float(conf_bar["high"])
-            conf_low   = float(conf_bar["low"])
-            bar_range  = conf_high - conf_low
-
-            if invalid_whole.iloc[j]:
-                return None, None, post_retest.index[j], None, None
-
-            if bar_range <= 0:
+            if j >= first_inv:
+                return None, None, first_inv, None, None
+            if not confirm[j]:
                 continue
 
-            if direction == "long":
-                if conf_close <= conf_open:
-                    continue
-                delta_ok = float(conf_bar["volume_delta_pct"]) >= params["delta_threshold"]
-            else:
-                if conf_close >= conf_open:
-                    continue
-                delta_ok = float(conf_bar["volume_delta_pct"]) <= -params["delta_threshold"]
-
-            body    = abs(conf_close - conf_open)
-            body_ok = (body / bar_range) >= params["body_threshold"]
-
-            if not (body_ok and delta_ok):
-                continue
-
-            entry_bar_idx = j + 1
-            if entry_bar_idx >= n:
-                return None, None, None, None, None
-
-            if invalid_whole.iloc[entry_bar_idx]:
-                return None, None, post_retest.index[entry_bar_idx], None, None
-
-            entry_ts    = post_retest.index[entry_bar_idx]
-            entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
+            entry_rel = j + 1
+            if entry_rel >= n:
+                return _NO_ENTRY
+            if entry_rel >= first_inv:
+                return None, None, entry_rel, None, None
 
             entry_notes = {
-                "absorption_time":  [ts1.strftime("%H:%M"), ts2.strftime("%H:%M")],
+                "absorption_time":  [win.ts(i).strftime("%H:%M"),
+                                     win.ts(i + 1).strftime("%H:%M")],
                 "two_bar_baseline": round(baseline, 2),
                 "trigger_price":    trigger_price,
                 "trigger_volume":   trigger_volume,
             }
+            return entry_rel, float(o[entry_rel]), None, entry_notes, "two_bar_absorption"
 
-            return entry_ts, entry_price, None, entry_notes, "two_bar_absorption"
-
-    return None, None, None, None, None
+    if fi2 < n:
+        return None, None, fi2, None, None
+    return _NO_ENTRY

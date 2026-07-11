@@ -1,15 +1,12 @@
 """IVB volume profile computation (peak-based POC / VAH / VAL)."""
 
-import json
-import pandas as pd
 
-
-def compute_ivb_profile(ib_bars: pd.DataFrame) -> tuple:
+def compute_ivb_profile(day, ib_end: int) -> tuple:
     """
-    Compute POC, VAH, VAL from tick_volume within the IB bars.
+    Compute POC, VAH, VAL from tick_volume within the IB bars (day positions [0, ib_end)).
 
     Algorithm:
-      1. Build raw volume-at-price dict from tick_volume JSON.
+      1. Build raw volume-at-price dict from the pre-parsed tick_volume arrays.
       2. Smooth with a 3-tick rolling average to remove single-tick spikes.
       3. Find local maxima (smoothed[i] > smoothed[i-1] and smoothed[i] > smoothed[i+1]).
       4. Cluster peaks within 4 ticks of each other — keep only the highest per cluster.
@@ -20,23 +17,26 @@ def compute_ivb_profile(ib_bars: pd.DataFrame) -> tuple:
       8. Return (poc, vah, val) for the winning candidate.
 
     Falls back to simple max-volume POC if fewer than 3 price levels exist.
+
+    The dict accumulation iterates bars then levels in document order (python ints), so
+    values, insertion order and the rare tie-breaks stay identical to the JSON-loop original;
+    only the repeated json.loads is gone. The peak / VA-expansion logic is O(#levels) and
+    FP-order sensitive, so it is kept as-is.
     """
     levels = {}
 
-    for _, row in ib_bars.iterrows():
-        tv = row["tick_volume"]
-        if not tv or tv == "{}":
+    tick_volume = day.tick_volume
+    for i in range(ib_end):
+        tv = tick_volume[i]
+        if tv is None:
             continue
-        try:
-            raw = json.loads(tv)
-        except Exception:
-            continue
-        for price_str, (buy_qty, sell_qty) in raw.items():
-            price = float(price_str)
-            total = buy_qty + sell_qty
-            if price not in levels:
-                levels[price] = 0
-            levels[price] += total
+        prices, buys, sells = tv
+        totals = buys + sells
+        for price, total in zip(prices.tolist(), totals.tolist()):
+            if price in levels:
+                levels[price] += total
+            else:
+                levels[price] = total
 
     if not levels:
         return None, None, None

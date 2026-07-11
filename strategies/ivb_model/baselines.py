@@ -1,90 +1,84 @@
-"""Day-level rolling baselines for absorption / passive / CVD-change grading."""
+"""Day-level rolling baselines for absorption / passive / CVD-change grading.
 
-import json
+All three builders now take the DayData context plus `valid_pos` (positions of the bars at or
+after the warm-up start = session_start + BASELINE_WARMUP_MINUTES) and return full-length
+numpy arrays positionally aligned to the
+RTH session (NaN outside the warm window / during rolling warmup). The pandas rolling
+mean/std pipelines are kept verbatim so the float results stay bit-identical to the original
+Series versions — only the per-row JSON parsing / .apply overhead is gone (the passive
+per-bar max sizes are computed once in DayData for both directions).
+"""
+
+import numpy as np
 import pandas as pd
-from datetime import time
 
-# Skip the first 5 minutes of RTH before baselining — the 09:30 open bar(s) are abnormally heavy
-# and would distort the rolling volume-per-tick averages. Shared by all baselines below.
-BASELINE_WARMUP_START = time(9, 35)
+# Skip the first 5 minutes of the session before baselining — the opening bar(s) are abnormally
+# heavy and would distort the rolling volume-per-tick averages. Shared by all baselines below;
+# the absolute warm-up start is session_start + this offset (core passes `valid_pos` in).
+BASELINE_WARMUP_MINUTES = 5
 
 
-def build_rolling_baseline(rth_session: pd.DataFrame, params: dict):
+def build_rolling_baseline(day, valid_pos: np.ndarray, params: dict):
     """Volume-per-tick rolling baseline for absorption detection.
 
-    Returns (sell_baseline, buy_baseline), each a Series reindexed to rth_session.
+    Returns (sell_baseline, buy_baseline) arrays aligned to the session.
     """
     tick_size = params["tick_size"]
     window    = params["absorption_baseline_window"]
 
-    valid = rth_session[rth_session.index.time >= BASELINE_WARMUP_START].copy()
+    h = day.high[valid_pos]
+    l = day.low[valid_pos]
+    range_ticks = (h - l) / tick_size
+    range_ticks[range_ticks == 0] = np.nan
 
-    range_ticks = ((valid["high"] - valid["low"]) / tick_size).replace(0, float("nan"))
+    sell_rolled = (
+        pd.Series(day.sell_vol[valid_pos] / range_ticks)
+        .rolling(window, min_periods=window).mean().to_numpy()
+    )
+    buy_rolled = (
+        pd.Series(day.buy_vol[valid_pos] / range_ticks)
+        .rolling(window, min_periods=window).mean().to_numpy()
+    )
 
-    valid["_sell_per_tick"] = valid["sell_volume"] / range_ticks
-    valid["_buy_per_tick"]  = valid["buy_volume"]  / range_ticks
-
-    sell_baseline = valid["_sell_per_tick"].rolling(window, min_periods=window).mean()
-    buy_baseline  = valid["_buy_per_tick"].rolling(window, min_periods=window).mean()
-
-    sell_baseline = sell_baseline.reindex(rth_session.index)
-    buy_baseline  = buy_baseline.reindex(rth_session.index)
-
+    sell_baseline = np.full(day.n, np.nan)
+    buy_baseline  = np.full(day.n, np.nan)
+    sell_baseline[valid_pos] = sell_rolled
+    buy_baseline[valid_pos]  = buy_rolled
     return sell_baseline, buy_baseline
 
 
-def build_passive_baseline(rth_session: pd.DataFrame, direction: str, params: dict) -> pd.Series:
-    """
-    Rolling baseline of the max raw resting size on the defended side per bar.
-    Long: passive buy orders below candle open.
-    Short: passive sell orders above candle open.
-    Only bars with valid passive data on the defended side contribute to the window.
-    """
-    window = params["absorption_baseline_window"]
+def build_passive_baseline(day, valid_pos: np.ndarray, direction: str, params: dict) -> np.ndarray:
+    """Rolling baseline of the max raw resting size on the defended side per bar.
 
-    valid = rth_session[rth_session.index.time >= BASELINE_WARMUP_START].copy()
-
-    def max_order_size(row):
-        po = row.get("passive_orders", None)
-        if not po or po == "{}":
-            return float("nan")
-        try:
-            raw = json.loads(po)
-        except Exception:
-            return float("nan")
-
-        bar_open = float(row["open"])
-        best     = float("nan")
-
-        for price_str, (size, count) in raw.items():
-            if count <= 0:
-                continue
-            price = float(price_str)
-            if direction == "long" and price >= bar_open:
-                continue
-            if direction == "short" and price <= bar_open:
-                continue
-            if pd.isna(best) or size > best:
-                best = size
-
-        return best
-
-    per_bar = valid.apply(max_order_size, axis=1)
-    sparse  = per_bar.dropna()
-    rolling = sparse.rolling(window, min_periods=window).mean()
-    return rolling.reindex(rth_session.index)
-
-
-def build_cvd_change_baseline(cumulative_delta: pd.Series, params: dict) -> pd.Series:
-    """Rolling std of bar-to-bar CVD changes, reindexed to the session index.
-
-    `cumulative_delta` must already be aligned to rth_session.index. Mirrors the other
-    baselines: filter to >= BASELINE_WARMUP_START, rolling(window, min_periods=window),
-    NaN during warmup.
+    Long: passive buy orders below candle open. Short: passive sell orders above candle open.
+    Only bars with valid passive data on the defended side contribute to the window (the
+    rolling window slides over the SPARSE sequence of bars-with-data, as before).
     """
     window = params["absorption_baseline_window"]
 
-    valid = cumulative_delta[cumulative_delta.index.time >= BASELINE_WARMUP_START]
-    std   = valid.diff().rolling(window, min_periods=window).std()
+    best  = day.best_passive_long if direction == "long" else day.best_passive_short
+    vals  = best[valid_pos]
+    notna = ~np.isnan(vals)
 
-    return std.reindex(cumulative_delta.index)
+    rolled = (
+        pd.Series(vals[notna])
+        .rolling(window, min_periods=window).mean().to_numpy()
+    )
+
+    out = np.full(day.n, np.nan)
+    out[valid_pos[notna]] = rolled
+    return out
+
+
+def build_cvd_change_baseline(day, valid_pos: np.ndarray, params: dict) -> np.ndarray:
+    """Rolling std of bar-to-bar CVD changes, aligned to the session (NaN during warmup)."""
+    window = params["absorption_baseline_window"]
+
+    std = (
+        pd.Series(day.cvd[valid_pos])
+        .diff().rolling(window, min_periods=window).std().to_numpy()
+    )
+
+    out = np.full(day.n, np.nan)
+    out[valid_pos] = std
+    return out

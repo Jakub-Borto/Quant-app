@@ -1,5 +1,5 @@
 """
-IVB Model 2 — modular package.
+IVB Model 2 — modular package (vectorized).
 
 The backtester loads this package via __init__.py and expects:
   - run(folder_path, start_date, end_date, params) -> pd.DataFrame
@@ -7,19 +7,84 @@ The backtester loads this package via __init__.py and expects:
 
 Internal layout:
   params.py      PARAMS, PARAM_SECTIONS, OUTPUT_COLUMNS
+  _timing.py     accumulating stage timers (one report printed per run)
+  _daydata.py    per-day numpy context: parsed JSON + positional windows/masks
   profile.py     compute_ivb_profile
   baselines.py   rolling / passive / cvd-change day-level baselines
-  absorption.py  shared absorption grading + trigger extraction
+  absorption.py  shared absorption level scan on pre-parsed tick_volume
   entries/       one module per entry type (7), registered in FINDER_REGISTRY
   risk/          self-contained risk scripts in RISK_REGISTRY (selected by risk_script)
   core.py        breakout/retest detection, entry dispatcher, process_day
 """
 
+import sys
+import time
+import types
+from collections import deque, OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pandas as pd
 
-from .params import PARAMS, PARAM_SECTIONS, OUTPUT_COLUMNS
-from .core   import process_day
+from .params  import PARAMS, PARAM_SECTIONS, OUTPUT_COLUMNS
+from .core    import process_day, build_day_core, session_start_minutes, VWAP_BAND_COLUMNS
+from . import _timing
+from ._timing import timed
+
+
+# ---------------------------------------------------------------------------
+# In-memory day-core cache (persists across run() calls in the same process)
+# ---------------------------------------------------------------------------
+# A DayData depends only on the files and the resolved session_start (see _daydata), so
+# re-running the backtester with different params — the normal research loop — skips file
+# reads, JSON parsing and array building entirely. Keyed by (path, mtime_ns, size) of BOTH
+# the candle and indicator file PLUS the session-start minute, so re-running a transform or
+# changing session_start invalidates naturally. LRU-capped in days (a fully parsed enriched
+# ES day is ~0.3 MB, so the default cap is a ~200 MB ceiling).
+#
+# The backtester's plugin loader RE-EXECUTES this __init__ on every backtest run
+# (spec_from_file_location + exec_module), which would wipe a plain module-level dict. The
+# dict therefore lives on a tiny holder module registered once in sys.modules — that survives
+# for the lifetime of the Python process, however many times the package is re-loaded.
+_STORE_NAME = "_ivb_day_cache_store"
+_store = sys.modules.get(_STORE_NAME)
+if _store is None:
+    _store = types.ModuleType(_STORE_NAME)
+    _store.cache = OrderedDict()
+    sys.modules[_STORE_NAME] = _store
+_DAY_CACHE: OrderedDict = _store.cache
+_DAY_CACHE_MAX_DAYS = 600
+_MISS = object()
+
+
+# only these candle columns are consumed (see CLAUDE.md) — `volume` / `volume_delta` are not
+CANDLE_COLUMNS = [
+    "open", "high", "low", "close",
+    "buy_volume", "sell_volume", "volume_delta_pct",
+    "tick_volume", "passive_orders",
+]
+
+# indicators: CVD + the 8 tick-vwap ±2σ/±3σ band columns (of ~32 in the file)
+INDICATOR_COLUMNS = ["cumulative_delta"] + VWAP_BAND_COLUMNS
+
+
+def _read_candles(f: Path) -> pd.DataFrame:
+    """Column-pruned read; falls back to a full read for files missing any of the columns."""
+    try:
+        return pd.read_parquet(f, columns=CANDLE_COLUMNS)
+    except Exception:
+        return pd.read_parquet(f)
+
+
+def _read_indicators(f: Path):
+    """Column-pruned read with full-read fallback; any problem => None (day runs without
+    indicators, exactly as before)."""
+    try:
+        return pd.read_parquet(f, columns=INDICATOR_COLUMNS)
+    except Exception:
+        try:
+            return pd.read_parquet(f)
+        except Exception:
+            return None
 
 
 def run(
@@ -28,6 +93,9 @@ def run(
     end_date:    pd.Timestamp,
     params:      dict | None = None,
 ) -> pd.DataFrame:
+    t0 = time.perf_counter()
+    _timing.reset()
+
     merged_params = {**PARAMS, **(params or {})}
 
     folder_path = Path(folder_path)
@@ -48,13 +116,25 @@ def run(
     ind_folder_name   = merged_params.get("indicators_folder", "")
     indicators_folder = folder_path.parent / ind_folder_name if ind_folder_name else None
 
-    trades = []
-    for f in files:
-        session = pd.read_parquet(f)
-        if session.empty:
-            continue
-        if session.index.tz is None:
-            continue
+    # the RTH slice (and with it the whole day core) is anchored at session_start, so the
+    # resolved minute is part of the cache identity — different session starts cache separately
+    start_min = session_start_minutes(merged_params)
+
+    def _key(f: Path):
+        """Cache identity of a day: candle file + its indicator sibling (or None) + session start."""
+        st = f.stat()
+        ind_id = None
+        if indicators_folder is not None:
+            ind_file = indicators_folder / f.name
+            if ind_file.exists():
+                ist    = ind_file.stat()
+                ind_id = (str(ind_file), ist.st_mtime_ns, ist.st_size)
+        return (str(f), st.st_mtime_ns, st.st_size, ind_id, start_min)
+
+    def _load(f: Path):
+        """Read one day's candles + indicators (runs on a prefetch thread)."""
+        with timed("io:read_candles"):
+            session = _read_candles(f)
 
         # per-day indicators: matching YYYY-MM-DD.parquet in the indicators folder. Any problem
         # (no folder, missing file, bad read) => None => CVD entries + vwap risk disable this day.
@@ -62,20 +142,70 @@ def run(
         if indicators_folder is not None:
             ind_file = indicators_folder / f.name
             if ind_file.exists():
-                try:
-                    ind_df = pd.read_parquet(ind_file)
-                except Exception:
-                    ind_df = None
+                with timed("io:read_indicators"):
+                    ind_df = _read_indicators(ind_file)
+        return session, ind_df
 
-        trade = process_day(session, merged_params, ind_df)
-        if trade is not None:
-            trade["date"] = pd.Timestamp(f.stem).date()
-            trades.append(trade)
+    def _submit(f: Path, executor):
+        """Cache lookup at prefetch time; only misses hit the reader thread."""
+        key  = _key(f)
+        core = _DAY_CACHE.get(key, _MISS)
+        if core is not _MISS:
+            _DAY_CACHE.move_to_end(key)
+            return (f, key, core, None)
+        return (f, key, _MISS, executor.submit(_load, f))
+
+    # sliding-window prefetch: the next few days' parquet reads overlap the current day's
+    # compute (pyarrow releases the GIL). Days are still consumed strictly in file order,
+    # so the output is identical to the sequential loop.
+    PREFETCH = 4
+    trades = []
+    hits = misses = 0
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        queue: deque = deque()
+        file_iter = iter(files)
+        for f in file_iter:
+            queue.append(_submit(f, executor))
+            if len(queue) >= PREFETCH:
+                break
+
+        while queue:
+            f, key, core, fut = queue.popleft()
+            nxt = next(file_iter, None)
+            if nxt is not None:
+                queue.append(_submit(nxt, executor))
+
+            if core is _MISS:
+                misses += 1
+                with timed("io:stall"):
+                    session, ind_df = fut.result()
+                with timed("day:build_core"):
+                    core = build_day_core(session, ind_df, start_min)
+                _DAY_CACHE[key] = core
+                while len(_DAY_CACHE) > _DAY_CACHE_MAX_DAYS:
+                    _DAY_CACHE.popitem(last=False)
+            else:
+                hits += 1
+
+            if core is None:            # unusable day (empty / tz-naive)
+                continue
+
+            with timed("day:process_day"):
+                trade = process_day(core, merged_params)
+            if trade is not None:
+                trade["date"] = pd.Timestamp(f.stem).date()
+                trades.append(trade)
+
+    print(f"[ivb cache] day-cores: {hits} from memory, {misses} built, "
+          f"{len(_DAY_CACHE)} cached", flush=True)
 
     if not trades:
-        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+        result = pd.DataFrame(columns=OUTPUT_COLUMNS)
+    else:
+        result = pd.DataFrame(trades)[OUTPUT_COLUMNS]
 
-    return pd.DataFrame(trades)[OUTPUT_COLUMNS]
+    _timing.report(time.perf_counter() - t0)
+    return result
 
 
 __all__ = ["run", "PARAMS", "PARAM_SECTIONS"]

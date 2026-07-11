@@ -10,182 +10,115 @@ read as exhaustion: price DID extend to a new extreme, but CVD COULDN'T follow.
     CVD at the 2nd low is *higher* — price made a lower low on less net selling =>
     sellers exhausted => long.
 
-Pivots use a left-side k-bar fractal, confirmed fast by a single reversal candle (no waiting k
-bars on the right). The divergence between the two most-recent confirmed pivots is graded with a
-z-score that normalises the CVD difference by the session's own CVD-change volatility. A confirmed
-3rd pivot supersedes a pending setup (rolls the sliding pair forward).
+Pivot machinery is identical to the absorption flavour but deliberately kept independent
+(its own copy, its own cvd_exh_* params). Disables itself when CVD is absent.
 
-CVD is supplied (already reindexed to the session) via `cvd_series`; its rolling change-std via
-`cvd_change_std`. Both are None when no indicators were loaded for the day => this finder disables
-itself and returns all-None, never blocking the other finders.
-
-Returns (entry_ts, entry_price, invalidation_ts, entry_notes, trade_type).
+Returns (entry_rel, entry_price, invalidation_rel, entry_notes, trade_type).
 """
 
-import pandas as pd
+import numpy as np
+
+from .._daydata import prev_rolling_max, prev_rolling_min
+
+_NO_ENTRY = (None, None, None, None, None)
 
 
-def _test_divergence(p1: dict, p2: dict, direction: str, params: dict, cvd_change_std: pd.Series):
-    """Grade the (P1 older, P2 newer) pivot pair. Returns a setup dict or None."""
-    # separation: too close => not a pair yet; too far => P1 is stale, drop it
-    sep = p2["idx"] - p1["idx"]
-    if sep < params["cvd_exh_min_separation"] or sep > params["cvd_exh_max_separation"]:
-        return None
-
-    # price condition (higher/equal high, or lower/equal low) with a small wick tolerance —
-    # price DID extend (this is the opposite inequality to absorption)
-    tol = params["cvd_exh_wick_tolerance_ticks"] * params["tick_size"]
-    if direction == "short":
-        if not (p2["price"] >= p1["price"] - tol):       # higher/equal high
-            return None
-    else:
-        if not (p2["price"] <= p1["price"] + tol):       # lower/equal low
-            return None
-
-    # z-score: normalise the CVD difference by the session's CVD-change volatility at P2
-    std = cvd_change_std.get(p2["ts"], float("nan"))
-    if pd.isna(std) or std <= 0:
-        return None
-
-    score = (p2["cvd"] - p1["cvd"]) / std
-    if direction == "short":
-        if not (score <= -params["cvd_exh_min_score"]):  # CVD fell into a higher/equal high
-            return None
-    else:
-        if not (score >= params["cvd_exh_min_score"]):   # CVD rose into a lower/equal low
-            return None
-
-    return {"p1": p1, "p2": p2, "score": score, "std": std}
-
-
-def _is_entry_candle(bar: pd.Series, direction: str, params: dict) -> bool:
-    """Confirmation/entry candle: correct direction + body_threshold + delta_threshold."""
-    bar_range = float(bar["high"]) - float(bar["low"])
-    if bar_range <= 0:
-        return False
-
-    body = abs(float(bar["close"]) - float(bar["open"]))
-    if (body / bar_range) < params["body_threshold"]:
-        return False
-
-    if direction == "long":
-        if float(bar["close"]) <= float(bar["open"]):
-            return False
-        return float(bar["volume_delta_pct"]) >= params["delta_threshold"]
-    else:
-        if float(bar["close"]) >= float(bar["open"]):
-            return False
-        return float(bar["volume_delta_pct"]) <= -params["delta_threshold"]
-
-
-def find_entry(
-    post_retest:            pd.DataFrame,
-    direction:              str,
-    ivb_high:               float,
-    ivb_low:                float,
-    poc:                    float,
-    vah:                    float,
-    val:                    float,
-    sell_baseline:          pd.Series,
-    buy_baseline:           pd.Series,
-    passive_baseline_long:  pd.Series,
-    passive_baseline_short: pd.Series,
-    cvd_series:             pd.Series,
-    cvd_change_std:         pd.Series,
-    params:                 dict,
-) -> tuple:
+def find_entry(win, params: dict) -> tuple:
+    day = win.day
     # fail-safe: no CVD for this day (or empty window) => finder disabled
-    if cvd_series is None or cvd_change_std is None or post_retest.empty:
-        return None, None, None, None, None
+    if day.cvd is None or day.cvd_std is None or win.n == 0:
+        return _NO_ENTRY
 
-    if direction == "long":
-        invalid_whole = post_retest["close"] < val
-    else:
-        invalid_whole = post_retest["close"] > vah
+    n = win.n
+    first_inv = win.first_inv
+    if first_inv == 0:                   # breakout bar: invalidation only, never a pivot
+        return None, None, 0, None, None
 
-    n = len(post_retest)
-
-    # breakout bar (index 0): invalidation only, never a pivot
-    if invalid_whole.iloc[0]:
-        return None, None, post_retest.index[0], None, None
+    o, h, l, c = win.o, win.h, win.l, win.c
+    long_ = win.direction == "long"
 
     # --- stage 1: vectorized candidate pivots (left-side k-bar fractal) ---
     k = params["cvd_exh_pivot_k"]
-    prev_high_max = post_retest["high"].rolling(k).max().shift(1)
-    prev_low_min  = post_retest["low"].rolling(k).min().shift(1)
-    cand_high = (post_retest["high"] > prev_high_max).values   # strictly > each of prev k highs
-    cand_low  = (post_retest["low"]  < prev_low_min).values    # strictly < each of prev k lows
-    bearish   = (post_retest["close"] < post_retest["open"]).values
-    bullish   = (post_retest["close"] > post_retest["open"]).values
+    if long_:
+        cand_piv    = l < prev_rolling_min(l, k)     # strictly < each of prev k lows
+        conf_candle = c > o
+    else:
+        cand_piv    = h > prev_rolling_max(h, k)     # strictly > each of prev k highs
+        conf_candle = c < o
+
+    cvd     = day.cvd
+    cvd_std = day.cvd_std
+    pos     = win.pos
+    confirm = win.confirm_dir
+    K        = params["entry_after_absorption"]
+    tol      = params["cvd_exh_wick_tolerance_ticks"] * params["tick_size"]
+    min_sep  = params["cvd_exh_min_separation"]
+    max_sep  = params["cvd_exh_max_separation"]
+    min_score = params["cvd_exh_min_score"]
 
     # --- stage 2: forward scan maintaining the last-two confirmed pivots + active setup ---
-    pivots: list[dict] = []
-    active: dict | None = None
+    pivots: list[tuple] = []             # (idx, price, cvd)
+    active = None                        # (p1, p2, score, std, conf_idx)
 
     for i in range(1, n):
-        ts = post_retest.index[i]
-
         # invalidation first
-        if invalid_whole.iloc[i]:
-            return None, None, ts, None, None
+        if i == first_inv:
+            return None, None, i, None, None
 
-        # new confirmed pivot? candidate bar p = i-1, confirmed by the reversal candle at i
-        if direction == "short":
-            new_pivot = cand_high[i - 1] and bearish[i]
-        else:
-            new_pivot = cand_low[i - 1] and bullish[i]
-
-        if new_pivot:
-            # the true swing extreme is the more-extreme of the candidate bar (i-1) and its
-            # confirming candle (i): the higher high (short) / lower low (long) — the confirming
-            # candle can wick past the candidate before reversing. Ties go to the candidate.
-            if direction == "short":
-                pivot_idx = i - 1 if float(post_retest.iloc[i - 1]["high"]) >= float(post_retest.iloc[i]["high"]) else i
-                pivot_price = float(post_retest.iloc[pivot_idx]["high"])
+        # new confirmed pivot? candidate bar = i-1, confirmed by the reversal candle at i
+        if cand_piv[i - 1] and conf_candle[i]:
+            if long_:
+                pivot_idx   = i - 1 if l[i - 1] <= l[i] else i
+                pivot_price = float(l[pivot_idx])
             else:
-                pivot_idx = i - 1 if float(post_retest.iloc[i - 1]["low"]) <= float(post_retest.iloc[i]["low"]) else i
-                pivot_price = float(post_retest.iloc[pivot_idx]["low"])
+                pivot_idx   = i - 1 if h[i - 1] >= h[i] else i
+                pivot_price = float(h[pivot_idx])
 
-            pivot_ts  = post_retest.index[pivot_idx]
-            pivot_cvd = cvd_series.get(pivot_ts, float("nan"))
-            if not pd.isna(pivot_cvd):
-                pivots.append({"idx": pivot_idx, "ts": pivot_ts, "price": pivot_price, "cvd": pivot_cvd})
+            pivot_cvd = cvd[pos[pivot_idx]]
+            if not np.isnan(pivot_cvd):
+                pivots.append((pivot_idx, pivot_price, pivot_cvd))
 
                 # a new confirmed pivot supersedes any pending setup; roll the pair forward
                 active = None
                 if len(pivots) >= 2:
-                    setup = _test_divergence(pivots[-2], pivots[-1], direction, params, cvd_change_std)
-                    if setup is not None:
-                        # entry scan starts at this confirmation candle (inclusive)
-                        setup["conf_idx"] = i
-                        active = setup
+                    p1, p2 = pivots[-2], pivots[-1]
+                    sep = p2[0] - p1[0]
+                    if min_sep <= sep <= max_sep:
+                        # price DID extend: higher/equal high (short) / lower/equal low (long)
+                        price_ok = (p2[1] <= p1[1] + tol) if long_ else (p2[1] >= p1[1] - tol)
+                        if price_ok:
+                            std = cvd_std[pos[p2[0]]]
+                            if not np.isnan(std) and std > 0:
+                                score = (p2[2] - p1[2]) / std
+                                # CVD fell into a higher/equal high (short) /
+                                # rose into a lower/equal low (long)
+                                score_ok = (score >= min_score) if long_ else (score <= -min_score)
+                                if score_ok:
+                                    active = (p1, p2, score, std, i)
 
         # entry-candle scan for the active setup (this bar = candidate entry candle)
         if active is not None:
-            if i >= active["conf_idx"] + params["entry_after_absorption"]:
-                active = None                                # window elapsed, abandon setup
-            elif _is_entry_candle(post_retest.iloc[i], direction, params):
-                entry_bar_idx = i + 1
-                if entry_bar_idx >= n:
-                    return None, None, None, None, None
-                if invalid_whole.iloc[entry_bar_idx]:
-                    return None, None, post_retest.index[entry_bar_idx], None, None
+            if i >= active[4] + K:
+                active = None                        # window elapsed, abandon setup
+            elif confirm[i]:
+                entry_rel = i + 1
+                if entry_rel >= n:
+                    return _NO_ENTRY
+                if entry_rel >= first_inv:
+                    return None, None, entry_rel, None, None
 
-                entry_ts    = post_retest.index[entry_bar_idx]
-                entry_price = float(post_retest.iloc[entry_bar_idx]["open"])
-
-                p1, p2 = active["p1"], active["p2"]
+                p1, p2, score, std, _ = active
                 entry_notes = {
-                    "cvd_pivot1_time":  p1["ts"].strftime("%H:%M"),
-                    "cvd_pivot1_price": round(p1["price"], 2),
-                    "cvd_pivot1_cvd":   round(float(p1["cvd"]), 2),
-                    "cvd_pivot2_time":  p2["ts"].strftime("%H:%M"),
-                    "cvd_pivot2_price": round(p2["price"], 2),
-                    "cvd_pivot2_cvd":   round(float(p2["cvd"]), 2),
-                    "cvd_score":        round(float(active["score"]), 2),
-                    "cvd_change_std":   round(float(active["std"]), 2),
+                    "cvd_pivot1_time":  win.ts(p1[0]).strftime("%H:%M"),
+                    "cvd_pivot1_price": round(p1[1], 2),
+                    "cvd_pivot1_cvd":   round(float(p1[2]), 2),
+                    "cvd_pivot2_time":  win.ts(p2[0]).strftime("%H:%M"),
+                    "cvd_pivot2_price": round(p2[1], 2),
+                    "cvd_pivot2_cvd":   round(float(p2[2]), 2),
+                    "cvd_score":        round(float(score), 2),
+                    "cvd_change_std":   round(float(std), 2),
                 }
+                return (entry_rel, float(o[entry_rel]), None, entry_notes,
+                        "cvd_divergence_exhaustion")
 
-                return entry_ts, entry_price, None, entry_notes, "cvd_divergence_exhaustion"
-
-    return None, None, None, None, None
+    return _NO_ENTRY

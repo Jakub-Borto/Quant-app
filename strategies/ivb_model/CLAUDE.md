@@ -1,7 +1,44 @@
-# CLAUDE.md — IVB Model (modular package)
+# CLAUDE.md — IVB Model (modular package, vectorized copy)
 
-Strategy-package guide for `strategies/ivb_model/`. Long-form rationale and the
-trade logic live in `IVB_Model_Documentation.pdf`; this file is the code map and the contract.
+Strategy-package guide for `strategies/ivb_model_optimized/` — the **vectorized copy** of
+`strategies/ivb_model/`. Trade logic and outputs are byte-identical to the original (verified
+per-config against it over the full ES dataset); only the internals changed: per-day numpy
+context instead of DataFrame slices, JSON parsed once per day, and accumulating stage timers
+printed once per `run()`. Long-form rationale and the trade logic live in
+`IVB_Model_Documentation.pdf`; this file is the code map and the contract.
+
+## Vectorized internals (what differs from `ivb_model`)
+
+- `_daydata.py` — `DayData` materializes each day once: OHLC/delta/volume numpy arrays,
+  `tick_volume` / `passive_orders` parsed once into per-bar `(prices, a, b)` arrays in JSON
+  document order (None = missing/empty/unparseable), per-bar max defended-side passive size,
+  baselines/CVD/VWAP bands positionally aligned. `EntryWindow` (post_retest) and
+  `TradeWindow` (post_entry) carry the shared masks every finder needs: `invalid`/`first_inv`,
+  `confirm_any` (body+delta), `confirm_dir` (+candle direction), `wick_frac`.
+- `_timing.py` — accumulating timers; `run()` prints ONE table per backtest run
+  (`[ivb timing] ...`), sections like `day:daydata_build`, `entry:<finder>`,
+  `risk4:trail:<detector>`. Children nest inside parents, so percentages overlap.
+- Finder/risk signatures changed (see below); the package-level `run()` contract, `PARAMS`,
+  registries and every output stay exactly as before.
+- `__init__.py` reads only the consumed parquet columns (full-read fallback) and prefetches
+  the next few days on a small thread pool; days are consumed strictly in file order.
+- **Day-core cache**: `DayData` depends only on the files + the resolved `session_start`, so
+  `__init__` keeps an LRU cache (`_DAY_CACHE`, 600-day cap, ~0.3 MB/day) keyed by
+  candle+indicator file (path, mtime, size) plus the session-start minute (different session
+  starts cache separately).
+  The dict itself lives on a holder module registered in `sys.modules`
+  (`_ivb_day_cache_store`) because the backtester's plugin loader re-executes this `__init__`
+  on every run — a plain module global would be wiped each time.
+  Re-running the backtester with different params skips reads/parsing entirely — warm runs are
+  ~0.3–1s vs ~4s cold over 307 ES days. `core.build_day_core` builds a cache entry;
+  `process_day(day, params)` starts with `day.reset_run_state()` and rebuilds only the
+  param-dependent state.
+- **Gated per-run state**: baselines are built only for enabled consumers (rolling for finder
+  bits 0/1/3, passive for 3/4, CVD std for 5/6 — entry bits unioned with the trailing bits
+  when `risk_script` is 4; VWAP bands attached only for risk 3/4). JSON parsing and the
+  passive-max pass are lazy memoized properties on `DayData`, computed at most once per
+  cached day. A `None` baseline is never read: the window contexts skip gathering it and the
+  gate uses exactly the bit strings the dispatchers use.
 
 ## What it is
 
@@ -17,14 +54,16 @@ Loaded by the backtester as a **package** (not a single file) via `__init__.py`,
 
 | File | Provides | Needs / Returns |
 |---|---|---|
-| `__init__.py` | `run(folder_path, start, end, params) -> DataFrame` | globs `YYYY-MM-DD.parquet`, resolves the indicators folder, calls `process_day` per day, returns `OUTPUT_COLUMNS` frame |
+| `__init__.py` | `run(folder_path, start, end, params) -> DataFrame` | globs `YYYY-MM-DD.parquet`, resolves the indicators folder, column-pruned prefetched reads, calls `process_day` per day, prints the timing table, returns `OUTPUT_COLUMNS` frame |
 | `params.py` | `PARAMS`, `PARAM_SECTIONS`, `OUTPUT_COLUMNS` | the full default param dict + UI grouping + output schema |
-| `core.py` | `detect_breakout`, `detect_retest`, `find_entry`, `process_day` | orchestrates one day; dispatches entry finders + the risk script |
-| `profile.py` | `compute_ivb_profile(ib_bars) -> (poc, vah, val)` | reads `tick_volume`; peak-based 70% value area |
-| `baselines.py` | `build_rolling_baseline`, `build_passive_baseline`, `build_cvd_change_baseline` (+ `BASELINE_WARMUP_START`) | day-level volume-per-tick / passive-size / CVD-change baselines |
-| `absorption.py` | `is_absorption_candle(...)`, `find_absorption_trigger(...)` | shared wick-absorption grading from `tick_volume` |
-| `entries/` | 7 finders + `FINDER_REGISTRY` | each `find_entry(**shared) -> (entry_ts, entry_price, invalidation_ts, entry_notes, trade_type)` |
-| `risk/` | `RISK_REGISTRY` of self-contained risk scripts | SL/TP placement + fill simulation; selected by `risk_script` |
+| `_timing.py` | `timed(name)`, `reset()`, `report(wall)` | accumulating stage timers, one printed table per run |
+| `_daydata.py` | `DayData`, `EntryWindow`, `TradeWindow`, `parse_json_column`, `prev_rolling_max/min` | the per-day numpy context + shared window masks |
+| `core.py` | `detect_breakout`, `detect_retest`, `find_entry`, `process_day` | orchestrates one day on absolute positions; dispatches entry finders + the risk script |
+| `profile.py` | `compute_ivb_profile(day, ib_end) -> (poc, vah, val)` | reads the pre-parsed tick_volume; peak-based 70% value area (algorithm untouched) |
+| `baselines.py` | `build_rolling_baseline`, `build_passive_baseline`, `build_cvd_change_baseline` (+ `BASELINE_WARMUP_MINUTES`) | day-level baselines as arrays aligned to the session (pandas rolling kept for identical floats); warm-up starts `session_start` + 5 min |
+| `absorption.py` | `absorption_scan(tv, wick_low, wick_high, required, direction)`, `wick_bounds(...)` | shared absorption level scan on pre-parsed `tick_volume`; first qualifying level in document order (= the old dict-iteration order); wick/baseline prechecks live vectorized in the callers |
+| `entries/` | 7 finders + `FINDER_REGISTRY` + `FINDER_NAMES` | each `find_entry(win, params) -> (entry_rel, entry_price, invalidation_rel, entry_notes, trade_type)` — window-relative bar indices into `win.pos` |
+| `risk/` | `RISK_REGISTRY` + `RISK_NAMES` of self-contained risk scripts | `run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)`; SL/TP placement + fill simulation; selected by `risk_script` |
 
 The 2-bar-only helpers (`merge_tick_volume`, `build_two_bar_baseline`) live inside
 `entries/two_bar_absorption.py` — their sole consumer — so `baselines.py` is purely the three
@@ -34,7 +73,7 @@ day-level baselines.
 
 ```
 run() -> for each day file -> process_day(session, params, ind_df):
-  1. slice RTH (09:30–16:00 NY); need >= ib_minutes bars
+  1. slice RTH (`session_start` "HH:MM" NY, default 09:30, through 16:00); need >= ib_minutes bars
   2. IB high/low from first ib_minutes bars; abort if range <= 0
   3. compute_ivb_profile(ib_bars)            -> poc, vah, val   (profile.py)
   4. build_rolling_baseline / build_passive_baseline (long & short)  (baselines.py)
@@ -57,10 +96,12 @@ drives a flip).
 
 ## The seven entry finders (`entries/`)
 
-All share the signature and return tuple
-`(entry_ts, entry_price, invalidation_ts, entry_notes, trade_type)`. Whole-trade invalidation =
-close back through `val` (long) / `vah` (short). Entry always = **open of the bar after** the
-confirming candle. The `valid_entries` bit order is exactly the `FINDER_REGISTRY` order below.
+All share the signature `find_entry(win: EntryWindow, params)` and return tuple
+`(entry_rel, entry_price, invalidation_rel, entry_notes, trade_type)` (bar indices relative to
+the window; the dispatcher maps them back to positions/timestamps). Whole-trade invalidation =
+close back through `val` (long) / `vah` (short) — precomputed as `win.invalid` / `win.first_inv`.
+Entry always = **open of the bar after** the confirming candle. The `valid_entries` bit order is
+exactly the `FINDER_REGISTRY` order below.
 
 1. **`absorption_delta`** — an absorption candle, then a confirming candle (correct direction,
    body ≥ `body_threshold`, `volume_delta_pct` past `±delta_threshold`). Uses `absorption_mult`,
@@ -114,7 +155,11 @@ sharing.
 Each risk script is **fully self-contained**: it owns its stop placement *and* its own copy of the
 fill simulator (`_run_trade`, plus `_run_trade_trailing` in the two vwap scripts). There is no
 shared `sl_tp` module and no cross-script imports — the duplication is intentional so each script
-can be edited in isolation. Both vwap scripts return **None (no trade)** when the day has no VWAP
+can be edited in isolation. All four share the signature
+`run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)` — `entry_win` is
+the post_retest `EntryWindow` (for pullback stops), `trade_win` the post_entry `TradeWindow`,
+`entry_pos` the absolute day position of the entry bar; `levels` carries `val/vah/poc` and the
+day context rides on `trade_win.day` (baselines, CVD, VWAP band arrays). Both vwap scripts return **None (no trade)** when the day has no VWAP
 bands. A risk script may attach a `trade["risk_notes"]` dict (e.g. `tp_type`, `escalated`); it is
 popped in `process_day` and merged into `notes` rather than becoming a stray column.
 
@@ -178,7 +223,8 @@ exit_reason, pnl_points, notes`
 
 ## Params (see `params.py` for defaults + `PARAM_SECTIONS` grouping)
 
-General: `ib_minutes, trade_timeout, max_flips, valid_entries, risk_script, indicators_folder,
+General: `session_start ("HH:MM" NY; anchors the RTH slice, the IB and the baseline warm-up;
+part of the day-core cache key), ib_minutes, trade_timeout, max_flips, valid_entries, risk_script, indicators_folder,
 big_trades_folder`. Windows: `retest_window, entry_window, entry_after_absorption,
 absorption_baseline_window`. Entry candle: `delta_threshold, body_threshold`. Then per-finder
 groups (absorption+delta, consecutive, two-bar, passive size-only, passive wall, CVD divergence
