@@ -156,6 +156,12 @@ column schema, not Python imports.
   clamps real values (a logic bug, not a cosmetic one).
 - **Backend never imports Qt** — a worker-process import chain that pulls in
   PySide6 is a bug (tests/test_qt_smoke.py enforces this).
+- **No `from __future__ import annotations` in a plugin file that defines a
+  `@dataclass`.** The plugin loader execs files WITHOUT `sys.modules`
+  registration; on Python 3.13 string dataclass annotations crash
+  `dataclasses._is_type` (`sys.modules.get(module)` is `None`) at UI load
+  time. Normal imports (pytest) don't catch it — load plugins via
+  `plugins.load_module` in tests (see tests/test_options_gex.py).
 
 ## ASSET_INFO / HIDDEN_PARAMS
 
