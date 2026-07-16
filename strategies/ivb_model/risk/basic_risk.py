@@ -1,16 +1,57 @@
-"""Basic risk script: VAL/VAH (or swing) stop + fixed RR target.
+"""Basic risk script: VAL/VAH, swing or zone stop + fixed RR target.
 
-risk_script: 1. Self-contained — owns its stop/target placement (_compute_sl_tp) and its trade
-fill simulation (_run_trade). The level data arrives via the `levels` dict; the bar data via
-the positional TradeWindow / EntryWindow contexts (numpy arrays, see _daydata).
+Self-contained — owns its stop/target placement (_compute_sl_tp, with `sl_type` picking
+"VAL/VAH", "swing_low" or "zone_logic") and its trade fill simulation (_run_trade). The level
+data arrives via the `levels` dict; the bar data via the positional TradeWindow / EntryWindow
+contexts (numpy arrays, see _daydata).
+
+Zones (value area, sl_type="zone_logic"): VAL = bottom, POC = middle, VAH = top.
+  Upper zone = POC..VAH,  Lower zone = VAL..POC.
 """
 
 
-def _compute_sl_tp(entry_win, entry_pos, entry_price, direction, val, vah, params) -> tuple:
-    """Returns (sl, tp). (None, None) if risk is non-positive."""
-    if params["sl_type"] == 0:
-        sl = val if direction == "long" else vah
+def _zone_sl(entry_win, entry_pos, direction, levels):
+    """Pick the stop from the pullback window's extremes vs the VAL/POC/VAH zones."""
+    poc = levels["poc"]
+    vah = levels["vah"]
+    val = levels["val"]
+
+    # --- SL window: drop the breakout bar (index 0), keep retest .. bar before entry ---
+    # entry is taken at the entry bar's OPEN, so that bar's low/close are future data => excluded.
+    m = entry_win.pos[1:] < entry_pos
+
+    # degenerate: nothing to measure => fall back to the basic VAL/VAH stop
+    if not m.any():
+        return val if direction == "long" else vah
+
+    if direction == "long":
+        lowest_close = float(entry_win.c[1:][m].min())   # where the pullback bottomed (by close)
+        lowest_low   = float(entry_win.l[1:][m].min())   # how far the wick reached
+
+        if poc <= lowest_close <= vah:                 # bottomed in the UPPER zone
+            return poc if lowest_low >= poc else lowest_low
+        elif val <= lowest_close < poc:                # bottomed in the LOWER zone
+            return val if lowest_low >= val else lowest_low
+        else:                                          # shouldn't occur (pullback re-enters VA)
+            return val
+
     else:
+        highest_close = float(entry_win.c[1:][m].max())  # where the pullback topped (by close)
+        highest_high  = float(entry_win.h[1:][m].max())  # how far the wick reached
+
+        if val <= highest_close <= poc:                # topped in the LOWER zone
+            return poc if highest_high <= poc else highest_high
+        elif poc < highest_close <= vah:               # topped in the UPPER zone
+            return vah if highest_high <= vah else highest_high
+        else:                                          # shouldn't occur (pullback re-enters VA)
+            return vah
+
+
+def _compute_sl_tp(entry_win, entry_pos, entry_price, direction, levels, params) -> tuple:
+    """Returns (sl, tp). (None, None) if risk is non-positive."""
+    val, vah = levels["val"], levels["vah"]
+    sl_type = params["sl_type"]
+    if sl_type == "swing_low":
         # swing stop from the post_retest bars up to and including the entry bar
         # (the original label-slice .loc[:entry_ts] was inclusive)
         m = entry_win.pos <= entry_pos
@@ -19,6 +60,10 @@ def _compute_sl_tp(entry_win, entry_pos, entry_price, direction, val, vah, param
         else:
             sl = float(entry_win.l[m].min()) if direction == "long" \
             else float(entry_win.h[m].max())
+    elif sl_type == "zone_logic":
+        sl = _zone_sl(entry_win, entry_pos, direction, levels)
+    else:   # "VAL/VAH" — the default; unknown / legacy values fall back here
+        sl = val if direction == "long" else vah
 
     risk = abs(entry_price - sl)
     if risk <= 0:
@@ -122,8 +167,7 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
         entry_pos   = entry_pos,
         entry_price = entry_price,
         direction   = direction,
-        val         = levels["val"],
-        vah         = levels["vah"],
+        levels      = levels,
         params      = params,
     )
 

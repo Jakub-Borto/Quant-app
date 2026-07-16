@@ -208,7 +208,8 @@ class DataFormatterWindow(ModuleWindowBase):
         params = getattr(module, "PARAMS", None)
         if params:
             self._params_form = ParamsForm(
-                params, sections=getattr(module, "PARAM_SECTIONS", None))
+                params, sections=getattr(module, "PARAM_SECTIONS", None),
+                options=getattr(module, "PARAMS_OPTIONS", None))
             self._params_holder.addWidget(self._params_form)
             self._params_header.setVisible(True)
 

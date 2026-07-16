@@ -13,8 +13,9 @@ PARAMS = {
     "exclude_start":       "",               # optional midday exclusion, e.g. "12:00" ("" = off)
     "exclude_end":         "",               # e.g. "15:00" ("" = off; must be set together)
     # --- data hygiene ---
-    "skip_zero_volume":    1,                # 1 = forward-filled zero-volume bars produce no signal
-                                             # (int 0/1, not bool, so the optimizer can sweep it)
+    "skip_zero_volume":    True,             # forward-filled zero-volume bars produce no signal
+                                             # (bool -> UI checkbox; the optimizer sweeps it over
+                                             # [False, True]; legacy 0/1 ints still accepted)
     # --- risk-reference convention (sl/tp columns; see engine._make_trade) ---
     "sl_convention":       "vwap_at_entry",  # 'vwap_at_entry' | 'realized_exit' | 'none'
     # --- injected by the backtester from ASSET_INFO (HIDDEN_PARAMS) ---
@@ -31,15 +32,13 @@ PARAM_SECTIONS = {
 
 # ADVISORY ONLY — recommended optimizer sweep ranges. The platform's optimizer
 # does NOT read this dict: it infers sweepability from each PARAMS default's
-# type (int/float -> min/max/step range, str -> comma-separated value list) and
-# the user picks the ranges in the UI. This documents sensible choices.
+# type plus the PARAMS_OPTIONS choice lists below (bool -> [False, True],
+# dropdown -> subset of choices), and the user picks the ranges in the UI.
+# This documents sensible choices for the params that stay free-form.
 PARAM_SPACE = {
     "vwap_band_ticks":  {"type": "float", "min": 0.0, "max": 8.0, "step": 0.5},
-    "band_rule":        {"type": "categorical", "values": ["carry_forward", "flat"]},
-    "vwap_anchor":      {"type": "categorical", "values": ["rth", "globex"]},
     "trade_start_time": {"type": "categorical", "values": ["09:31", "09:45", "10:00", "10:30"]},
     "trade_end_time":   {"type": "categorical", "values": ["15:00", "15:45", "16:00"]},
-    "skip_zero_volume": {"type": "int", "min": 0, "max": 1, "step": 1},
 }
 
 OUTPUT_COLUMNS = [
@@ -60,6 +59,14 @@ OUTPUT_COLUMNS = [
 VWAP_ANCHORS    = ("rth", "globex")
 BAND_RULES      = ("carry_forward", "flat")
 SL_CONVENTIONS  = ("vwap_at_entry", "realized_exit", "none")
+
+# UI/optimizer choice lists -> dropdowns (see modules/common/ui/params_form.py
+# for the declaration contract). validate() enforces the same tuples.
+PARAMS_OPTIONS = {
+    "vwap_anchor":   list(VWAP_ANCHORS),
+    "band_rule":     list(BAND_RULES),
+    "sl_convention": list(SL_CONVENTIONS),
+}
 
 
 def _parse_hhmm(value: str, name: str) -> int:

@@ -375,3 +375,47 @@ def test_by_cell_vs_reference_on_engine_output():
             got = float(row[metric])
             want = float(ref[metric])
             assert (math.isnan(got) and math.isnan(want)) or got == pytest.approx(want)
+
+
+def test_bool_axis_end_to_end(tmp_path):
+    """A bool sweep axis ([False, True]) must survive the whole optimizer
+    pipeline: enrichment, parquet round trip, meta.json, per-cell metrics and
+    the explore-style equality filter."""
+    class BoolToyStrategy:
+        PARAMS = {"a": 1, "flag": True}
+
+        def run(self, folder_path, start_date, end_date, params):
+            pnl = 2.0 if params["flag"] else 1.0
+            return pd.DataFrame([{
+                "date":        DAYS[0],
+                "direction":   "long",
+                "entry_time":  pd.Timestamp(f"{DAYS[0]} 10:00", tz="America/New_York"),
+                "exit_time":   pd.Timestamp(f"{DAYS[0]} 11:00", tz="America/New_York"),
+                "entry_price": 100.0,
+                "exit_price":  100.0 + pnl,
+                "sl":          99.0,
+                "tp":          100.0 + pnl,
+                "exit_reason": "tp",
+                "pnl_points":  pnl,
+            }])
+
+    axes = [{"param": "flag", "values": [False, True], "role": "x"}]
+    trades = run_grid(
+        BoolToyStrategy(), "unused_folder", "2026-01-01", "2026-12-31",
+        base_params=dict(BoolToyStrategy.PARAMS), axes=axes,
+        tick_size=0.25, ticks_per_point=TICKS_PER_POINT,
+        bucket_map={},
+    )
+    meta = {"axes": {"x": {"param": "flag", "values": [False, True]},
+                     "y": None, "slider": None, "slider2": None}}
+    run_dir = save_run(trades, meta, run_name="bool axis", root=tmp_path)
+    loaded_trades, loaded_meta = load_run(run_dir.name, root=tmp_path)
+
+    assert loaded_meta["axes"]["x"]["values"] == [False, True]
+    assert loaded_trades["flag"].dtype == bool
+    grid = compute_metrics_by_cell(loaded_trades, ["flag"])
+    assert grid.loc[False]["total_ticks"] == 1.0 * TICKS_PER_POINT
+    assert grid.loc[True]["total_ticks"] == 2.0 * TICKS_PER_POINT
+    # the explore/cell-detail filter pattern: meta value == trades column
+    for v in loaded_meta["axes"]["x"]["values"]:
+        assert len(loaded_trades[loaded_trades["flag"] == v]) == 1

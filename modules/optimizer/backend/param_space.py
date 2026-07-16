@@ -1,14 +1,20 @@
 """
-Sweep-axis handling for the optimizer. Strategies declare nothing — which
-params are sweepable is inferred from each PARAMS default's type, and the
-min/max/step (or the explicit value list) is chosen by the user in the
-optimizer UI:
+Sweep-axis handling for the optimizer. Which params are sweepable is
+inferred from each PARAMS default's type (plus the strategy's optional
+PARAMS_OPTIONS choice lists — see modules/common/ui/params_form.py for the
+full declaration contract), and the min/max/step (or the explicit value
+list) is chosen by the user in the optimizer UI:
 
-  int / float default   -> swept over arange(min, max+step, step), max included
-  str default           -> swept over a comma-separated value list
-  bool / anything else  -> not sweepable (held fixed)
+  bool default            -> swept over [False, True]
+  default in its options  -> swept over a checked subset of the choices
+  bitstring + options     -> swept over a comma-separated bitstring list
+  int / float default     -> swept over arange(min, max+step, step), max included
+  str default             -> swept over a comma-separated value list
+  anything else           -> not sweepable (held fixed)
 
 This module also enumerates the cartesian product of the chosen axes.
+It stays Qt-free (pool workers import it) — widget rendering for the same
+rules lives in modules/common/ui/params_form.py.
 """
 
 from itertools import product
@@ -21,14 +27,30 @@ ROLE_LABELS = {"x": "X axis", "y": "Y axis",
                "slider": "Slider 1", "slider2": "Slider 2"}
 MAX_SWEPT = 4
 
+BOOL_SWEEP_VALUES = [False, True]
 
-def sweep_kind(default) -> str | None:
+
+def is_flags(default, options) -> bool:
+    """True when (default, options) declare a bit-flag param: a '0'/'1'
+    string with exactly one character per option (see params_form.py)."""
+    return (isinstance(default, str) and bool(options)
+            and len(default) == len(options) and set(default) <= {"0", "1"})
+
+
+def sweep_kind(default, options: list | None = None) -> str | None:
     """
-    How a param can be swept, from its default value: 'int' / 'float' (min/
-    max/step range), 'categorical' (value list), None = not sweepable.
+    How a param can be swept, from its default value and its optional
+    PARAMS_OPTIONS choice list: 'bool' ([False, True]), 'choice' (subset of
+    the declared options), 'flags' (bitstring list), 'int' / 'float'
+    (min/max/step range), 'categorical' (value list), None = not sweepable.
     """
     if isinstance(default, bool):        # bool is an int subclass — check first
-        return None
+        return "bool"
+    if options:
+        if default in options:
+            return "choice"
+        if is_flags(default, options):
+            return "flags"
     if isinstance(default, int):
         return "int"
     if isinstance(default, float):
@@ -74,6 +96,20 @@ def parse_values(text: str) -> list:
         if tok not in deduped:
             deduped.append(tok)
     return deduped
+
+
+def parse_flags(text: str, n_flags: int) -> list:
+    """
+    Comma-separated bitstrings for a flags sweep — each token must be
+    exactly n_flags characters of '0'/'1' (one per option). Raises
+    ValueError with a readable message otherwise.
+    """
+    values = parse_values(text)
+    bad = [v for v in values if len(v) != n_flags or set(v) - {"0", "1"}]
+    if bad:
+        raise ValueError(f"each value must be {n_flags} chars of 0/1 "
+                         f"(one per option); bad: {', '.join(bad)}")
+    return values
 
 
 def enumerate_combos(axes: list) -> list:

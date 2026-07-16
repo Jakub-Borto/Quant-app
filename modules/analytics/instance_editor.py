@@ -119,7 +119,8 @@ class InstanceEditor(CollapsibleSection):
         user_keys = [k for k in params if k not in SHARED_SIZER_KEYS]
         if user_keys:
             self._params_form = ParamsForm(
-                {k: params[k] for k in user_keys})
+                {k: params[k] for k in user_keys},
+                options=getattr(self._sizer_module, "PARAMS_OPTIONS", None))
             self._params_holder.addWidget(self._params_form)
 
         # sizer change regenerates the auto label unless the user typed one

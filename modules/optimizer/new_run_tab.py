@@ -254,10 +254,12 @@ class NewRunTab(QWidget):
         visible = {k: v for k, v in
                    getattr(self._strategy_module, "PARAMS", {}).items()
                    if k not in HIDDEN_PARAMS}
-        if not any(sweep_kind(v) is not None for v in visible.values()):
+        opts = getattr(self._strategy_module, "PARAMS_OPTIONS", {}) or {}
+        if not any(sweep_kind(v, opts.get(k)) is not None
+                   for k, v in visible.items()):
             self._banner.show_message(
                 "info", f"{self._strategy_ref.name} has no sweepable params — "
-                        f"it needs a PARAMS dict with int/float/str defaults.")
+                        f"it needs a PARAMS dict with int/float/str/bool defaults.")
             return
 
         self._sweep_panel = SweepPanel(self._strategy_module)

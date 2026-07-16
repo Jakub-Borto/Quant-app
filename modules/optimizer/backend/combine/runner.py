@@ -97,7 +97,7 @@ def run_combine(container: str, run_names: list, *, enabled_buckets: set,
             member_rows.append({
                 "k": point["k"], "stage": point["stage"], "vid": v.vid,
                 "run": v.run, "trade_type": v.trade_type,
-                "params": json.dumps(v.params), "n_is": v.n_is,
+                "params": json.dumps(v.params, default=str), "n_is": v.n_is,
                 "n_oos": v.n_oos,
             })
 

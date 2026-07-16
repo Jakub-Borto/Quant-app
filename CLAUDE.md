@@ -35,10 +35,16 @@ No registration. The filename stem becomes the UI display name;
 (folder with `__init__.py` exposing `run`, `PARAMS`, `PARAM_SECTIONS`) — see
 `strategies/ivb_model/` and its own `CLAUDE.md`.
 
+Any plugin may also declare `PARAMS_OPTIONS = {param: [choice, ...]}`:
+default-in-list → dropdown; '0'/'1' bitstring default with one char per
+option → named checkbox group returning the bitstring; bool defaults render
+as checkboxes. The full declaration contract (incl. how each type sweeps in
+the Optimizer) is the docstring of `modules/common/ui/params_form.py`.
+
 | Folder | Used by | Contract |
 |---|---|---|
 | `data_transforms/` | Data Formatter | `run_all(input_folder, output_folder, skip_existing, on_progress[, params]) -> None` (a transform MAY declare `PARAMS` like a strategy — the UI renders widgets from it and passes the values as `params`; transforms without `PARAMS` get the plain 4-arg call) |
-| `strategies/` | Backtester, Optimizer | `run(folder_path, start_date, end_date, params) -> pd.DataFrame` (+ `PARAMS`; the Optimizer sweeps int/float params over min/max/step, str params over a value list) |
+| `strategies/` | Backtester, Optimizer | `run(folder_path, start_date, end_date, params) -> pd.DataFrame` (+ `PARAMS`, optional `PARAMS_OPTIONS`; the Optimizer sweeps int/float params over min/max/step, str params over a value list, bool params over [False, True], dropdown params over a subset of their choices, bit-flag params over a bitstring list) |
 | `position_sizing/` | Analytics, Monte Carlo | `apply(trades, params) -> pd.DataFrame` (+ `PARAMS`) |
 | `modules/monte_carlo/methods/` | Monte Carlo | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`; `PROP_FIRM = True` opts into the dedicated prop-firm UI) |
 

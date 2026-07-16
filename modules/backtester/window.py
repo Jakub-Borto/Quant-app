@@ -251,7 +251,8 @@ class BacktesterWindow(ModuleWindowBase):
         if visible:
             self._params_form = ParamsForm(
                 params, sections=getattr(self._strategy_module, "PARAM_SECTIONS", None),
-                hidden=HIDDEN_PARAMS)
+                hidden=HIDDEN_PARAMS,
+                options=getattr(self._strategy_module, "PARAMS_OPTIONS", None))
             self._params_container.addWidget(self._params_form)
 
     # ══ run flow ═══════════════════════════════════════════════════════════════

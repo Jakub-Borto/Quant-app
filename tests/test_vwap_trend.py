@@ -30,7 +30,7 @@ BASE_PARAMS = {
     "trade_end_time":     "16:00",
     "exclude_start":      "",
     "exclude_end":        "",
-    "skip_zero_volume":   1,
+    "skip_zero_volume":   True,
     "sl_convention":      "vwap_at_entry",
     "tick_size":          0.25,
 }
@@ -189,7 +189,8 @@ def test_band_flat_stands_aside_inside_band(strat, tmp_path):
 
 def test_zero_volume_bar_produces_no_flip(strat, tmp_path):
     # bar1 is a forward-filled zero-volume bar whose close sits below VWAP: with
-    # skip_zero_volume=1 it must NOT flip the long; with 0 it must
+    # skip_zero_volume on it must NOT flip the long; with it off it must.
+    # Deliberately passes legacy 0/1 ints (default is now a bool) — back-compat.
     opens  = [100.0, 100.6, 100.7, 100.8, 100.9]
     closes = [100.5, 98.0, 100.9, 101.0, 101.1]
     vols   = [100, 0, 100, 100, 100]
@@ -334,10 +335,12 @@ def test_day_cache_is_param_independent(strat, tmp_path, monkeypatch):
 
 
 def test_optimizer_sweepability():
-    from strategies.vwap_trend.params import PARAMS
+    from strategies.vwap_trend.params import PARAMS, PARAMS_OPTIONS
     assert sweep_kind(PARAMS["vwap_band_ticks"]) == "float"
-    assert sweep_kind(PARAMS["band_rule"]) == "categorical"
-    assert sweep_kind(PARAMS["vwap_anchor"]) == "categorical"
     assert sweep_kind(PARAMS["trade_start_time"]) == "categorical"
     assert sweep_kind(PARAMS["trade_end_time"]) == "categorical"
-    assert sweep_kind(PARAMS["skip_zero_volume"]) == "int"
+    assert sweep_kind(PARAMS["skip_zero_volume"]) == "bool"
+    # dropdown params: choice sweep over the declared options
+    for key in ("vwap_anchor", "band_rule", "sl_convention"):
+        assert PARAMS[key] in PARAMS_OPTIONS[key]
+        assert sweep_kind(PARAMS[key], PARAMS_OPTIONS[key]) == "choice"

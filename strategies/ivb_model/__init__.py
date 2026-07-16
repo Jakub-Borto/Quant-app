@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pandas as pd
 
-from .params  import PARAMS, PARAM_SECTIONS, OUTPUT_COLUMNS
+from .params  import PARAMS, PARAM_SECTIONS, PARAMS_OPTIONS, OUTPUT_COLUMNS
 from .core    import process_day, build_day_core, session_start_minutes, VWAP_BAND_COLUMNS
 from . import _timing
 from ._timing import timed
@@ -208,4 +208,4 @@ def run(
     return result
 
 
-__all__ = ["run", "PARAMS", "PARAM_SECTIONS"]
+__all__ = ["run", "PARAMS", "PARAM_SECTIONS", "PARAMS_OPTIONS"]

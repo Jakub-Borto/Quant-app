@@ -18,7 +18,7 @@ from .baselines import (
     BASELINE_WARMUP_MINUTES,
 )
 from .entries   import FINDER_REGISTRY, FINDER_NAMES
-from .risk      import RISK_REGISTRY, RISK_NAMES
+from .risk      import RISK_REGISTRY
 
 
 # The session START is the `session_start` param ("HH:MM" NY wall time, default "09:30");
@@ -229,10 +229,10 @@ def process_day(day: DayData, params: dict):
     # entries, _build_trailing_sl str+ljust for trails — replicated exactly).
     n_finders   = len(FINDER_REGISTRY)
     entry_flags = params.get("valid_entries", "1" * n_finders).ljust(n_finders, "0")
-    risk_idx    = params["risk_script"] - 1
-    if not (0 <= risk_idx < len(RISK_REGISTRY)):
-        risk_idx = 0
-    if risk_idx == 3:                       # vwap_trailing_risk re-detects signals in-trade
+    risk_name   = params.get("risk_script", "basic_risk")
+    if risk_name not in RISK_REGISTRY:      # unknown / legacy int -> basic_risk
+        risk_name = "basic_risk"            # (mirrors the old out-of-range -> script 1)
+    if risk_name == "vwap_trailing_risk":   # re-detects signals in-trade
         trail_flags = str(params.get("trailing_entries", "0" * n_finders)).ljust(n_finders, "0")
     else:
         trail_flags = "0" * n_finders
@@ -258,7 +258,7 @@ def process_day(day: DayData, params: dict):
             day.cvd_std = build_cvd_change_baseline(day, valid_pos, params)
 
     # VWAP deviation bands: only the two vwap risk scripts read them
-    if risk_idx in (2, 3):
+    if risk_name in ("vwap_tp_risk", "vwap_trailing_risk"):
         day.vwap_bands = day.bands_raw
 
     max_flips  = params["max_flips"]
@@ -315,7 +315,7 @@ def process_day(day: DayData, params: dict):
         if direction_found != direction:
             return None
 
-    # --- risk script dispatch (1-based risk_script -> RISK_REGISTRY) ---
+    # --- risk script dispatch (risk_script name -> RISK_REGISTRY) ---
     # the day context carries the baselines + CVD series so risk scripts can re-detect
     # entry-style signals on the live trade bars (vwap_trailing_risk); others ignore them.
     levels = {"val": val, "vah": vah, "poc": poc}
@@ -323,9 +323,9 @@ def process_day(day: DayData, params: dict):
     with timed("day:trade_window_build"):
         trade_win = TradeWindow(day, entry_pos, direction, params)
 
-    risk_fn = RISK_REGISTRY[risk_idx]
+    risk_fn = RISK_REGISTRY[risk_name]
 
-    with timed(f"risk:{RISK_NAMES[risk_idx]}"):
+    with timed(f"risk:{risk_name}"):
         trade = risk_fn(
             entry_win   = win,
             trade_win   = trade_win,

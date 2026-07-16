@@ -24,8 +24,9 @@ compared like-for-like against low-frequency strategies.
 
 The backtester loads this package via __init__.py and expects:
   run(folder_path, start_date, end_date, params) -> pd.DataFrame
-  PARAMS, PARAM_SECTIONS (PARAM_SPACE here is advisory documentation only —
-  the optimizer infers sweep axes from PARAMS defaults' types).
+  PARAMS, PARAM_SECTIONS, PARAMS_OPTIONS (PARAM_SPACE here is advisory
+  documentation only — the optimizer infers sweep axes from PARAMS defaults'
+  types plus the PARAMS_OPTIONS choice lists).
 """
 
 import time
@@ -40,7 +41,7 @@ from . import _timing, data
 from ._timing import timed
 from .engine import run_day
 from .params import (OUTPUT_COLUMNS, PARAM_SECTIONS, PARAM_SPACE, PARAMS,
-                     validate)
+                     PARAMS_OPTIONS, validate)
 
 RTH_VWAP_ANCHOR_MIN = 9 * 60 + 30    # vwap_bar_rth is NaN before 09:30 NY
 
@@ -179,4 +180,4 @@ def run(folder_path: Path, start_date: pd.Timestamp,
     return result
 
 
-__all__ = ["run", "PARAMS", "PARAM_SECTIONS", "PARAM_SPACE"]
+__all__ = ["run", "PARAMS", "PARAM_SECTIONS", "PARAM_SPACE", "PARAMS_OPTIONS"]

@@ -35,7 +35,8 @@ printed once per `run()`. Long-form rationale and the trade logic live in
   param-dependent state.
 - **Gated per-run state**: baselines are built only for enabled consumers (rolling for finder
   bits 0/1/3, passive for 3/4, CVD std for 5/6 — entry bits unioned with the trailing bits
-  when `risk_script` is 4; VWAP bands attached only for risk 3/4). JSON parsing and the
+  when `risk_script` is `"vwap_trailing_risk"`; VWAP bands attached only for the two vwap
+  scripts). JSON parsing and the
   passive-max pass are lazy memoized properties on `DayData`, computed at most once per
   cached day. A `None` baseline is never read: the window contexts skip gathering it and the
   gate uses exactly the bit strings the dispatchers use.
@@ -48,14 +49,16 @@ value area, then require one of **seven** entry patterns before entering. Suppor
 flipping on invalidation.
 
 Loaded by the backtester as a **package** (not a single file) via `__init__.py`, which exposes
-`run`, `PARAMS`, `PARAM_SECTIONS`.
+`run`, `PARAMS`, `PARAM_SECTIONS`, `PARAMS_OPTIONS` (UI choice lists — dropdowns for the
+mode-selector params, named checkbox groups for the `valid_entries`/`trailing_entries` bit
+strings; see `modules/common/ui/params_form.py` for the contract).
 
 ## File responsibilities
 
 | File | Provides | Needs / Returns |
 |---|---|---|
 | `__init__.py` | `run(folder_path, start, end, params) -> DataFrame` | globs `YYYY-MM-DD.parquet`, resolves the indicators folder, column-pruned prefetched reads, calls `process_day` per day, prints the timing table, returns `OUTPUT_COLUMNS` frame |
-| `params.py` | `PARAMS`, `PARAM_SECTIONS`, `OUTPUT_COLUMNS` | the full default param dict + UI grouping + output schema |
+| `params.py` | `PARAMS`, `PARAM_SECTIONS`, `PARAMS_OPTIONS`, `OUTPUT_COLUMNS` | the full default param dict + UI grouping + choice lists + output schema |
 | `_timing.py` | `timed(name)`, `reset()`, `report(wall)` | accumulating stage timers, one printed table per run |
 | `_daydata.py` | `DayData`, `EntryWindow`, `TradeWindow`, `parse_json_column`, `prev_rolling_max/min` | the per-day numpy context + shared window masks |
 | `core.py` | `detect_breakout`, `detect_retest`, `find_entry`, `process_day` | orchestrates one day on absolute positions; dispatches entry finders + the risk script |
@@ -63,7 +66,7 @@ Loaded by the backtester as a **package** (not a single file) via `__init__.py`,
 | `baselines.py` | `build_rolling_baseline`, `build_passive_baseline`, `build_cvd_change_baseline` (+ `BASELINE_WARMUP_MINUTES`) | day-level baselines as arrays aligned to the session (pandas rolling kept for identical floats); warm-up starts `session_start` + 5 min |
 | `absorption.py` | `absorption_scan(tv, wick_low, wick_high, required, direction)`, `wick_bounds(...)` | shared absorption level scan on pre-parsed `tick_volume`; first qualifying level in document order (= the old dict-iteration order); wick/baseline prechecks live vectorized in the callers |
 | `entries/` | 7 finders + `FINDER_REGISTRY` + `FINDER_NAMES` | each `find_entry(win, params) -> (entry_rel, entry_price, invalidation_rel, entry_notes, trade_type)` — window-relative bar indices into `win.pos` |
-| `risk/` | `RISK_REGISTRY` + `RISK_NAMES` of self-contained risk scripts | `run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)`; SL/TP placement + fill simulation; selected by `risk_script` |
+| `risk/` | name-keyed `RISK_REGISTRY` of self-contained risk scripts | `run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)`; SL/TP placement + fill simulation; selected by `risk_script` (name) |
 
 The 2-bar-only helpers (`merge_tick_volume`, `build_two_bar_baseline`) live inside
 `entries/two_bar_absorption.py` — their sole consumer — so `baselines.py` is purely the three
@@ -85,7 +88,7 @@ run() -> for each day file -> process_day(session, params, ind_df):
        find_entry()  -> calls all enabled finders, earliest entry wins
           if entry      -> break
           if invalidate -> flip direction, resume after invalidation_ts, re-detect breakout
-  8. risk dispatch: RISK_REGISTRY[risk_script-1](post_retest, post_entry, ...) -> trade dict | None
+  8. risk dispatch: RISK_REGISTRY[risk_script](post_retest, post_entry, ...) -> trade dict | None
   9. attach trade_type + notes(JSON, incl. any risk_notes)
 ```
 
@@ -139,23 +142,29 @@ sharing.
 
 1. Drop `entries/my_entry.py` exposing `find_entry(**shared) -> 5-tuple`.
 2. Append it to `FINDER_REGISTRY` in `entries/__init__.py`.
-3. Extend the default `valid_entries` string by one bit and add any params to `params.py`.
+3. Extend the default `valid_entries` AND `trailing_entries` strings by one bit and add any
+   params to `params.py` (`PARAMS_OPTIONS["valid_entries"]`/`["trailing_entries"]` mirror
+   `FINDER_NAMES`, so the checkbox groups pick the new name up automatically).
 
 ## Risk scripts (`risk/`)
 
-`risk_script` is a **1-based selector** into `RISK_REGISTRY` (in `risk/__init__.py`):
+`risk_script` selects **by name** from the name-keyed `RISK_REGISTRY` (in `risk/__init__.py`);
+an unknown / legacy value falls back to `basic_risk`:
 
-| `risk_script` | Script | Stop | Target |
-|---|---|---|---|
-| 1 | `basic_risk` | VAL/VAH (`sl_type=0`) or swing (`sl_type=1`) | fixed RR (`rr`) |
-| 2 | `zone_sl_risk` | pullback-extreme vs VAL/POC/VAH zones | fixed RR (`zone_rr`) |
-| 3 | `vwap_tp_risk` | VAL/VAH or zone logic (`sl_placement`) | tick-vwap ±2σ/±3σ band (`vwap_std`, `vwap_session`, `vwap_tp_mode`) |
-| 4 | `vwap_trailing_risk` | as script 3, plus a signal-driven trailing stop (`trailing_entries`) | as script 3 |
+| `risk_script` | Stop | Target |
+|---|---|---|
+| `basic_risk` | `sl_type`: `"VAL/VAH"`, `"swing_low"` or `"zone_logic"` (pullback-extreme vs VAL/POC/VAH zones) | fixed RR (`rr`) |
+| `vwap_tp_risk` | `sl_placement`: `"VAL/VAH"`, `"zone_logic"` or `"swing_low"` | tick-vwap ±2σ/±3σ band (`vwap_std`, `vwap_session`, `vwap_tp_mode`) |
+| `vwap_trailing_risk` | as `vwap_tp_risk`, plus a signal-driven trailing stop (`trailing_entries`) | as `vwap_tp_risk` |
 
-Each risk script is **fully self-contained**: it owns its stop placement *and* its own copy of the
+(The former `zone_sl_risk` script was folded into `basic_risk` as `sl_type="zone_logic"`; its
+`zone_rr` param is gone — the merged mode uses `rr`.)
+
+Each risk script is **fully self-contained**: it owns its stop placement (incl. its own copies
+of `_zone_sl` / `_swing_sl`) *and* its own copy of the
 fill simulator (`_run_trade`, plus `_run_trade_trailing` in the two vwap scripts). There is no
 shared `sl_tp` module and no cross-script imports — the duplication is intentional so each script
-can be edited in isolation. All four share the signature
+can be edited in isolation. All three share the signature
 `run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)` — `entry_win` is
 the post_retest `EntryWindow` (for pullback stops), `trade_win` the post_entry `TradeWindow`,
 `entry_pos` the absolute day position of the entry bar; `levels` carries `val/vah/poc` and the
@@ -167,9 +176,9 @@ popped in `process_day` and merged into `notes` rather than becoming a stray col
 `trailing_entries` bit string (same order as `valid_entries`). A signal confirmed by a candle
 meeting both `body_threshold` and `delta_threshold` ratchets the stop to the signal candle's
 extreme (low long / high short) from the next bar on — the stop only ever tightens.
-`trailing_in_profit` (default 1) keeps the signal log breakeven-or-better only (an in-loss
-level is not even logged); `0` logs and trails everything, loss included. `late_trailing`
-(default 0) lags the trail one signal behind: each logged signal moves the stop to the
+`trailing_in_profit` (default True) keeps the signal log breakeven-or-better only (an in-loss
+level is not even logged); False logs and trails everything, loss included. `late_trailing`
+(default False) lags the trail one signal behind: each logged signal moves the stop to the
 **previous** logged signal's level, so the first logged signal only arms the log. Unlike the
 entry finders, **every** trailing signal needs the confirming candle (also
 `consecutive_absorption` and `passive_wall`), and there is no VAL/VAH invalidation in-trade. A
@@ -229,9 +238,9 @@ big_trades_folder`. Windows: `retest_window, entry_window, entry_after_absorptio
 absorption_baseline_window`. Entry candle: `delta_threshold, body_threshold`. Then per-finder
 groups (absorption+delta, consecutive, two-bar, passive size-only, passive wall, CVD divergence
 absorption `cvd_*` / exhaustion `cvd_exh_*`)
-and per-risk-script groups (basic: `rr`/`sl_type`; zone: `zone_rr`; vwap: `sl_placement`/
-`vwap_std`/`vwap_session`/`vwap_tp_mode`; vwap trailing: `trailing_entries`/
-`trailing_in_profit`/`late_trailing`).
+and per-risk-script groups (basic: `rr`/`sl_type` — `"VAL/VAH"`/`"swing_low"`/`"zone_logic"`;
+vwap: `sl_placement`/`vwap_std`/`vwap_session`/`vwap_tp_mode`; vwap trailing:
+`trailing_entries` + the bool switches `trailing_in_profit`/`late_trailing`).
 
 `PARAM_SECTIONS` intentionally omits `tick_size`: it is auto-injected from `ASSET_INFO` by the
 backtester and listed in `HIDDEN_PARAMS`, so it has no UI widget. (That gap is deliberate, not a

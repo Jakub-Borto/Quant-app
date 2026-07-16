@@ -1,7 +1,8 @@
 """VWAP-target risk script: switchable SL + VWAP deviation-band TP (now or trailing).
 
-risk_script: 3. Self-contained. The SL is chosen by `sl_placement` (VAL/VAH or the zone-pullback
-logic, owned here as _zone_sl) and stays fixed for the whole trade. The TP is a tick-vwap
+Self-contained. The SL is chosen by `sl_placement` ("VAL/VAH", the zone-pullback logic
+"zone_logic" — owned here as _zone_sl — or the pullback swing "swing_low" — owned here as
+_swing_sl) and stays fixed for the whole trade. The TP is a tick-vwap
 deviation band (±2σ/±3σ, globex or rth) read from the day context's band arrays, used either
 frozen at entry ("now") or trailed bar-by-bar ("trailing"). Both fill simulators (_run_trade and
 the trailing variant _run_trade_trailing) are owned here too — no shared module, no cross-script
@@ -53,6 +54,16 @@ def _zone_sl(entry_win, entry_pos, direction, levels):
             return vah if highest_high <= vah else highest_high
         else:                                          # shouldn't occur (pullback re-enters VA)
             return vah
+
+
+def _swing_sl(entry_win, entry_pos, direction, levels):
+    """Swing stop over the post_retest bars up to and including the entry bar
+    (same rule as basic_risk's "swing_low"); VAL/VAH fallback when empty."""
+    m = entry_win.pos <= entry_pos
+    if not m.any():
+        return levels["val"] if direction == "long" else levels["vah"]
+    return float(entry_win.l[m].min()) if direction == "long" \
+      else float(entry_win.h[m].max())
 
 
 def _run_trade(trade_win, entry_ts, entry_price, direction, sl, tp, params) -> dict:
@@ -254,9 +265,12 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
         return None
 
     # --- SL placement (fixed for the whole trade) ---
-    if params["sl_placement"] == 1:
+    placement = params["sl_placement"]
+    if placement == "VAL/VAH":
         sl = levels["val"] if direction == "long" else levels["vah"]
-    else:
+    elif placement == "swing_low":
+        sl = _swing_sl(entry_win, entry_pos, direction, levels)
+    else:   # "zone_logic" — the default; unknown / legacy values fall back here
         sl = _zone_sl(entry_win, entry_pos, direction, levels)
 
     risk = abs(entry_price - sl)

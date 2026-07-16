@@ -5,9 +5,12 @@ The PySide6 port of render_param_panel / _render_sweep_inputs /
 render_role_assignment from legacy_streamlit/views/optimizer.py:
 
 - every visible strategy param gets either a sweep checkbox (when its default
-  type is sweepable per param_space.sweep_kind) or a plain fixed-value widget;
+  type is sweepable per param_space.sweep_kind, which also honors the
+  strategy's PARAMS_OPTIONS choice lists) or a plain fixed-value widget;
 - a checked param shows its sweep editor — min/max/step for int/float
-  (values via build_range), a comma-separated list for str (parse_values) —
+  (values via build_range), a comma-separated list for str (parse_values),
+  a fixed [False, True] axis for bool, per-choice checkboxes for dropdown
+  params, a validated bitstring list for bit-flag params (parse_flags) —
   plus the live values-preview caption / inline error;
 - at most MAX_SWEPT params can be checked (others grey out at the cap);
 - sweep order = selection order (survivors keep their rank);
@@ -26,9 +29,11 @@ from modules.common.backend.asset_info import HIDDEN_PARAMS
 from modules.common.ui import theme
 from modules.common.ui.params_form import make_param_widget
 from modules.common.ui.widgets import Caption, CollapsibleSection
-from modules.optimizer.backend.param_space import (MAX_SWEPT, ROLE_LABELS,
+from modules.optimizer.backend.param_space import (BOOL_SWEEP_VALUES,
+                                                   MAX_SWEPT, ROLE_LABELS,
                                                    ROLES, build_range,
-                                                   parse_values, sweep_kind)
+                                                   parse_flags, parse_values,
+                                                   sweep_kind)
 
 
 def _values_preview(values: list) -> str:
@@ -39,21 +44,38 @@ def _values_preview(values: list) -> str:
 
 
 class _SweepEditor(QWidget):
-    """min/max/step (numeric) or comma-list (categorical) editor for one param.
+    """Value editor for one swept param: min/max/step (numeric), comma-list
+    (categorical), bitstring comma-list (flags), per-choice checkboxes
+    (choice) or a fixed False/True axis (bool).
     values() -> list, or None on invalid input (error caption shown inline)."""
 
     edited = Signal()
 
-    def __init__(self, param: str, default, kind: str, parent=None):
+    def __init__(self, param: str, default, kind: str, options: list | None = None,
+                 parent=None):
         super().__init__(parent)
         self._kind = kind
+        self._options = options or []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
 
-        if kind == "categorical":
+        if kind == "bool":
+            pass                        # nothing to edit — the axis is [False, True]
+        elif kind == "choice":
+            # all choices start checked (a sweep wants >= 2 values; prune down)
+            self._choice_boxes: list[QCheckBox] = []
+            for opt in self._options:
+                cb = QCheckBox(str(opt))
+                cb.setChecked(True)
+                cb.toggled.connect(self._refresh)
+                lay.addWidget(cb)
+                self._choice_boxes.append(cb)
+        elif kind in ("categorical", "flags"):
             self._text = QLineEdit(str(default))
-            self._text.setToolTip("comma-separated values to test")
+            self._text.setToolTip(
+                "comma-separated flag strings, e.g. 1111100, 1010100"
+                if kind == "flags" else "comma-separated values to test")
             self._text.textChanged.connect(self._refresh)
             lay.addWidget(self._text)
         else:
@@ -88,22 +110,32 @@ class _SweepEditor(QWidget):
         lay.addWidget(self._caption)
         self._refresh()
 
+    def _compute(self) -> list:
+        """Current value list; raises ValueError on invalid input."""
+        if self._kind == "bool":
+            return list(BOOL_SWEEP_VALUES)
+        if self._kind == "choice":
+            values = [opt for opt, cb in zip(self._options, self._choice_boxes)
+                      if cb.isChecked()]
+            if not values:
+                raise ValueError("pick at least one value")
+            return values
+        if self._kind == "flags":
+            return parse_flags(self._text.text(), len(self._options))
+        if self._kind == "categorical":
+            return parse_values(self._text.text())
+        return build_range(self._lo.value(), self._hi.value(),
+                           self._step.value(), self._kind)
+
     def values(self) -> list | None:
         try:
-            if self._kind == "categorical":
-                return parse_values(self._text.text())
-            return build_range(self._lo.value(), self._hi.value(),
-                               self._step.value(), self._kind)
+            return self._compute()
         except ValueError:
             return None
 
     def _refresh(self) -> None:
         try:
-            if self._kind == "categorical":
-                values = parse_values(self._text.text())
-            else:
-                values = build_range(self._lo.value(), self._hi.value(),
-                                     self._step.value(), self._kind)
+            values = self._compute()
         except ValueError as e:
             self._caption.setText(f"⚠ {e}")
             self._caption.setStyleSheet(f"color: {theme.WARN}; font-size: 12px;")
@@ -120,11 +152,13 @@ class _ParamCell(QWidget):
     toggled = Signal()
     edited = Signal()
 
-    def __init__(self, param: str, default, kind: str | None, parent=None):
+    def __init__(self, param: str, default, kind: str | None,
+                 options: list | None = None, parent=None):
         super().__init__(parent)
         self.param = param
         self.kind = kind
         self._default = default
+        self._options = options
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -157,7 +191,7 @@ class _ParamCell(QWidget):
     def _show_fixed(self) -> None:
         self._clear_holder()
         self.sweep_editor = None
-        widget, getter = make_param_widget(self._default)
+        widget, getter = make_param_widget(self._default, self._options)
         if widget is None:
             warn = QLabel(f"unsupported type: {type(self._default).__name__}")
             warn.setStyleSheet(f"color: {theme.WARN}; font-size: 11px;")
@@ -170,13 +204,16 @@ class _ParamCell(QWidget):
                 widget.valueChanged.connect(lambda _=None: self.edited.emit())
             elif hasattr(widget, "textChanged"):
                 widget.textChanged.connect(lambda _=None: self.edited.emit())
-            elif hasattr(widget, "toggled"):
+            elif hasattr(widget, "currentIndexChanged"):    # fixed dropdown
+                widget.currentIndexChanged.connect(lambda _=None: self.edited.emit())
+            elif hasattr(widget, "toggled"):                # QCheckBox / FlagsGroup
                 widget.toggled.connect(lambda _=None: self.edited.emit())
 
     def _show_sweep(self) -> None:
         self._clear_holder()
         self._fixed_getter = None
-        self.sweep_editor = _SweepEditor(self.param, self._default, self.kind)
+        self.sweep_editor = _SweepEditor(self.param, self._default, self.kind,
+                                         self._options)
         self.sweep_editor.edited.connect(self.edited)
         self._holder.addWidget(self.sweep_editor)
 
@@ -206,6 +243,7 @@ class SweepPanel(QWidget):
         super().__init__(parent)
         visible = {k: v for k, v in getattr(strategy, "PARAMS", {}).items()
                    if k not in HIDDEN_PARAMS}
+        opts = getattr(strategy, "PARAMS_OPTIONS", {}) or {}
         self._cells: dict[str, _ParamCell] = {}
         self._sweep_order: list[str] = []
 
@@ -214,7 +252,9 @@ class SweepPanel(QWidget):
         lay.setSpacing(6)
         lay.addWidget(Caption(
             f"Check up to {MAX_SWEPT} params to sweep — numeric params take "
-            f"min/max/step, text params a comma-separated value list; "
+            f"min/max/step, text params a comma-separated value list, bool "
+            f"params test False and True, dropdown params a subset of their "
+            f"choices, flag params a comma-separated list of bitstrings; "
             f"everything else is held at the value shown."))
 
         # sections honoring PARAM_SECTIONS (the old _param_layout), rows of 3.
@@ -232,7 +272,8 @@ class SweepPanel(QWidget):
             grid.setVerticalSpacing(10)
             for n, param in enumerate(keys):
                 cell = _ParamCell(param, visible[param],
-                                  sweep_kind(visible[param]))
+                                  sweep_kind(visible[param], opts.get(param)),
+                                  opts.get(param))
                 cell.toggled.connect(lambda p=param: self._on_cell_toggled(p))
                 cell.edited.connect(self.changed)
                 self._cells[param] = cell

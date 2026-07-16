@@ -169,6 +169,98 @@ def test_optimizer_window_three_tabs(qtbot, settings):
     assert labels == ["New Run", "Explore", "Combine"]
 
 
+# ── params_form: PARAMS_OPTIONS widgets (dropdowns + bit-flag groups) ────────
+
+def test_param_widget_dropdown_str(qtbot):
+    from PySide6.QtWidgets import QComboBox
+    from modules.common.ui.params_form import make_param_widget
+    w, get = make_param_widget("globex", ["globex", "rth"])
+    qtbot.addWidget(w)
+    assert isinstance(w, QComboBox)
+    assert get() == "globex"
+    w.setCurrentIndex(1)
+    assert get() == "rth"
+
+
+def test_param_widget_dropdown_keeps_option_type(qtbot):
+    from modules.common.ui.params_form import make_param_widget
+    w, get = make_param_widget(2, [2, 3])
+    qtbot.addWidget(w)
+    assert get() == 2 and type(get()) is int      # typed, not "2"
+
+
+def test_param_widget_flags_round_trip(qtbot):
+    from modules.common.ui.params_form import FlagsGroup, make_param_widget
+    names = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"]
+    w, get = make_param_widget("1010100", names)
+    qtbot.addWidget(w)
+    assert isinstance(w, FlagsGroup)
+    assert get() == "1010100"
+    w._boxes[1].setChecked(True)
+    assert get() == "1110100"
+
+
+def test_param_widget_bool_ignores_options(qtbot):
+    from PySide6.QtWidgets import QCheckBox
+    from modules.common.ui.params_form import make_param_widget
+    w, get = make_param_widget(True, [False, True])
+    qtbot.addWidget(w)
+    assert isinstance(w, QCheckBox) and get() is True
+
+
+def test_param_widget_options_fit_neither_rule(qtbot):
+    from PySide6.QtWidgets import QLineEdit
+    from modules.common.ui.params_form import make_param_widget
+    w, get = make_param_widget("zzz", ["a", "b"])   # not in options, not a bitstring
+    qtbot.addWidget(w)
+    assert isinstance(w, QLineEdit) and get() == "zzz"
+
+
+def test_params_form_with_options(qtbot):
+    from modules.common.ui.params_form import ParamsForm
+    params = {"mode": "fast", "entries": "110", "on": True, "n": 3}
+    options = {"mode": ["fast", "slow"], "entries": ["a", "b", "c"]}
+    form = ParamsForm(params, options=options)
+    qtbot.addWidget(form)
+    assert form.values() == {"mode": "fast", "entries": "110", "on": True, "n": 3}
+
+
+def test_sweep_panel_new_kinds(qtbot):
+    import types
+    from modules.optimizer.sweep_panel import SweepPanel
+    stub = types.SimpleNamespace(
+        PARAMS={"flag": True, "mode": "fast", "entries": "110", "n": 3},
+        PARAM_SECTIONS={"All": ["flag", "mode", "entries", "n"]},
+        PARAMS_OPTIONS={"mode": ["fast", "slow"], "entries": ["a", "b", "c"]},
+    )
+    panel = SweepPanel(stub)
+    qtbot.addWidget(panel)
+
+    # fixed values keep their new shapes (bool / typed choice / bitstring)
+    assert panel.fixed_params() == {"flag": True, "mode": "fast",
+                                    "entries": "110", "n": 3}
+
+    # bool param: sweepable, axis is always [False, True]
+    panel._cells["flag"].check.setChecked(True)
+    assert panel.swept_values()["flag"] == [False, True]
+
+    # choice param: all options checked initially; unchecking prunes the axis
+    panel._cells["mode"].check.setChecked(True)
+    editor = panel._cells["mode"].sweep_editor
+    assert panel.swept_values()["mode"] == ["fast", "slow"]
+    editor._choice_boxes[0].setChecked(False)
+    assert panel.swept_values()["mode"] == ["slow"]
+    editor._choice_boxes[1].setChecked(False)           # zero checked -> invalid
+    assert panel.swept_values()["mode"] is None
+
+    # flags param: comma-separated bitstrings, validated against option count
+    panel._cells["entries"].check.setChecked(True)
+    panel._cells["entries"].sweep_editor._text.setText("110, 011")
+    assert panel.swept_values()["entries"] == ["110", "011"]
+    panel._cells["entries"].sweep_editor._text.setText("11")   # wrong length
+    assert panel.swept_values()["entries"] is None
+
+
 def test_worker_import_chain_is_qt_free():
     """Pool workers import the engine module by name — Qt must never come
     along (each worker would load ~100 MB of GUI)."""

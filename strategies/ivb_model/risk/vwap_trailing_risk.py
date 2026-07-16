@@ -1,6 +1,6 @@
 """VWAP-target risk script with a signal-driven trailing stop.
 
-risk_script: 4. Same parameters and TP behaviour as vwap_tp_risk (sl_placement / vwap_std /
+Same parameters and TP behaviour as vwap_tp_risk (sl_placement / vwap_std /
 vwap_session / vwap_tp_mode, incl. the entry-time 2σ->3σ escalation and the 1:1 fallback), plus:
 while the trade is open, the seven entry-style signals are re-detected on the live bars
 (gated by the `trailing_entries` bit string, same order as `valid_entries`). When a signal is
@@ -9,12 +9,12 @@ direction), the stop ratchets to the signal candle's extreme (low for longs / hi
 starting from the bar AFTER the confirming candle. The stop only ever tightens.
 
 Two switches shape the signal log:
-  trailing_in_profit (default 1) — 1: a signal whose candidate stop is still in loss (below
-    entry for longs / above for shorts) is not even logged; 0: every signal is logged and may
-    trail, loss or not.
-  late_trailing (default 0) — 1: each logged signal trails the stop to the PREVIOUS logged
-    signal's level (the first logged signal only arms the log); 0: a signal trails to its own
-    level immediately.
+  trailing_in_profit (default True) — True: a signal whose candidate stop is still in loss
+    (below entry for longs / above for shorts) is not even logged; False: every signal is
+    logged and may trail, loss or not.
+  late_trailing (default False) — True: each logged signal trails the stop to the PREVIOUS
+    logged signal's level (the first logged signal only arms the log); False: a signal trails
+    to its own level immediately.
 
 Unlike the entry finders, EVERY trailing signal requires the confirming candle (also
 consecutive_absorption and passive_wall, which enter without one), and there is no VAL/VAH
@@ -22,7 +22,7 @@ invalidation — the stop manages the exit. A stop hit at a trailed level report
 exit_reason = "trailing_sl" with the trailed level as exit_price; the `sl` column always keeps
 the originally placed stop.
 
-Self-contained per the risk-script convention: own copies of _zone_sl, both fill simulators and
+Self-contained per the risk-script convention: own copies of _zone_sl / _swing_sl, both fill simulators and
 the 2-bar/CVD helpers; the only package imports are the shared absorption grader the entry
 finders use themselves and the timing/context plumbing. The detectors run on the positional
 TradeWindow (pre-parsed JSON, shared confirm-candle mask, O(n) strided two-bar baseline) —
@@ -82,6 +82,16 @@ def _zone_sl(entry_win, entry_pos, direction, levels):
             return vah if highest_high <= vah else highest_high
         else:                                          # shouldn't occur (pullback re-enters VA)
             return vah
+
+
+def _swing_sl(entry_win, entry_pos, direction, levels):
+    """Swing stop over the post_retest bars up to and including the entry bar
+    (same rule as basic_risk's "swing_low"); VAL/VAH fallback when empty."""
+    m = entry_win.pos <= entry_pos
+    if not m.any():
+        return levels["val"] if direction == "long" else levels["vah"]
+    return float(entry_win.l[m].min()) if direction == "long" \
+      else float(entry_win.h[m].max())
 
 
 # ---------------------------------------------------------------------------
@@ -932,9 +942,12 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
         return None
 
     # --- SL placement (the trailing ratchet starts from here) ---
-    if params["sl_placement"] == 1:
+    placement = params["sl_placement"]
+    if placement == "VAL/VAH":
         sl = levels["val"] if direction == "long" else levels["vah"]
-    else:
+    elif placement == "swing_low":
+        sl = _swing_sl(entry_win, entry_pos, direction, levels)
+    else:   # "zone_logic" — the default; unknown / legacy values fall back here
         sl = _zone_sl(entry_win, entry_pos, direction, levels)
 
     risk = abs(entry_price - sl)

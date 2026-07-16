@@ -178,9 +178,9 @@ class ExploreTab(QWidget):
         self._heatmap.cellClicked.connect(self._on_cell_clicked)
         lay.addWidget(self._heatmap)
         self._heatmap_caption = Caption(
-            "Click a cell to open its full trade report below · Hatched = "
-            "fewer trades than the min-trades threshold · blank = no finite "
-            "value (no trades, PF ∞, undefined Sharpe)")
+            "Click a cell to open its full trade report below (click it again "
+            "to close) · Hatched = fewer trades than the min-trades threshold "
+            "· blank = no finite value (no trades, PF ∞, undefined Sharpe)")
         self._heatmap_caption.setVisible(False)
         lay.addWidget(self._heatmap_caption)
         self._reading = CollapsibleSection("How to read this surface")
@@ -205,6 +205,8 @@ class ExploreTab(QWidget):
 
         self.cell_detail = CellDetailPanel(settings)
         lay.addWidget(self.cell_detail)
+        # un-clicking the selected square closes its drill-down report
+        self._heatmap.cellDeselected.connect(self.cell_detail.hide_detail)
         lay.addStretch()
 
         # ── wiring ────────────────────────────────────────────────────────────

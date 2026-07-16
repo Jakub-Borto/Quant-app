@@ -1,5 +1,7 @@
 """Strategy parameters and output schema."""
 
+from .entries import FINDER_NAMES
+
 PARAM_SECTIONS = {
     "General":                  ["session_start", "ib_minutes", "trade_timeout", "max_flips", "valid_entries", "risk_script", "indicators_folder", "big_trades_folder"],
     "Entry Windows":            ["retest_window", "entry_window", "entry_after_absorption", "absorption_baseline_window"],
@@ -12,7 +14,6 @@ PARAM_SECTIONS = {
     "CVD Divergence (Absorption)": ["cvd_pivot_k", "cvd_min_separation", "cvd_max_separation", "cvd_wick_tolerance_ticks", "cvd_min_score"],
     "CVD Divergence (Exhaustion)": ["cvd_exh_pivot_k", "cvd_exh_min_separation", "cvd_exh_max_separation", "cvd_exh_wick_tolerance_ticks", "cvd_exh_min_score"],
     "Basic Risk Management":    ["rr", "sl_type"],
-    "Zone SL Risk":             ["zone_rr"],
     "VWAP Risk":                ["sl_placement", "vwap_std", "vwap_session", "vwap_tp_mode"],
     "VWAP Trailing Risk":       ["trailing_entries", "trailing_in_profit", "late_trailing"]
 }
@@ -65,25 +66,36 @@ PARAMS = {
     "cvd_exh_max_separation":       20,     # max bars between the two pivots (older pivot stale beyond this)
     "cvd_exh_wick_tolerance_ticks": 2,      # tolerance (ticks) for higher/equal high (or lower/equal low)
     "cvd_exh_min_score":            0.3,    # z-score threshold for the CVD divergence
-    # --- which entries to look for (1=on, 0=off): absorption_delta, consec, two_bar, passive_size_only, passive_wall, cvd_divergence_absorption, cvd_divergence_exhaustion ---
+    # --- which entries to look for (one bit per finder, FINDER_NAMES order; UI shows named checkboxes) ---
     "valid_entries":                "1111100",
-    # --- which risk management script to use: 1 = basic_risk, 2 = zone_sl_risk, 3 = vwap_tp_risk, 4 = vwap_trailing_risk ---
-    "risk_script":                  4,
+    # --- which risk management script to use (name-keyed RISK_REGISTRY; UI dropdown) ---
+    "risk_script":                  "vwap_trailing_risk",
     # --- basic risk management script ---
     "rr":                           1.0,    # fixed risk to reward ratio
-    "sl_type":                      0,      # 0 = VAL, 1 = swing low
-    # --- zone SL risk script ---
-    "zone_rr":                      1.0,    # fixed risk to reward ratio for zone_sl_risk
+    "sl_type":                      "VAL/VAH",  # stop mode: "VAL/VAH", "swing_low" or "zone_logic"
     # --- vwap TP risk script ---
-    "sl_placement":                 2,      # 1 = VAL/VAH stop, 2 = zone_sl_risk SL logic
+    "sl_placement":                 "zone_logic",  # stop mode: "VAL/VAH", "zone_logic" or "swing_low"
     "vwap_std":                     2,      # which sigma band for TP (2 or 3)
     "vwap_session":                 "globex",  # vwap band session: "globex" or "rth"
     "vwap_tp_mode":                 "now",  # "now" (band frozen at entry) or "trailing" (live)
-    # --- vwap trailing risk script (script 4 = vwap_tp_risk + signal-driven trailing stop) ---
-    # which signals may trail the stop (1=on, 0=off), same bit order as valid_entries
+    # --- vwap trailing risk script (vwap_tp_risk + signal-driven trailing stop) ---
+    # which signals may trail the stop (one bit per finder, same order as valid_entries)
     "trailing_entries":             "1111100",
-    "trailing_in_profit":           1,      # 1 = only breakeven-or-better levels trail (in-loss signals not even logged); 0 = trail everything
-    "late_trailing":                0,      # 1 = trail to the PREVIOUS logged signal's level (lag one signal); 0 = trail immediately
+    "trailing_in_profit":           True,   # True = only breakeven-or-better levels trail (in-loss signals not even logged); False = trail everything
+    "late_trailing":                False,  # True = trail to the PREVIOUS logged signal's level (lag one signal); False = trail immediately
+}
+
+# UI/optimizer choice lists (see modules/common/ui/params_form.py for the
+# declaration contract): the two bit-flag params render as named checkbox
+# groups (one box per finder, FINDER_NAMES order), the rest as dropdowns.
+PARAMS_OPTIONS = {
+    "valid_entries":    list(FINDER_NAMES),
+    "trailing_entries": list(FINDER_NAMES),
+    "risk_script":      ["basic_risk", "vwap_tp_risk", "vwap_trailing_risk"],
+    "sl_type":          ["VAL/VAH", "swing_low", "zone_logic"],
+    "sl_placement":     ["VAL/VAH", "zone_logic", "swing_low"],
+    "vwap_session":     ["globex", "rth"],
+    "vwap_tp_mode":     ["now", "trailing"],
 }
 
 OUTPUT_COLUMNS = [
