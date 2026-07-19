@@ -1,0 +1,9 @@
+[build-system]
+requires = ["setuptools>=70", "pybind11>=3.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orderbook_replay_cpp"
+version = "0.1.0"
+description = "Sequential L3 order-book replay kernel for the 1s MBO transforms (C++/pybind11)"
+requires-python = ">=3.13"

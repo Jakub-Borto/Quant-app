@@ -114,7 +114,7 @@ strategies/                strategy plugins (single-file or package)
 data_transforms/           raw DBN -> enriched parquet plugins
 position_sizing/           fixed.py, kelly.py, risk_based.py
 forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
-orderbook_replay_rs/       Rust (PyO3) L3 order-book replay kernel
+orderbook_replay_cpp/      C++ (pybind11) L3 order-book replay kernel
 tests/                     pytest suite (optimizer backend + metrics + Qt smoke)
 ```
 
@@ -177,16 +177,16 @@ commissions_per_contract, parent}` (`parent` links micros to full-size
 contracts). `HIDDEN_PARAMS = {"tick_size"}` lives there too — auto-injected
 into strategy params, never shown in the UI.
 
-## Rust extension (`orderbook_replay_rs`)
+## C++ extension (`orderbook_replay_cpp`)
 
-PyO3/maturin module (renamed from `heatmap_rs`) used by the `1s_mbo_*`
-transforms to replay L3 (MBO) events into per-second book snapshots
-(`replay_full`, `replay_cropped`). Rebuild:
+pybind11/setuptools module used by the `1s_mbo_*` transforms to replay L3
+(MBO) events into per-second book snapshots (`replay_full`,
+`replay_cropped`). Output is byte-identical to the pre-July-2026 kernel, so
+existing parquet stays valid. Builds with MSVC (VS 2022 Community,
+auto-detected). Rebuild:
 
 ```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-export VIRTUAL_ENV="D:/Quant_app/venv"
-./venv/Scripts/python.exe -m maturin develop --release -m orderbook_replay_rs/Cargo.toml
+./venv/Scripts/python.exe -m pip install ./orderbook_replay_cpp
 ```
 
 `1s_mbo_cropped.py` **requires** it; `1s_mbo_full_book.py` has a pure-Python

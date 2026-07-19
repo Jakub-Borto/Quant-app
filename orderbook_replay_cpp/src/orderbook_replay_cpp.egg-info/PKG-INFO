@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: orderbook_replay_cpp
+Version: 0.1.0
+Summary: Sequential L3 order-book replay kernel for the 1s MBO transforms (C++/pybind11)
+Requires-Python: >=3.13

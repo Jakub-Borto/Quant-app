@@ -3,8 +3,9 @@ venv/
 __pycache__/
 *.pyc
 
-# Rust extension build artifacts
-orderbook_replay_rs/target/
+# C++ extension build artifacts
+orderbook_replay_cpp/build/
+orderbook_replay_cpp/*.egg-info/
 *.pyd
 *.so
 

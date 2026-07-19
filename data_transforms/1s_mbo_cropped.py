@@ -10,9 +10,9 @@
 #      so the threshold adapts across ETH vs RTH liquidity regimes).
 # Empty levels are never written.
 #
-# The sequential L3 replay + cropping + JSON emission run in Rust
-# (orderbook_replay_rs.replay_cropped). This transform REQUIRES the orderbook_replay_rs extension
-# (build with: maturin develop --release -m orderbook_replay_rs/Cargo.toml).
+# The sequential L3 replay + cropping + JSON emission run in C++
+# (orderbook_replay_cpp.replay_cropped). This transform REQUIRES the orderbook_replay_cpp
+# extension (build with: pip install ./orderbook_replay_cpp).
 
 from __future__ import annotations
 
@@ -29,10 +29,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 try:
-    import orderbook_replay_rs
-    _HAS_RUST = True
+    import orderbook_replay_cpp
+    _HAS_CPP = True
 except ImportError:
-    _HAS_RUST = False
+    _HAS_CPP = False
 
 PRICE_SCALE = 1_000_000_000
 NS_PER_SEC  = 1_000_000_000
@@ -45,7 +45,7 @@ DEFAULT_TICK_SIZE  = 0.25  # fallback if the asset's tick isn't in TICK_SIZES
 
 # UI-configurable parameters (Data Formatter renders widgets from this dict,
 # exactly like strategy PARAMS in the Backtester). run_all() writes the merged
-# values back onto the module constants above — every use-site (the Rust call,
+# values back onto the module constants above — every use-site (the C++ call,
 # the log lines, the parquet metadata) reads those.
 PARAMS = {
     "n_ticks":            N_TICKS,
@@ -62,7 +62,7 @@ TICK_SIZES = {
     "6E": 0.00005, "6J": 0.0000005, "6B": 0.0001,
 }
 
-# Event encodings passed to the Rust kernel.
+# Event encodings passed to the C++ kernel.
 _ACODE = {"A": 0, "C": 1, "M": 2, "F": 3, "R": 4, "T": 5}
 _SCODE = {"B": 0, "A": 1}
 
@@ -94,7 +94,7 @@ def run_all(
 ) -> None:
     # same merge convention as strategies: UI values over PARAMS defaults.
     # Applied to the module constants FIRST so every downstream use-site
-    # (rust kernel call, logs, parquet metadata) sees the chosen values.
+    # (C++ kernel call, logs, parquet metadata) sees the chosen values.
     global N_TICKS, BIG_ORDER_MULT, BASELINE_WINDOW_MIN
     p = {**PARAMS, **(params or {})}
     N_TICKS             = int(p["n_ticks"])
@@ -105,9 +105,9 @@ def run_all(
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    if not _HAS_RUST:
-        on_progress(1, 1, "ERROR: orderbook_replay_rs extension not built. Run: "
-                          "maturin develop --release -m orderbook_replay_rs/Cargo.toml")
+    if not _HAS_CPP:
+        on_progress(1, 1, "ERROR: orderbook_replay_cpp extension not built. Run: "
+                          "pip install ./orderbook_replay_cpp")
         return
 
     files = sorted(input_path.glob("*.dbn.zst"))
@@ -505,7 +505,7 @@ def _build_aggressor_volume(df: pd.DataFrame) -> pd.Series:
 
 
 def _encode_events(session_df: pd.DataFrame):
-    """Encode the event stream into the int arrays the Rust kernel consumes."""
+    """Encode the event stream into the int arrays the C++ kernel consumes."""
     acode = session_df["action"].map(_ACODE).fillna(6).astype(np.int8).to_numpy()
     scode = session_df["side"].map(_SCODE).fillna(2).astype(np.int8).to_numpy()
     prices  = session_df["price"].to_numpy(dtype=np.float64)
@@ -517,7 +517,7 @@ def _encode_events(session_df: pd.DataFrame):
 
 
 def _replay_book(session_df: pd.DataFrame, trades: pd.DataFrame, tick: float) -> pd.DataFrame:
-    """Sequential L3 replay → per-second CROPPED book snapshots (Rust kernel).
+    """Sequential L3 replay → per-second CROPPED book snapshots (C++ kernel).
 
     Window is [trade_low - N_TICKS, trade_high + N_TICKS] per second (falling
     back to best_bid/best_ask on no-trade seconds), plus far "big" levels whose
@@ -539,13 +539,13 @@ def _replay_book(session_df: pd.DataFrame, trades: pd.DataFrame, tick: float) ->
     window_sec  = int(BASELINE_WINDOW_MIN * 60)
 
     t = perf_counter()
-    secs, bb, ba, bj, aj = orderbook_replay_rs.replay_cropped(
+    secs, bb, ba, bj, aj = orderbook_replay_cpp.replay_cropped(
         acode, scode, price_i, size, oid, sec,
         int(N_TICKS), tick_i, float(BIG_ORDER_MULT), window_sec,
         trade_sec, trade_lo, trade_hi,
     )
     _tlog(
-        f"replay_book(rust,cropped): rust={perf_counter() - t:6.2f}s  "
+        f"replay_book(cpp,cropped): cpp={perf_counter() - t:6.2f}s  "
         f"(events={len(acode):,}, snapshots={len(secs):,})"
     )
 

@@ -7,7 +7,7 @@
 # One output file = one Globex session = two input files (prev + curr day).
 # Trade-derived fields (OHLCV, volume, aggressor_volume) are vectorized.
 # Book-derived fields (best_bid/ask, bid_depth, ask_depth) come from one
-# sequential L3 replay implemented in Rust (orderbook_replay_rs.replay_full); a pure
+# sequential L3 replay implemented in C++ (orderbook_replay_cpp.replay_full); a pure
 # Python fallback (_replay_book_py) is used if the extension isn't built.
 
 from __future__ import annotations
@@ -25,16 +25,16 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 try:
-    import orderbook_replay_rs
-    _HAS_RUST = True
+    import orderbook_replay_cpp
+    _HAS_CPP = True
 except ImportError:
-    _HAS_RUST = False
+    _HAS_CPP = False
 
 PRICE_SCALE = 1_000_000_000
 NS_PER_SEC  = 1_000_000_000
 PARAMS = {}
 
-# Event encodings passed to the Rust kernel.
+# Event encodings passed to the C++ kernel.
 _ACODE = {"A": 0, "C": 1, "M": 2, "F": 3, "R": 4, "T": 5}
 _SCODE = {"B": 0, "A": 1}
 
@@ -451,7 +451,7 @@ def _build_aggressor_volume(df: pd.DataFrame) -> pd.Series:
 
 
 def _encode_events(session_df: pd.DataFrame):
-    """Encode the event stream into the int arrays the Rust kernel consumes."""
+    """Encode the event stream into the int arrays the C++ kernel consumes."""
     acode = session_df["action"].map(_ACODE).fillna(6).astype(np.int8).to_numpy()
     scode = session_df["side"].map(_SCODE).fillna(2).astype(np.int8).to_numpy()
     prices  = session_df["price"].to_numpy(dtype=np.float64)
@@ -463,7 +463,7 @@ def _encode_events(session_df: pd.DataFrame):
 
 
 def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
-    """Sequential L3 replay → per-second full-book snapshots (Rust kernel).
+    """Sequential L3 replay → per-second full-book snapshots (C++ kernel).
 
     Maintains an aggregated depth ladder (price_i -> total resting qty) and
     emits an end-of-second snapshot of the full book whenever the second rolls
@@ -473,7 +473,7 @@ def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
     Returns a DataFrame indexed by integer UTC epoch-second with best_bid,
     best_ask, bid_depth (full-book JSON), ask_depth (full-book JSON).
     """
-    if not _HAS_RUST:
+    if not _HAS_CPP:
         return _replay_book_py(session_df)
 
     t = perf_counter()
@@ -481,11 +481,11 @@ def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
     prep = perf_counter() - t
 
     t = perf_counter()
-    secs, bb, ba, bj, aj = orderbook_replay_rs.replay_full(acode, scode, price_i, size, oid, sec)
-    rust = perf_counter() - t
+    secs, bb, ba, bj, aj = orderbook_replay_cpp.replay_full(acode, scode, price_i, size, oid, sec)
+    cpp = perf_counter() - t
 
     _tlog(
-        f"replay_book(rust): prep={prep:5.2f}s  rust={rust:6.2f}s  "
+        f"replay_book(cpp): prep={prep:5.2f}s  cpp={cpp:6.2f}s  "
         f"(events={len(acode):,}, snapshots={len(secs):,})"
     )
 
@@ -498,7 +498,7 @@ def _replay_book(session_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _replay_book_py(session_df: pd.DataFrame) -> pd.DataFrame:
-    """Pure-Python fallback for _replay_book (used if orderbook_replay_rs isn't built)."""
+    """Pure-Python fallback for _replay_book (used if orderbook_replay_cpp isn't built)."""
     t_prep = perf_counter()
     actions = session_df["action"].to_numpy()
     sides   = session_df["side"].to_numpy()
