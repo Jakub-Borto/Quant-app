@@ -9,11 +9,29 @@ spot close at/just before the snapshot time.  Rows land in the file of their
 snapshot_time's NY date (a session's evening print is dated the session day,
 its morning print the next trading day).  No IV / Greeks math — clean inputs.
 
+When a contract expires, ONE tombstone row is written at its (real) expiry
++ 1 second — snapshot_type "expired", open_interest -1, settlement NaN — and
+the contract is never mentioned again: the feed's post-expiry OI republications
+(which arrive up to ~a day late) are suppressed.  Tombstones are emitted only
+for contracts that actually appeared in the OI stream, so never-traded strikes
+don't get one.
+
 skip_existing=True resumes incrementally: finished daily files are kept and
 only the input tail is reprocessed, always recomputing the trailing ~2 weeks
 (days written at the previous run's end may predate their late OI
 republications / weekend settlement finals).  Resume only extends forward —
 to fill gaps older than the newest existing file, run with skip_existing off.
+
+Each row also carries significant_options_based_on_front_month, evaluated
+PER SESSION (Rules 1/2/3 vs the front-month roll calendar; see
+_significance_rows): a row is significant when its root is always-tracked, or
+its underlying is the current front quarterly that day, or the next front
+quarterly with expiry ≥ the upcoming roll (the incoming book captured through
+its pre-roll build-up).  So the same contract is significant near the front and
+not while it is far-dated — that is what lets PARAMS.drop_insignificant
+(default False) actually shrink the output; with it on, the (then all-True)
+column is omitted.  volume_roll is read up front from the candle front_month
+footers (whole range already on disk), so the plan's "pass 2" is unnecessary.
 
 The input folder may be either the DEFINITION or the STATISTICS folder; the
 sibling is resolved automatically from the schema token in the *.dbn.zst
@@ -57,9 +75,36 @@ from time import perf_counter
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import zstandard
 
 TIMING = True
+
+# ── front-month significance classification ───────────────────────────────────
+# Transform B mirrors BOTH dicts below and the significance logic; there is no
+# shared module (by request), so keep them in sync manually when either changes.
+#
+# 1a. Series roots that are ALWAYS significant (structural OI: quarterly / EOM /
+#     serial families).  Root-membership only, no date logic.
+ASSETS_TO_ALWAYS_TRACK = {
+    "ES": ("ES", "EW", "EYC"),
+}
+
+# 1b. Per-asset quarterly roll / expiry rule.  Quarterly futures expire on the
+#     Nth weekday of the quarter months (ES: 3rd Friday, 09:30 ET, AM-settled);
+#     the CME scheduled roll is `roll_offset_days` calendar days earlier
+#     (Thursday, 8 days before expiry for the equity indices).
+ROLL_RULES = {
+    "ES": {"quarter_months": (3, 6, 9, 12), "expiry_weekday": 4,
+           "expiry_week": 3, "expiry_time": (9, 30), "roll_offset_days": 8},
+}
+_DEFAULT_ROLL_RULE = ROLL_RULES["ES"]
+_MONTHCHAR = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
+              7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
+
+# UI param: default keeps every row (research-safe).  True drops rows whose
+# significant_options_based_on_front_month is False.
+PARAMS = {"drop_insignificant": False}
 
 _NY = "America/New_York"
 _NS_PER_DAY = 86_400_000_000_000
@@ -302,6 +347,8 @@ class _DefStore:
         self.cp = np.empty(cap, dtype=np.int8)
         self.series_code = np.empty(cap, dtype=np.int32)
         self.und_code = np.empty(cap, dtype=np.int32)
+        self.iid = np.empty(cap, dtype=np.int64)         # contract identity
+        self.seen = np.zeros(cap, dtype=bool)            # appeared in OI stream
         self._series_ids: dict[str, int] = {}
         self._und_ids: dict[str, int] = {}
         self.series_cats: list[str] = []
@@ -313,9 +360,9 @@ class _DefStore:
             return
         cap = max(n, 2 * len(self.exp))
         for name in ("exp", "act", "strike", "mult", "cp",
-                     "series_code", "und_code"):
+                     "series_code", "und_code", "iid", "seen"):
             old = getattr(self, name)
-            grown = np.empty(cap, dtype=old.dtype)
+            grown = (np.zeros if old.dtype == bool else np.empty)(cap, old.dtype)
             grown[:self.n] = old[:self.n]
             setattr(self, name, grown)
 
@@ -346,6 +393,7 @@ class _DefStore:
         self.strike[row0:n_rows] = d["strike"][idx]
         self.mult[row0:n_rows] = d["mult"][idx]
         self.cp[row0:n_rows] = d["cp"][idx]
+        self.iid[row0:n_rows] = d["iid"][idx]
         for off, j in enumerate(idx.tolist()):
             self.series_code[row0 + off] = self._code(
                 self._series_ids, self.series_cats, d["series"][j])
@@ -471,6 +519,7 @@ class _SessionStore:
         self.n_missing_def = 0
         self.n_unresolved_ref = 0
         self.n_bad_settle_ref = 0
+        self.n_post_expiry = 0
 
     def ready_days(self, force: bool = False) -> list[int]:
         """Bins no future session can still add rows to (all, when forced).
@@ -561,6 +610,16 @@ class _SessionStore:
         if not known.all():
             iid, typ, ts, qty, didx = (
                 iid[known], typ[known], ts[known], qty[known], didx[known])
+        self.defs.seen[didx] = True   # this contract appeared in the OI stream
+
+        # drop prints AFTER the contract's expiry (the feed republishes the
+        # expiry session's OI up to ~a day later) — each expired contract is
+        # represented exactly once, by its open_interest = -1 tombstone row
+        alive = ts <= self.defs.exp[didx]
+        if not alive.all():
+            self.n_post_expiry += int((~alive).sum())
+            iid, typ, ts, qty, didx = (
+                iid[alive], typ[alive], ts[alive], qty[alive], didx[alive])
         if not len(iid):
             self.settle.pop(day, None)
             return
@@ -659,6 +718,142 @@ if __name__ == "<run_path>":   # executing inside a pool worker's initializer
     _plant_worker()
 
 
+# ── front-month roll calendar & significance ──────────────────────────────────
+
+def _build_roll_calendar(candle_folder: Path | None, asset: str,
+                         y0: int = 2006, y1: int = 2035) -> dict:
+    """Quarterly roll calendar for `asset`.
+
+    Futures expiries come from the deterministic rule (Nth weekday of the
+    quarter months); `cme_scheduled_roll` = expiry − roll_offset_days; the
+    hindsight `volume_roll` is read from candle `front_month` footers (the
+    whole range is on disk, so it's available up front — no second pass over
+    the option files needed).  `min_roll` = min(volume, scheduled), or the
+    scheduled roll alone where volume is undeterminable.
+    """
+    rule = ROLL_RULES.get(asset, _DEFAULT_ROLL_RULE)
+    months = rule["quarter_months"]
+    wd, wk = rule["expiry_weekday"], rule["expiry_week"]
+    hh, mm = rule["expiry_time"]
+    off = rule["roll_offset_days"]
+
+    rows = []
+    for y in range(y0, y1 + 1):
+        for mo in months:
+            first = pd.Timestamp(year=y, month=mo, day=1)
+            day = 1 + ((wd - first.dayofweek) % 7) + 7 * (wk - 1)
+            exp = pd.Timestamp(f"{y}-{mo:02d}-{day:02d} {hh:02d}:{mm:02d}",
+                               tz=_NY)
+            rows.append((exp.value, _MONTHCHAR[mo],
+                         f"{asset}{_MONTHCHAR[mo]}{str(y)[-1]}"))
+    rows.sort()
+    q_exp = np.array([r[0] for r in rows], dtype=np.int64)
+    q_mc = np.array([r[1] for r in rows])
+    q_str = np.array([r[2] for r in rows])
+    q_cme = q_exp - off * _NS_PER_DAY
+
+    q_vol = np.full(len(q_exp), -1, dtype=np.int64)
+    n_vol = 0
+    if candle_folder is not None:
+        cfiles = [f for f in candle_folder.glob("*.parquet")
+                  if f.stem[:1].isdigit()]
+
+        def _footer(f: Path):
+            try:                                     # footer only, no data read
+                v = (pq.read_metadata(f).metadata or {}).get(b"front_month")
+            except Exception:
+                return None
+            return (int(pd.Timestamp(f.stem).value), v.decode()) if v else None
+
+        with ThreadPoolExecutor(min(8, len(cfiles) or 1)) as tp:
+            fm = dict(filter(None, tp.map(_footer, cfiles)))
+        if fm:
+            fdays = np.array(sorted(fm), dtype=np.int64)
+            fcode = np.array([fm[d] for d in fdays])
+            became = np.full(len(q_exp), -1, dtype=np.int64)
+            for k in range(len(q_exp)):
+                # search only near this quarter -> no decade-string collision
+                lo = q_exp[k] - 160 * _NS_PER_DAY
+                sel = (fdays >= lo) & (fdays < q_exp[k]) & (fcode == q_str[k])
+                if sel.any():
+                    became[k] = fdays[sel].min()
+            q_vol[:-1] = became[1:]          # roll off k = when k+1 became front
+            n_vol = int((q_vol >= 0).sum())
+    q_min = np.where(q_vol >= 0, np.minimum(q_vol, q_cme), q_cme)
+    return {"exp": q_exp, "exp_eff": q_exp.copy(), "mc": q_mc, "str": q_str,
+            "cme": q_cme, "min": q_min, "vol": q_vol, "n_vol": n_vol,
+            "n_q": len(q_exp)}
+
+
+def _refine_real_expiries(cal: dict, real_max: np.ndarray) -> None:
+    """Snap formula expiries to the REAL futures expiries seen in definitions.
+
+    The 3rd-Friday formula is wrong when the Friday is a holiday (Juneteenth
+    2026-06-19: ESM6 actually expired Thursday 06-18 09:30).  The latest option
+    expiry mapped to a quarterly IS that future's AM expiry (the ES-root
+    quarterly option expires with the future), so accept `real_max` as the
+    effective expiry when it sits within [formula − 4d, formula] — holiday
+    shifts move expiry exactly one business day earlier, and no other option
+    series expires inside that window before the AM quarterly is listed.
+    """
+    w = ((real_max >= cal["exp"] - 4 * _NS_PER_DAY)
+         & (real_max <= cal["exp"]))
+    cal["exp_eff"] = np.where(w, real_max, cal["exp"])
+
+
+def _contract_ku(und_str, exp, cal: dict) -> np.ndarray:
+    """Quarterly index per contract: month-code of the underlying, first
+    calendar expiry ≥ the option's own expiry (disambiguates the decade).
+    -1 when the underlying isn't a quarterly / falls outside the calendar."""
+    n = len(exp)
+    ku = np.full(n, -1, dtype=np.int64)
+    if not n:
+        return ku
+    q_exp, q_mc = cal["exp"], cal["mc"]
+    mc = np.array([u[-2] if len(u) >= 3 else "?" for u in und_str])
+    for ch in np.unique(mc):
+        idxs = np.nonzero(q_mc == ch)[0]
+        if not len(idxs):
+            continue
+        exps = q_exp[idxs]
+        sel = mc == ch
+        pos = np.searchsorted(exps, exp[sel], side="left")
+        ok = pos < len(exps)
+        res = np.full(int(sel.sum()), -1, dtype=np.int64)
+        res[ok] = idxs[np.clip(pos, 0, len(exps) - 1)][ok]
+        ku[sel] = res
+    return ku
+
+
+def _significance_rows(ku, always_flag, exp, ts, cal: dict) -> np.ndarray:
+    """Per-SESSION significance for a batch of rows (all rules 1/2/3).
+
+    Evaluated at each row's own snapshot time `ts`, so a contract is
+    significant only on the sessions when its underlying is actually the
+    current or the next front-month quarterly — this is what makes
+    drop_insignificant remove the far-dated books.
+
+    Rule 1: always-tracked root.
+    Rule 2: underlying is the current front quarterly — the nearest one not yet
+            expired — so the expiring front stays significant until its own
+            expiry (deterministic, no volume_roll needed).
+    Rule 3: underlying is the NEXT front quarterly AND the option's expiry is
+            ≥ min(volume_roll, cme_roll) of the current front (the upcoming
+            roll) — i.e. the incoming book, captured through its pre-roll
+            build-up during the current front's tenure.
+    """
+    NEG = np.iinfo(np.int64).min
+    # current front = nearest quarterly not yet expired at this session's ts
+    # (exp_eff = formula expiry snapped to the real, holiday-shifted one)
+    cur = np.searchsorted(cal["exp_eff"], ts, side="right")
+    have = ku >= 0
+    is_cur = have & (ku == cur)
+    qmin_cur = np.where(cur < cal["n_q"],
+                        cal["min"][np.clip(cur, 0, cal["n_q"] - 1)], NEG)
+    is_next = have & (ku == cur + 1) & (exp >= qmin_cur)
+    return always_flag | is_cur | is_next
+
+
 # ── driver ────────────────────────────────────────────────────────────────────
 
 def run_all(
@@ -666,10 +861,13 @@ def run_all(
         output_folder: str,
         skip_existing: bool = True,
         on_progress: callable = None,
+        params: dict | None = None,
 ) -> None:
     def progress(cur: int, total: int, msg: str) -> None:
         if on_progress:
             on_progress(cur, total, msg)
+
+    drop_insignificant = bool((params or {}).get("drop_insignificant", False))
 
     defs_folder, stats_folder = _resolve_folders(Path(input_folder))
     candle_folder, asset = _find_candle_folder(stats_folder)
@@ -733,21 +931,104 @@ def run_all(
     except Exception:
         pass
 
+    # roll calendar for the significance classification (built once, up front:
+    # volume_roll comes from candle footers, all on disk, so no second pass over
+    # the option files is needed — the flag is a per-contract static property).
+    always = ASSETS_TO_ALWAYS_TRACK.get(asset, ())
+    cal = _build_roll_calendar(candle_folder, asset)
+
     defs = _DefStore()
     store = _SessionStore(defs)
     times = {"decode_wait": 0.0, "defs": 0.0, "stats": 0.0, "flush": 0.0,
-             "spot": 0.0, "write": 0.0}
+             "spot": 0.0, "sig": 0.0, "write": 0.0}
+
+    # per-contract STATIC significance inputs (quarterly index + always-track
+    # flag), grown as definitions are applied.  The per-session rule itself is
+    # applied at write time, using each row's own snapshot date.
+    ku_by_didx = np.full(1 << 16, -1, dtype=np.int64)
+    always_by_didx = np.zeros(1 << 16, dtype=bool)
+    real_max = np.full(cal["n_q"], np.iinfo(np.int64).min, dtype=np.int64)
+    tomb_by_day: dict[int, list] = {}   # expiry NY day -> [didx arrays]
+    sig_done = 0
+    last_task_day = -1                  # newest input day processed so far
+
+    def _extend_static() -> None:
+        nonlocal ku_by_didx, always_by_didx, sig_done
+        if defs.n <= sig_done:
+            return
+        t_ = perf_counter()
+        lo, hi = sig_done, defs.n
+        if hi > len(ku_by_didx):
+            cap = max(hi, 2 * len(ku_by_didx))
+            gk = np.full(cap, -1, dtype=np.int64); gk[:sig_done] = ku_by_didx[:sig_done]
+            ga = np.zeros(cap, dtype=bool); ga[:sig_done] = always_by_didx[:sig_done]
+            ku_by_didx, always_by_didx = gk, ga
+        und_str = [defs.und_cats[c] for c in defs.und_code[lo:hi]]
+        root_str = np.asarray([defs.series_cats[c] for c in defs.series_code[lo:hi]])
+        ku = _contract_ku(und_str, defs.exp[lo:hi], cal)
+        ku_by_didx[lo:hi] = ku
+        always_by_didx[lo:hi] = (np.isin(root_str, np.asarray(always))
+                                 if always else False)
+        # learn real (holiday-shifted) futures expiries from the definitions;
+        # a quarterly's defs appear years before it is ever the front, so its
+        # effective expiry is final long before any row near it is written
+        okm = ku >= 0
+        if okm.any():
+            np.maximum.at(real_max, ku[okm], defs.exp[lo:hi][okm])
+            _refine_real_expiries(cal, real_max)
+        # queue expiry tombstones: bucket new def rows by their expiry NY day
+        exp_day = _ny_day(defs.exp[lo:hi])
+        rows_new = np.arange(lo, hi, dtype=np.int64)
+        for d_ in np.unique(exp_day):
+            tomb_by_day.setdefault(int(d_), []).append(rows_new[exp_day == d_])
+        sig_done = hi
+        times["sig"] += perf_counter() - t_
 
     # ── per-day writer ────────────────────────────────────────────────────────
     out_dir.mkdir(parents=True, exist_ok=True)
     writer_pool = ThreadPoolExecutor(4)   # to_parquet releases the GIL
     write_futs: list = []
     candle_ts = candle_px = None
-    n_written = n_rows = n_skipped = n_backfilled = 0
+    n_written = n_rows = n_skipped = n_backfilled = n_dropped = 0
+    n_tombstones = 0
+
+    def _make_tombstones(d_: int):
+        """One open_interest = -1 row per OI-seen contract expiring on day d_
+        (deduped per contract id, keeping its latest definition row)."""
+        nonlocal n_tombstones
+        batches = tomb_by_day.pop(d_, None)
+        if batches is None:
+            return None
+        cand = np.concatenate(batches)
+        order = np.lexsort((cand, defs.iid[cand]))
+        c = cand[order]
+        ii = defs.iid[c]
+        starts = np.nonzero(np.r_[True, ii[1:] != ii[:-1]])[0]
+        seen_any = np.logical_or.reduceat(defs.seen[c], starts)
+        latest = c[np.r_[starts[1:] - 1, len(c) - 1]]
+        keep = latest[seen_any]
+        if not len(keep):
+            return None
+        n_tombstones += len(keep)
+        n = len(keep)
+        return (defs.exp[keep] + 1_000_000_000,          # expiry + 1 second
+                np.full(n, 2, dtype=np.int8),            # snapshot_type "expired"
+                keep.astype(np.int32),
+                np.full(n, -1, dtype=np.int64),          # the -1 OI sentinel
+                np.full(n, np.nan),
+                np.zeros(n, dtype=bool))
 
     def _drain_bins(force: bool = False) -> None:
-        nonlocal candle_ts, candle_px, n_written, n_rows, n_skipped, n_backfilled
+        nonlocal candle_ts, candle_px, n_written, n_rows, n_skipped
+        nonlocal n_backfilled, n_dropped
+        _extend_static()   # ensure every didx we're about to write has ku/always
         days = store.ready_days(force)
+        # tombstone-only days (an expiry date whose bin has no OI rows)
+        open_min = min(store.oi) if store.oi else None
+        ready_tomb = [d for d in tomb_by_day
+                      if d <= last_task_day
+                      and (force or open_min is None or d < open_min)]
+        days = sorted(set(days) | set(ready_tomb))
         if not days:
             return
         if candle_ts is None:
@@ -760,10 +1041,16 @@ def run_all(
             times["spot"] += perf_counter() - t_
         t_ = perf_counter()
         for d_ in days:
-            parts = store.bins.pop(d_)
+            parts = store.bins.pop(d_, [])
             if (rewrite_from is not None and d_ < rewrite_from
                     and d_ in existing_days):
+                tomb_by_day.pop(d_, None)
                 n_skipped += 1
+                continue
+            tomb = _make_tombstones(d_)
+            if tomb is not None:
+                parts.append(tomb)
+            if not parts:
                 continue
             ts = np.concatenate([p[0] for p in parts])
             order = np.argsort(ts, kind="stable")
@@ -773,6 +1060,17 @@ def run_all(
             oi_ = np.concatenate([p[3] for p in parts])[order]
             sp_ = np.concatenate([p[4] for p in parts])[order]
             sf_ = np.concatenate([p[5] for p in parts])[order]
+
+            sig = _significance_rows(ku_by_didx[didx], always_by_didx[didx],
+                                     defs.exp[didx], ts, cal)
+            if drop_insignificant:
+                keep = sig
+                n_dropped += int((~keep).sum())
+                if not keep.all():
+                    ts, typ, didx = ts[keep], typ[keep], didx[keep]
+                    oi_, sp_, sf_, sig = oi_[keep], sp_[keep], sf_[keep], sig[keep]
+                if not len(ts):
+                    continue
 
             mult_raw = defs.mult[didx]
             zero = mult_raw == 0
@@ -786,7 +1084,7 @@ def run_all(
             df = pd.DataFrame(
                 {
                     "snapshot_type": pd.Categorical.from_codes(
-                        typ, categories=["evening", "morning"]),
+                        typ, categories=["evening", "morning", "expired"]),
                     "underlying": pd.Categorical.from_codes(
                         defs.und_code[didx], categories=list(defs.und_cats)),
                     "series": pd.Categorical.from_codes(
@@ -804,9 +1102,13 @@ def run_all(
                     "activation_date": pd.DatetimeIndex(
                         defs.act[didx], tz="UTC").tz_convert(_NY),
                     "spot_es": spot,
+                    "significant_options_based_on_front_month": sig,
                 },
                 index=index,
             )
+            # with drop on, the column is all-True (redundant) -> drop it
+            if drop_insignificant:
+                df = df.drop(columns="significant_options_based_on_front_month")
             date_str = str(pd.Timestamp(d_ * _NS_PER_DAY).date())
             write_futs.append(writer_pool.submit(
                 df.to_parquet, out_dir / f"{date_str}.parquet",
@@ -856,6 +1158,7 @@ def run_all(
                 stats_seen += 1
                 progress(stats_seen, total,
                          f"{pd.Timestamp(day * _NS_PER_DAY).date()}")
+            last_task_day = max(last_task_day, day)
 
             # flush BEFORE this day's definitions apply, so emitted rows never
             # see a redefinition (instrument_id reuse) postdating their session
@@ -928,6 +1231,16 @@ def run_all(
     if n_backfilled:
         notes.append(f"{n_backfilled:,} rows had no multiplier — backfilled "
                      f"with the product's modal value")
+    if cal["n_vol"] < cal["n_q"]:
+        notes.append(f"volume_roll undeterminable for "
+                     f"{cal['n_q'] - cal['n_vol']} quarterlies — used the "
+                     f"scheduled roll alone")
+    if n_tombstones:
+        notes.append(f"{n_tombstones:,} expiry tombstones (OI = -1)")
+    if store.n_post_expiry:
+        notes.append(f"{store.n_post_expiry:,} post-expiry OI prints dropped")
+    if drop_insignificant:
+        notes.append(f"dropped {n_dropped:,} insignificant rows")
     suffix = f"  ({'; '.join(notes)})" if notes else ""
     skipped = f", {n_skipped} already existed" if n_skipped else ""
     progress(total, total, f"✓ Wrote {n_written} daily files — "
