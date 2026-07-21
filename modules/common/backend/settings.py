@@ -35,6 +35,7 @@ PLUGIN_CATEGORIES = {
     "strategies":      "strategies",
     "data_transforms": "data_transforms",
     "position_sizing": "position_sizing",
+    "scripts":         "scripts",
 }
 
 # Human labels for the settings dialog.
@@ -42,6 +43,7 @@ CATEGORY_LABELS = {
     "strategies":      "Strategy folders",
     "data_transforms": "Data-transform folders",
     "position_sizing": "Position-sizing folders",
+    "scripts":         "Script folders",
 }
 
 # Default data root — the machine's dedicated data drive location (the data

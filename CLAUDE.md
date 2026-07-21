@@ -47,10 +47,11 @@ the Optimizer) is the docstring of `modules/common/ui/params_form.py`.
 | `strategies/` | Backtester, Optimizer | `run(folder_path, start_date, end_date, params) -> pd.DataFrame` (+ `PARAMS`, optional `PARAMS_OPTIONS`; the Optimizer sweeps int/float params over min/max/step, str params over a value list, bool params over [False, True], dropdown params over a subset of their choices, bit-flag params over a bitstring list) |
 | `position_sizing/` | Analytics, Monte Carlo | `apply(trades, params) -> pd.DataFrame` (+ `PARAMS`) |
 | `modules/monte_carlo/methods/` | Monte Carlo | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`; `PROP_FIRM = True` opts into the dedicated prop-firm UI) |
+| `scripts/` | Scripts | no Python contract — any quick one-off script. A `# app: streamlit` comment (or `STREAMLIT = True`) in the first 30 lines → launched as `streamlit run` on a free port + opened in the dedicated scripts browser (Chrome/Edge with a private `--user-data-dir` profile — first run opens its window, later runs add tabs there; Opera ignores the flags, so it's never a candidate); otherwise run as `python -u` with output in the module's console. cwd is the script's own folder (NOT repo root — root `inspect.py` shadowing); repo imports via the sys.path.append idiom in `scripts/example_hello.py` |
 
-The first three folders are **configurable in Settings** (gear icon): each
-category searches the in-repo default folder plus any extra folders you add.
-MC methods are internal (not a settings category).
+The first three folders and `scripts/` are **configurable in Settings**
+(gear icon): each category searches the in-repo default folder plus any
+extra folders you add. MC methods are internal (not a settings category).
 
 `on_progress(current, total, message)` is the universal progress callback
 (transforms + optimizer engine). Cancellation = an exception raised INSIDE
@@ -110,9 +111,13 @@ modules/
                            combine/, + heatmap_model, run_setup) — pure,
                            tested; UI: sweep_panel, new_run_tab, explore_tab,
                            cell_detail, combine_tab, window.py
+  scripts/                 quick-script launcher: backend/{ports,scan,browser}.py
+                           (pure) + process_manager.py (QProcess per script
+                           instance) + log_panel.py + window.py
 strategies/                strategy plugins (single-file or package)
 data_transforms/           raw DBN -> enriched parquet plugins
 position_sizing/           fixed.py, kelly.py, risk_based.py
+scripts/                   quick-script plugins for the Scripts module
 forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
 orderbook_replay_cpp/      C++ (pybind11) L3 order-book replay kernel
 tests/                     pytest suite (optimizer backend + metrics + Qt smoke)

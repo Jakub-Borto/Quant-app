@@ -36,6 +36,9 @@ class ModuleSpec:
         if self.key == "optimizer":
             from modules.optimizer.window import OptimizerWindow
             return OptimizerWindow(settings)
+        if self.key == "scripts":
+            from modules.scripts.window import ScriptsWindow
+            return ScriptsWindow(settings)
         raise KeyError(f"Unknown module key: {self.key}")
 
 
@@ -50,4 +53,7 @@ MODULES = [
                "Run Monte Carlo simulations to stress test the strategy."),
     ModuleSpec("optimizer", "05", "Optimizer",
                "Sweep strategy params on a grid and explore the metric heatmap."),
+    ModuleSpec("scripts", "06", "Scripts",
+               "Run quick research scripts — Streamlit apps in the browser or "
+               "plain Python in the console."),
 ]

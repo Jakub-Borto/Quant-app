@@ -159,6 +159,19 @@ def test_monte_carlo_window_initial_trades(qtbot, tmp_path):
     assert win._file.currentData().path == p
 
 
+def test_scripts_window_constructs(qtbot, tmp_path):
+    from modules.common.backend.settings import Settings
+    from modules.scripts.window import ScriptsWindow
+    extra = tmp_path / "extra_scripts"
+    extra.mkdir()
+    (extra / "quick_check.py").write_text("print('hi')\n", encoding="utf-8")
+    win = ScriptsWindow(Settings({"scripts": [str(extra)]}, DATA_ROOTS))
+    qtbot.addWidget(win)
+    win.show()
+    assert "quick_check" in [r.name for r in win._refs]
+    assert not win._instances    # constructing must not spawn processes
+
+
 @needs_data
 def test_optimizer_window_three_tabs(qtbot, settings):
     from modules.optimizer.window import OptimizerWindow
