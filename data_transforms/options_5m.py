@@ -81,6 +81,14 @@ volume_roll source (candle front_month footers).  No shared module by design:
 if either copy changes, sync the other manually.
 """
 
+
+
+"""
+WHAT TO ADD/FIX:
+- bbo 5m
+- resolve issue with dealers oi flow not following hidden oi
+"""
+
 import builtins
 import json
 import os
