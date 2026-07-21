@@ -18,10 +18,30 @@ One row per (contract, bucket).  When a contract expires, ONE tombstone row
 containing its real expiry + 1 second — the guaranteed last mention, like
 transform A; only contracts that ever appeared in the output get one.
 
+SPREAD-LEG ATTRIBUTION (needs a DBN v3 DEFINITION sibling folder, auto-
+detected): trades on strategy instruments (verticals, UDS combos — invisible
+to the outright tape) are decomposed into their option legs via the v3 leg
+fields; each leg's outright receives size × ratio signed by trade-aggressor ×
+leg-side.  Per bucket this fills spread_volume / spread_buy_volume /
+spread_sell_volume and the cumulative dealer_oi_flow_spread (same activation
+/ NaN rules as dealer_oi_flow, which stays outright-only); the attributed
+net also feeds daily_estimated_oi.  Spreads never appear as rows — their
+flow lands on the outright legs.  Without a v3 folder the spread columns are
+zero and a note is emitted.
+
 Row columns: timestamp (index, non-unique, tz America/New_York),
-instrument_id, open/high/low/close, volume, buy_volume, sell_volume, bid, ask,
-is_stale_quote, open_interest, is_morning_update, dealer_oi_flow,
-significant_options_based_on_front_month.  Static contract facts are NOT
+instrument_id, open/high/low/close, volume, buy_volume, sell_volume,
+spread_volume, spread_buy_volume, spread_sell_volume, bid, ask,
+is_stale_quote, open_interest, is_morning_update, daily_estimated_oi,
+dealer_oi_flow, dealer_oi_flow_spread,
+significant_options_based_on_front_month.
+daily_estimated_oi = the latest CME-published OI adjusted per bucket by the
+tape's net aggressor volume (buy adds, sell subtracts, mid 0), snapping to
+CME's number at each new print.  The published value is as-of the PRIOR
+session's close, so the adjustment window starts there — before this
+session's print lands, the previous session's net is included so the snap
+neither loses nor double-counts the overnight tape.  Can go negative (the
+estimation error is left visible); tombstone rows carry -1.  Static contract facts are NOT
 columns: each file's parquet metadata carries a JSON dict
 {instrument_id: {underlying, series, expiry, strike, cp_flag, activation_date}}
 plus scalar "multiplier".
@@ -206,24 +226,40 @@ def _schema_token(folder: Path) -> str | None:
 
 
 def _resolve_folders(input_folder: Path) -> dict:
-    """Input may be the DEFINITION, STATISTICS or TBBO folder — resolve all
-    three (siblings searched by schema token; most files wins on ties)."""
+    """Input may be any of the DEFINITION / STATISTICS / TBBO folders —
+    resolve all of them from the siblings.  Definition folders are split by
+    DBN encoding: v1 (biggest) supplies the outright statics, a v3 one (if
+    present) supplies strategy LEGS for spread attribution ('legs', optional).
+    """
     token = _schema_token(input_folder)
     if token not in ("definition", "statistics", "tbbo"):
         raise ValueError(f"{input_folder} does not contain "
                          f".definition/.statistics/.tbbo .dbn.zst files")
-    out = {token: input_folder}
-    for want in ("definition", "statistics", "tbbo"):
-        if want in out:
-            continue
-        candidates = []
-        for sib in input_folder.parent.iterdir():
-            if sib.is_dir() and sib != input_folder and _schema_token(sib) == want:
-                candidates.append((len(list(sib.glob("*.dbn.zst"))), sib))
-        if not candidates:
+    folders = [input_folder] + [s for s in input_folder.parent.iterdir()
+                                if s.is_dir() and s != input_folder]
+    by_token: dict[str, list] = {}
+    for f in folders:
+        tok = _schema_token(f)
+        if tok:
+            by_token.setdefault(tok, []).append(f)
+    out: dict = {"legs": None}
+    for want in ("statistics", "tbbo"):
+        cands = by_token.get(want, [])
+        if not cands:
             raise FileNotFoundError(
-                f"No sibling {want.upper()} folder found next to {input_folder}")
-        out[want] = max(candidates)[1]
+                f"No {want.upper()} folder found next to {input_folder}")
+        out[want] = max(cands, key=lambda f: len(list(f.glob("*.dbn.zst"))))
+    v1_defs, v3_defs = [], []
+    for f in by_token.get("definition", []):
+        (v3_defs if _dbn_version(f) >= 3 else v1_defs).append(f)
+    if not v1_defs:
+        raise FileNotFoundError(
+            f"No (v1) DEFINITION folder found next to {input_folder}")
+    out["definition"] = max(v1_defs,
+                            key=lambda f: len(list(f.glob("*.dbn.zst"))))
+    if v3_defs:
+        out["legs"] = max(v3_defs,
+                          key=lambda f: len(list(f.glob("*.dbn.zst"))))
     return out
 
 
@@ -443,6 +479,40 @@ def _load_tbbo(path: Path) -> dict:
             "signed": signed.astype(np.int64)}
 
 
+def _load_spread_legs(path: Path) -> dict:
+    """DBN v3 definitions: leg decomposition of strategy instruments.
+
+    v3 encodes a strategy as leg_count records (one per leg).  Keeps only
+    option legs (C/P — futures legs of covered strategies hedge delta and
+    don't touch option OI).  sign: +1 when buying the strategy buys the leg.
+    """
+    import databento as db   # v3 layout -> databento's own decoder
+    arr = db.DBNStore.from_file(str(path)).to_ndarray()
+    a = arr[arr["leg_count"] > 0]
+    lc = a["leg_instrument_class"]
+    a = a[(lc == b"C") | (lc == b"P")]
+    sign = np.where(a["leg_side"] == b"B", 1,
+                    np.where(a["leg_side"] == b"A", -1, 0)).astype(np.int8)
+    den = np.maximum(a["leg_ratio_qty_denominator"].astype(np.int64), 1)
+    ratio = (a["leg_ratio_qty_numerator"].astype(np.int64) // den)
+    return {"sid": a["instrument_id"].astype(np.int64),
+            "leg_iid": a["leg_instrument_id"].astype(np.int64),
+            "sign": sign.astype(np.int64), "ratio": ratio}
+
+
+def _dbn_version(folder: Path) -> int:
+    """DBN version byte of the first file in the folder (0 when unreadable)."""
+    for f in sorted(folder.glob("*.dbn.zst")):
+        try:
+            r = zstandard.ZstdDecompressor().stream_reader(
+                open(f, "rb"), read_across_frames=True)
+            head = r.read(4)
+            return head[3] if head[:3] == b"DBN" else 0
+        except Exception:
+            return 0
+    return 0
+
+
 # ── process-pool plumbing (same trick as transform A, distinct plant name) ────
 
 _PLANT_NAME = "_options_5m_worker"
@@ -453,6 +523,8 @@ def _worker(kind: str, path: str):
         return _load_tbbo(Path(path))
     if kind == "oi":
         return _load_oi(Path(path))
+    if kind == "legs":
+        return _load_spread_legs(Path(path))
     return _load_defs(Path(path))
 
 
@@ -582,13 +654,16 @@ def _load_state(out_dir: Path, tape_start: int):
                 "ask": d["ask"].to_numpy(np.float64),
                 "oi": d["oi"].to_numpy(np.int64),
                 "oi_morning": d["oi_morning"].to_numpy(bool),
-                "seen": d["seen"].to_numpy(bool)}
+                "seen": d["seen"].to_numpy(bool),
+                "sess_net": d["sess_net"].to_numpy(np.int64),
+                "cum_sp": d["cum_sp"].to_numpy(np.int64)}
     except Exception:
         return None
 
 
 def _save_state(out_dir: Path, tape_start: int, through_day: int,
-                iid, cum, bid, ask, oi, oi_morning, seen) -> None:
+                iid, cum, bid, ask, oi, oi_morning, seen, sess_net,
+                cum_sp) -> None:
     # sorted by iid (searchsorted on load) and deduped keeping the latest def
     # row per iid (a reused id's previous contract has expired anyway)
     order = np.lexsort((np.arange(len(iid)), iid))
@@ -596,10 +671,12 @@ def _save_state(out_dir: Path, tape_start: int, through_day: int,
     ii = np.asarray(iid)[order]
     last[:-1] = ii[1:] != ii[:-1]
     sel = order[last]
-    iid, cum, bid, ask, oi, oi_morning, seen = (
-        np.asarray(a)[sel] for a in (iid, cum, bid, ask, oi, oi_morning, seen))
+    iid, cum, bid, ask, oi, oi_morning, seen, sess_net, cum_sp = (
+        np.asarray(a)[sel] for a in (iid, cum, bid, ask, oi, oi_morning,
+                                     seen, sess_net, cum_sp))
     t = pa.table({"iid": iid, "cum": cum, "bid": bid, "ask": ask,
-                  "oi": oi, "oi_morning": oi_morning, "seen": seen})
+                  "oi": oi, "oi_morning": oi_morning, "seen": seen,
+                  "sess_net": sess_net, "cum_sp": cum_sp})
     t = t.replace_schema_metadata({b"tape_start": str(tape_start).encode(),
                                    b"through_day": str(through_day).encode()})
     tmp = out_dir / (_STATE_FILE + ".tmp")
@@ -723,18 +800,20 @@ def run_all(
     ku_by_didx = np.full(cap0, -1, dtype=np.int64)
     always_by_didx = np.zeros(cap0, dtype=bool)
     flow_cum = np.zeros(cap0, dtype=np.int64)       # signed flow since activation
+    flow_cum_sp = np.zeros(cap0, dtype=np.int64)    # spread-leg flow since activ.
     q_bid = np.full(cap0, np.nan)                   # last known quote
     q_ask = np.full(cap0, np.nan)
     oi_val = np.zeros(cap0, dtype=np.int64)         # last known OI value
     oi_is_morning = np.zeros(cap0, dtype=bool)
     seen_b = np.zeros(cap0, dtype=bool)             # contract ever emitted a row
+    sess_net = np.zeros(cap0, dtype=np.int64)       # prev session net buy-sell
     real_max = np.full(cal["n_q"], np.iinfo(np.int64).min, dtype=np.int64)
     sig_done = 0
     seeded = state is not None
 
     def _extend_static() -> None:
-        nonlocal ku_by_didx, always_by_didx, flow_cum, q_bid, q_ask
-        nonlocal oi_val, oi_is_morning, seen_b, sig_done
+        nonlocal ku_by_didx, always_by_didx, flow_cum, flow_cum_sp, q_bid, q_ask
+        nonlocal oi_val, oi_is_morning, seen_b, sess_net, sig_done
         if defs.n <= sig_done:
             return
         lo, hi = sig_done, defs.n
@@ -748,11 +827,13 @@ def run_all(
             ku_by_didx = grow(ku_by_didx, -1)
             always_by_didx = grow(always_by_didx, False)
             flow_cum = grow(flow_cum, 0)
+            flow_cum_sp = grow(flow_cum_sp, 0)
             q_bid = grow(q_bid, np.nan)
             q_ask = grow(q_ask, np.nan)
             oi_val = grow(oi_val, 0)
             oi_is_morning = grow(oi_is_morning, False)
             seen_b = grow(seen_b, False)
+            sess_net = grow(sess_net, 0)
         und_str = [defs.und_cats[c] for c in defs.und_code[lo:hi]]
         root_str = np.asarray([defs.series_cats[c] for c in defs.series_code[lo:hi]])
         ku = _contract_ku(und_str, defs.exp[lo:hi], cal)
@@ -780,11 +861,13 @@ def run_all(
                         and abs(int(defs.exp[o]) - int(defs.exp[j]))
                         <= 7 * _NS_PER_DAY):
                     flow_cum[j] = flow_cum[o]
+                    flow_cum_sp[j] = flow_cum_sp[o]
                     q_bid[j] = q_bid[o]
                     q_ask[j] = q_ask[o]
                     oi_val[j] = oi_val[o]
                     oi_is_morning[j] = oi_is_morning[o]
                     seen_b[j] = seen_b[o]
+                    sess_net[j] = sess_net[o]
         # seed rolling state from the sidecar for newly known contracts
         if seeded:
             pos = np.searchsorted(state["iid"], defs.iid[lo:hi])
@@ -794,15 +877,34 @@ def run_all(
             rows = np.arange(lo, hi)[hit]
             src = pos_c[hit]
             flow_cum[rows] = state["cum"][src]
+            flow_cum_sp[rows] = state["cum_sp"][src]
             q_bid[rows] = state["bid"][src]
             q_ask[rows] = state["ask"][src]
             oi_val[rows] = state["oi"][src]
             oi_is_morning[rows] = state["oi_morning"][src]
             seen_b[rows] = state["seen"][src]
+            sess_net[rows] = state["sess_net"][src]
         sig_done = hi
 
     # OI prints buffered per as-of session (ref day), resolved to didx
     oi_buffer: dict[int, list] = {}      # ref_day -> [(didx, ts, qty, ny_day)]
+
+    # strategy legs (v3 defs): spread iid -> (leg_iids, signs*ratios) — daily
+    # snapshots, overwritten as they stream (as-of resolution like the defs)
+    spread_map: dict[int, tuple] = {}
+
+    def _apply_legs(res: dict) -> None:
+        sid = res["sid"]
+        order = np.argsort(sid, kind="stable")
+        sid = sid[order]
+        li = res["leg_iid"][order]
+        w = (res["sign"][order] * res["ratio"][order]).astype(np.int64)
+        rt = res["ratio"][order]
+        starts = np.nonzero(np.r_[True, sid[1:] != sid[:-1]])[0]
+        bounds = np.r_[starts, len(sid)]
+        for j in range(len(starts)):
+            a, b = bounds[j], bounds[j + 1]
+            spread_map[int(sid[a])] = (li[a:b], w[a:b], rt[a:b])
 
     # writer pool
     writer_pool = ThreadPoolExecutor(4)
@@ -815,14 +917,14 @@ def run_all(
                          + " 17:00", tz=_NY).value)
     sessions_done = state_through
 
-    def _fold_flow(didx: np.ndarray, signed: np.ndarray, ts: np.ndarray,
-                   lo_ts: int, hi_ts: int) -> None:
-        """Fold trades with lo_ts < ts <= hi_ts into the cumulative state,
+    def _fold_into(target: np.ndarray, didx: np.ndarray, signed: np.ndarray,
+                   ts: np.ndarray, lo_ts: int, hi_ts: int) -> None:
+        """Fold trades with lo_ts < ts <= hi_ts into a cumulative state,
         excluding post-expiry trades (mirrors A's suppression)."""
         m = (ts > lo_ts) & (ts <= hi_ts) & (didx >= 0)
         m &= ts <= defs.exp[np.clip(didx, 0, None)]
         if m.any():
-            np.add.at(flow_cum, didx[m], signed[m])
+            np.add.at(target, didx[m], signed[m])
 
     def _write_session(day: int, frame: pd.DataFrame, contract_didx) -> None:
         nonlocal n_written, n_rows_total
@@ -876,10 +978,49 @@ def run_all(
         ask = np.concatenate([prev_t["ask"], curr_t["ask"]])
         signed = np.concatenate([prev_t["signed"], curr_t["signed"]])
         didx = defs.lookup(iid, day)
-        n_unknown_iid += int((didx < 0).sum())
+
+        # ── explode spread trades into their option LEGS (v3 leg maps) ──────
+        # a spread trade of size N: each leg's outright gets N × ratio,
+        # signed by (trade aggressor × leg side) — same dealer convention
+        unk = np.nonzero(didx < 0)[0]
+        L_iid = np.empty(0, np.int64)
+        L_ts = np.empty(0, np.int64)
+        L_signed = np.empty(0, np.int64)
+        L_size = np.empty(0, np.int64)
+        if len(unk):
+            u_order = unk[np.argsort(iid[unk], kind="stable")]
+            u_iid = iid[u_order]
+            starts_u = np.nonzero(np.r_[True, u_iid[1:] != u_iid[:-1]])[0]
+            bounds_u = np.r_[starts_u, len(u_iid)]
+            pi, pt, ps, pz = [], [], [], []
+            for j in range(len(starts_u)):
+                a, b = bounds_u[j], bounds_u[j + 1]
+                legs = spread_map.get(int(u_iid[a]))
+                if legs is None:
+                    n_unknown_iid += b - a
+                    continue
+                li, w, rt = legs
+                tr = u_order[a:b]
+                nl = len(li)
+                pi.append(np.tile(li, len(tr)))
+                pt.append(np.repeat(ts[tr], nl))
+                ps.append(np.repeat(signed[tr], nl) * np.tile(w, len(tr)))
+                pz.append(np.repeat(size[tr], nl) * np.tile(rt, len(tr)))
+            if pi:
+                L_iid = np.concatenate(pi)
+                L_ts = np.concatenate(pt)
+                L_signed = np.concatenate(ps)
+                L_size = np.concatenate(pz)
+        L_didx = defs.lookup(L_iid, day) if len(L_iid) else L_iid
+        if len(L_didx):
+            okl = L_didx >= 0
+            n_unknown_iid += int((~okl).sum())
+            L_didx, L_ts = L_didx[okl], L_ts[okl]
+            L_signed, L_size = L_signed[okl], L_size[okl]
 
         # fold any pre-window leftovers (holiday evenings etc.), keep flow exact
-        _fold_flow(didx, signed, ts, folded_upto, w_start)
+        _fold_into(flow_cum, didx, signed, ts, folded_upto, w_start)
+        _fold_into(flow_cum_sp, L_didx, L_signed, L_ts, folded_upto, w_start)
 
         in_w = (didx >= 0) & (ts > w_start) & (ts <= w_end)
         in_w &= ts <= defs.exp[np.clip(didx, 0, None)]     # no post-expiry rows
@@ -954,6 +1095,40 @@ def run_all(
         else:
             g_cumflow = cum
 
+        # ── spread-leg aggregation per (contract, bucket) ────────────────────
+        in_l = (L_ts > w_start) & (L_ts <= w_end)
+        in_l &= L_ts <= defs.exp[np.clip(L_didx, 0, None)]
+        Ld, Lt = L_didx[in_l], L_ts[in_l]
+        Ls, Lz = L_signed[in_l], L_size[in_l]
+        Lk = np.minimum((Lt - w_start) // _NS_5MIN, n_k - 1).astype(np.int64)
+        order_l = np.lexsort((Lt, Lk, Ld))
+        Ld, Lk = Ld[order_l], Lk[order_l]
+        Ls, Lz = Ls[order_l], Lz[order_l]
+        newl = np.ones(len(Ld), dtype=bool)
+        if len(Ld):
+            newl[1:] = (Ld[1:] != Ld[:-1]) | (Lk[1:] != Lk[:-1])
+        starts_l = np.nonzero(newl)[0]
+        s_didx = Ld[starts_l]
+        s_k = Lk[starts_l]
+        s_vol = np.add.reduceat(Lz, starts_l) if len(starts_l) else Lz[:0]
+        s_buy = (np.add.reduceat(np.where(Ls < 0, -Ls, 0), starts_l)
+                 if len(starts_l) else Lz[:0])
+        s_sell = (np.add.reduceat(np.where(Ls > 0, Ls, 0), starts_l)
+                  if len(starts_l) else Lz[:0])
+        s_signed = (np.add.reduceat(Ls, starts_l) if len(starts_l) else Lz[:0])
+        cum_l = np.cumsum(s_signed)
+        snew_c = np.ones(len(s_didx), dtype=bool)
+        if len(s_didx):
+            snew_c[1:] = s_didx[1:] != s_didx[:-1]
+        first_l = np.nonzero(snew_c)[0]
+        if len(first_l):
+            counts_l = np.diff(np.r_[first_l, len(s_didx)])
+            prior_l = np.where(first_l > 0, cum_l[first_l - 1], 0)
+            s_cum = cum_l - np.repeat(prior_l, counts_l)
+        else:
+            s_cum = cum_l
+        skey = s_didx * (n_k + 1) + s_k          # sorted (lexsort by didx,k)
+
         # ── OI-update event rows (sparse output: a row exists only where a
         # trade happened or a CME OI print landed) ────────────────────────────
         def _pairs(d: dict):
@@ -999,11 +1174,28 @@ def run_all(
             c_flow = np.where(hit, g_cumflow[pos_c] if len(gkey) else 0, 0)
             return c_bid, c_ask, c_flow
 
+        # spread session-cum as of a bucket (exact bucket included): last
+        # spread group of the contract at/before the bucket, else 0
+        def _sp_cum_at(c_didx, c_key):
+            if not len(skey):
+                return np.zeros(len(c_didx), dtype=np.int64)
+            pos = np.searchsorted(skey, c_key, side="right") - 1
+            pos_c = np.clip(pos, 0, len(skey) - 1)
+            hit = (pos >= 0) & (s_didx[pos_c] == c_didx)
+            return np.where(hit, s_cum[pos_c], 0)
+
         o_bid, o_ask, o_flow = _carry_at(o_didx, okey)
+
+        # spread-only rows: leg activity in a bucket with no outright trade
+        # and no OI print there
+        so_mask = ~np.isin(skey, gkey) & ~np.isin(skey, okey)
+        so_didx, so_k, so_key = s_didx[so_mask], s_k[so_mask], skey[so_mask]
+        so_bid, so_ask, so_flow = _carry_at(so_didx, so_key)
 
         # contracts appearing this session (rows exist) can later tombstone
         seen_b[g_didx] = True
         seen_b[o_didx] = True
+        seen_b[so_didx] = True
 
         # ── expiry tombstones: ONE final row at the bucket containing the
         # real expiry + 1s, open_interest = -1, for contracts B has shown ────
@@ -1022,15 +1214,18 @@ def run_all(
         t_k = np.clip((defs.exp[t_didx] + _NS_1S - w_start) // _NS_5MIN,
                       0, n_k - 1)
         tkey = t_didx * (n_k + 1) + t_k
-        clash = np.isin(tkey, gkey) | np.isin(tkey, okey)
+        clash = (np.isin(tkey, gkey) | np.isin(tkey, okey)
+                 | np.isin(tkey, so_key))
         t_didx, t_k, tkey = t_didx[~clash], t_k[~clash], tkey[~clash]
         t_bid, t_ask, t_flow = _carry_at(t_didx, tkey)
 
-        n_g, n_o, n_t = len(g_didx), len(o_didx), len(t_didx)
-        nanf = np.full(n_o + n_t, np.nan)
-        zero = np.zeros(n_o + n_t, np.int64)
-        R_didx = np.concatenate([g_didx, o_didx, t_didx])
-        R_ts = w_start + np.concatenate([g_k, o_k, t_k]) * _NS_5MIN
+        n_g, n_o, n_s, n_t = len(g_didx), len(o_didx), len(so_didx), len(t_didx)
+        n_rest = n_o + n_s + n_t
+        nanf = np.full(n_rest, np.nan)
+        zero = np.zeros(n_rest, np.int64)
+        R_didx = np.concatenate([g_didx, o_didx, so_didx, t_didx])
+        R_k = np.concatenate([g_k, o_k, so_k, t_k])
+        R_ts = w_start + R_k * _NS_5MIN
         R_open = np.concatenate([g_open, nanf])
         R_high = np.concatenate([g_high, nanf])
         R_low = np.concatenate([g_low, nanf])
@@ -1038,13 +1233,28 @@ def run_all(
         R_vol = np.concatenate([g_vol, zero])
         R_buy = np.concatenate([g_buy, zero])
         R_sell = np.concatenate([g_sell, zero])
-        R_bid = np.concatenate([g_bid, o_bid, t_bid])
-        R_ask = np.concatenate([g_ask, o_ask, t_ask])
-        R_fresh = np.concatenate([np.ones(n_g, bool),
-                                  np.zeros(n_o + n_t, bool)])
-        R_flow_raw = np.concatenate([g_cumflow, o_flow, t_flow]) \
+        R_bid = np.concatenate([g_bid, o_bid, so_bid, t_bid])
+        R_ask = np.concatenate([g_ask, o_ask, so_ask, t_ask])
+        R_fresh = np.concatenate([np.ones(n_g, bool), np.zeros(n_rest, bool)])
+        R_flow_raw = np.concatenate([g_cumflow, o_flow, so_flow, t_flow]) \
             + flow_cum[R_didx]
         R_flow_ok = defs.act[R_didx] >= tape_start
+
+        # spread columns: exact (contract, bucket) match into the leg groups;
+        # spread session-cum as-of the bucket for flow/estimate
+        row_key = R_didx * (n_k + 1) + R_k
+        R_spvol = np.zeros(len(R_didx), np.int64)
+        R_spbuy = np.zeros(len(R_didx), np.int64)
+        R_spsell = np.zeros(len(R_didx), np.int64)
+        if len(skey):
+            pos = np.searchsorted(skey, row_key)
+            pos_c = np.clip(pos, 0, len(skey) - 1)
+            hit = (pos < len(skey)) & (skey[pos_c] == row_key)
+            R_spvol[hit] = s_vol[pos_c[hit]]
+            R_spbuy[hit] = s_buy[pos_c[hit]]
+            R_spsell[hit] = s_sell[pos_c[hit]]
+        R_sp_cum = _sp_cum_at(R_didx, row_key)
+        R_flow_sp_raw = R_sp_cum + flow_cum_sp[R_didx]
 
         # OI per row, as-of publication: previous session's rolling value
         # until the evening print's ts, then evening, then morning once its
@@ -1064,24 +1274,43 @@ def run_all(
         R_oi = np.where(is_morning, morn_v[R_didx],
                         np.where(bucket_end > eve_t[R_didx],
                                  eve_v[R_didx], oi_val[R_didx]))
+
+        # daily_estimated_oi: latest published OI adjusted by the tape's net
+        # aggressor volume (buy adds, sell subtracts) accumulated since the
+        # session the published number describes.  Once this session's print
+        # lands (as-of prev session close = this session's start), the base
+        # snaps to it and only THIS session's net applies; before it lands,
+        # the base is the older print, so the previous session's net counts
+        # too.  Contracts without a print this session keep the older base
+        # (+INF switch time keeps them on the pre-print branch all session).
+        eve_t_est = np.full(defs.n, _I64_MAX, dtype=np.int64)
+        if eve:
+            eve_t_est[e_rows] = e_tss
+        # session net(buy - sell): outright tape + attributed spread legs
+        R_net = -(R_flow_raw - flow_cum[R_didx]) - R_sp_cum
+        R_est = R_oi + R_net + np.where(bucket_end > eve_t_est[R_didx],
+                                        0, sess_net[R_didx])
         if n_t:                       # tombstones: the -1 sentinel, like A
             R_oi[-n_t:] = -1
+            R_est[-n_t:] = -1
             is_morning[-n_t:] = False
             n_tombstones += n_t
 
         R_sig = _significance_rows(ku_by_didx[R_didx], always_by_didx[R_didx],
                                    defs.exp[R_didx], R_ts, cal)
         R_flow = np.where(R_flow_ok, R_flow_raw.astype(np.float64), np.nan)
+        R_flow_sp = np.where(R_flow_ok, R_flow_sp_raw.astype(np.float64),
+                             np.nan)
 
         if drop_insignificant:
             keep = R_sig
             n_dropped += int((~keep).sum())
             (R_didx, R_ts, R_open, R_high, R_low, R_close, R_vol, R_buy,
-             R_sell, R_bid, R_ask, R_fresh, R_oi, is_morning, R_flow,
-             R_sig) = (a[keep] for a in (
+             R_sell, R_bid, R_ask, R_fresh, R_oi, R_est, is_morning, R_flow,
+             R_flow_sp, R_spvol, R_spbuy, R_spsell, R_sig) = (a[keep] for a in (
                  R_didx, R_ts, R_open, R_high, R_low, R_close, R_vol, R_buy,
-                 R_sell, R_bid, R_ask, R_fresh, R_oi, is_morning, R_flow,
-                 R_sig))
+                 R_sell, R_bid, R_ask, R_fresh, R_oi, R_est, is_morning,
+                 R_flow, R_flow_sp, R_spvol, R_spbuy, R_spsell, R_sig))
 
         # update rolling per-contract state AFTER assembling (session end)
         if len(e_rows):
@@ -1090,7 +1319,7 @@ def run_all(
         if len(m_rows):
             oi_val[m_rows] = m_vals
             oi_is_morning[m_rows] = True
-        _fold_flow(didx, signed, ts, w_start, w_end)
+        _fold_into(flow_cum, didx, signed, ts, w_start, w_end)
         folded_upto = w_end
         lastg = np.zeros(len(g_didx), dtype=bool)
         if len(g_didx):
@@ -1101,6 +1330,19 @@ def run_all(
             # mix a fresh bid with an older ask (that fabricates crossed books)
             q_bid[g_didx[lg]] = g_bid[lg]
             q_ask[g_didx[lg]] = g_ask[lg]
+        # this session's total net (buy - sell) per contract — outright PLUS
+        # attributed spread legs — used by the next session's pre-print
+        # estimated-OI branch
+        sess_net[:defs.n] = 0
+        if len(g_didx):
+            sess_net[g_didx[lg]] = -g_cumflow[lg]
+        if len(s_didx):
+            lastl = np.zeros(len(s_didx), dtype=bool)
+            lastl[:-1] = s_didx[1:] != s_didx[:-1]
+            lastl[-1] = True
+            ls = np.nonzero(lastl)[0]
+            np.add.at(sess_net, s_didx[ls], -s_cum[ls])
+        _fold_into(flow_cum_sp, L_didx, L_signed, L_ts, w_start, w_end)
         sessions_done = day
 
         if skip_existing and day in existing_days:
@@ -1117,11 +1359,16 @@ def run_all(
             "volume": R_vol[order2].astype(np.int32),
             "buy_volume": R_buy[order2].astype(np.int32),
             "sell_volume": R_sell[order2].astype(np.int32),
+            "spread_volume": R_spvol[order2].astype(np.int32),
+            "spread_buy_volume": R_spbuy[order2].astype(np.int32),
+            "spread_sell_volume": R_spsell[order2].astype(np.int32),
             "bid": R_bid[order2], "ask": R_ask[order2],
             "is_stale_quote": ~R_fresh[order2],
             "open_interest": R_oi[order2].astype(np.int32),
             "is_morning_update": is_morning[order2],
+            "daily_estimated_oi": R_est[order2].astype(np.int32),
             "dealer_oi_flow": R_flow[order2],
+            "dealer_oi_flow_spread": R_flow_sp[order2],
             _SIG_COL: R_sig[order2],
         }, index=index)
         if drop_insignificant:
@@ -1129,10 +1376,24 @@ def run_all(
         _write_session(day, frame, np.unique(R_didx))
 
     # ── pooled decode + ordered consumption ───────────────────────────────────
+    legs_files = []
+    if folders["legs"] is not None:
+        legs_files = sorted(folders["legs"].glob("*.dbn.zst"), key=_file_day)
+        older_l = [f for f in legs_files if _file_day(f) < first_day_needed]
+        legs_files = [f for f in legs_files
+                      if first_day_needed <= _file_day(f) <= range_hi]
+        if older_l:
+            legs_files = [older_l[-1]] + legs_files
+    else:
+        progress(0, total, "NOTE: no DBN v3 definitions folder found — "
+                           "spread-leg attribution disabled (spread columns "
+                           "will be zero)")
+
     tasks = ([("defs", p, _file_day(p)) for p in def_files]
+             + [("legs", p, _file_day(p)) for p in legs_files]
              + [("oi", p, _file_day(p)) for p in stats_files]
              + [("tbbo", p, _file_day(p)) for p in tbbo_todo])
-    kind_rank = {"defs": 0, "oi": 1, "tbbo": 2}
+    kind_rank = {"defs": 0, "legs": 1, "oi": 2, "tbbo": 3}
     tasks.sort(key=lambda t_: (t_[2], kind_rank[t_[0]]))
 
     n_workers = max(1, min(15, (os.cpu_count() or 8) - 1))
@@ -1186,6 +1447,9 @@ def run_all(
                 if res is not None:
                     defs.apply(res)
                 times["defs"] += perf_counter() - t
+            elif kind == "legs":
+                _apply_legs(res)
+                times["defs"] += perf_counter() - t
             elif kind == "oi":
                 _extend_static()
                 pdx = defs.lookup(res["iid"], day)
@@ -1208,7 +1472,8 @@ def run_all(
                                 defs.iid[:defs.n], flow_cum[:defs.n],
                                 q_bid[:defs.n], q_ask[:defs.n],
                                 oi_val[:defs.n], oi_is_morning[:defs.n],
-                                seen_b[:defs.n])
+                                seen_b[:defs.n], sess_net[:defs.n],
+                                flow_cum_sp[:defs.n])
     except BaseException:
         writer_pool.shutdown(wait=False, cancel_futures=True)
         raise
@@ -1224,14 +1489,15 @@ def run_all(
                     defs.iid[:defs.n], flow_cum[:defs.n],
                     q_bid[:defs.n], q_ask[:defs.n],
                     oi_val[:defs.n], oi_is_morning[:defs.n],
-                    seen_b[:defs.n])
+                    seen_b[:defs.n], sess_net[:defs.n],
+                    flow_cum_sp[:defs.n])
 
     notes = []
     if n_tombstones:
         notes.append(f"{n_tombstones:,} expiry tombstones (OI = -1)")
     if n_unknown_iid:
-        notes.append(f"{n_unknown_iid:,} trades on unknown instruments "
-                     f"(spreads) skipped")
+        notes.append(f"{n_unknown_iid:,} trades on instruments without a "
+                     f"leg map (unattributed spreads/unknowns) skipped")
     if cal["n_vol"] < cal["n_q"]:
         notes.append(f"volume_roll undeterminable for "
                      f"{cal['n_q'] - cal['n_vol']} quarterlies — used the "
