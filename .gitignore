@@ -28,3 +28,7 @@ forex_factory_scraper/data_usd/
 # PyQt app user settings
 settings.json
 
+
+# quick scripts folder
+scripts/display_file.py
+
