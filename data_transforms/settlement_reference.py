@@ -1,8 +1,10 @@
 """
 settlement_reference.py — daily settlement & session reference table for one asset.
 
-Input  : folder of Databento STATISTICS .dbn.zst files
-         (e.g. data/raw_dbn/Futures/ES/ES_2010-06-06_2026-05-18_STATISTICS_monthly).
+Input  : folder of DAILY Databento STATISTICS .dbn.zst files, one per UTC day
+         named glbx-mdp3-YYYYMMDD.statistics.dbn.zst
+         (e.g. data/raw_dbn/Futures/ES/ES_2010-06-06_2026-07-13_STATISTICS_daily).
+         Days with no records (most weekends/holidays) simply have no file.
 Derived: the asset's enriched OHLCV dataset — same asset_type/asset with
          file_type raw_dbn -> parquet, folder name containing "ohlcv"
          (expected {ASSET}_1m_ohlcv_globex). One parquet per trading day,
@@ -33,6 +35,16 @@ midnight NY / on Sunday, landing on the wrong NY calendar date. ts_ref keying
 matches 96.7% — remaining misses are exchange holidays and OHLCV days past the
 statistics dataset's end. Dedup: one settlement per (symbol, session_date),
 last record by ts_recv wins.
+
+Daily-file note: the daily files are split by ts_recv UTC date, so a session's
+records straddle file boundaries — and NOT just adjacently. The full globex
+session (18:00 prev NY -> 17:00 NY) spans two UTC dates, and the Friday FINAL
+settlement is disseminated on Sunday (verified on ES 2026-07-10: Friday's file
+carries only preliminary flags=2 records; the flags=3 final for ts_ref Friday
+sits in the SUNDAY file, two files later). A fixed prev+curr two-file stitch
+(the big_trades.py pattern) would therefore miss Friday finals. Instead ALL
+daily files are loaded and every record is keyed by its own ts_ref, which makes
+file boundaries irrelevant — equivalent to the old monthly-file concat.
 
 Unmatched sessions are RETAINED with NaN settlement and counted — never
 dropped. Rows whose front-month metadata symbol contains "-" are skipped and
@@ -121,24 +133,32 @@ def _resolve_ohlcv_folder(input_folder: str, asset_type: str, asset: str) -> Pat
 
 def _load_settlements(input_folder: str, log) -> pd.DataFrame:
     """
-    Load ALL statistics files, filter to final EOD settlements, and dedup to one
-    row per (symbol, session_date). Returns columns:
+    Load ALL daily statistics files, filter to final EOD settlements, and dedup
+    to one row per (symbol, session_date). Returns columns:
     date (tz-naive midnight), symbol, settlement, settle_is_actual.
+
+    All files are loaded (no per-session file pairing) — session assignment is
+    by ts_ref, so it doesn't matter which daily file a record landed in. See
+    the daily-file note in the module docstring.
     """
     files = sorted(Path(input_folder).glob("*.dbn.zst"))
     if not files:
         raise FileNotFoundError(f"No .dbn.zst files in {input_folder}")
 
     frames = []
+    n_records = 0
     for k, f in enumerate(files):
         # to_df: prices already float-scaled (UNDEF_PRICE -> NaN), symbols mapped
         df = db.DBNStore.from_file(f).to_df()
         df = df[df["stat_type"] == STAT_TYPE_SETTLEMENT]
         if len(df):
+            n_records += len(df)
             frames.append(
                 df[["ts_ref", "price", "stat_flags", "update_action", "symbol"]].reset_index()
             )
-        log(k + 1, f"Loaded {f.name} — {len(df)} settlement records")
+        if (k + 1) % 250 == 0 or k + 1 == len(files):
+            log(k + 1, f"Statistics files: {k + 1}/{len(files)} "
+                       f"({n_records} settlement records)")
 
     if not frames:
         raise ValueError(f"No stat_type={STAT_TYPE_SETTLEMENT} rows in {input_folder}")
