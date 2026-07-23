@@ -8,6 +8,11 @@ marker (or `STREAMLIT = True`) in its first 30 lines launches as its own
 browser — its own window on first run, a new tab there on later runs, never
 a tab in the user's current browser; a plain script runs as `python -u`
 with its output in the shared console.
+Script folders may nest arbitrarily: subfolders show as folder rows (styled
+distinctly from script cards), clicking one enters it, and the breadcrumb
+bar / Back button walk back out. Instances keep running while you browse —
+ones launched from outside the current folder stay controllable in a
+"Running elsewhere" card and in the console chips.
 Multiple instances — including of the same script — run side by side; the
 console panel's chips switch between their buffered logs. Closing the window
 kills every process it spawned (after confirmation).
@@ -15,10 +20,10 @@ kills every process it spawned (after confirmation).
 
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QUrl
+from PySide6.QtCore import QProcess, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QMessageBox,
-                               QPushButton, QVBoxLayout)
+from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel,
+                               QMessageBox, QPushButton, QVBoxLayout)
 
 from modules.common.backend import plugins
 from modules.common.ui import theme
@@ -26,9 +31,62 @@ from modules.common.ui.module_window import ModuleWindowBase
 from modules.common.ui.widgets import Caption, Card, SectionHeader, hline
 from .backend.browser import find_app_browser, launch_args
 from .backend.ports import find_free_port
-from .backend.scan import is_streamlit_script, script_mtime
+from .backend.scan import (folder_summary, is_streamlit_script, list_folder,
+                           script_mtime)
 from .log_panel import STATE_COLORS, InstanceLogPanel
 from .process_manager import ScriptInstance
+
+
+class _FolderRow(QFrame):
+    """A subfolder entry — deliberately NOT a Card: accent left edge,
+    folder glyph and pointing-hand cursor make it read as navigation,
+    not as a runnable script."""
+
+    def __init__(self, path: Path, on_open, parent=None):
+        super().__init__(parent)
+        self.setObjectName("folderRow")
+        self._path = path
+        self._on_open = on_open
+        self.setCursor(Qt.PointingHandCursor)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(10)
+        icon = QLabel("\U0001f4c1")
+        icon.setStyleSheet("font-size: 15px; background: transparent;")
+        name = QLabel(path.name)
+        name.setStyleSheet("font-weight: 600; font-size: 14px; "
+                           f"color: {theme.ACCENT_SOFT}; background: transparent;")
+        n_dirs, n_scripts = folder_summary(path)
+        bits = ([f"{n_dirs} folder{'s' if n_dirs != 1 else ''}"] if n_dirs else [])
+        bits.append(f"{n_scripts} script{'s' if n_scripts != 1 else ''}")
+        info = Caption(" · ".join(bits))
+        arrow = QLabel("Open ›")
+        arrow.setStyleSheet(f"color: {theme.TEXT_MUTED}; background: transparent;")
+        lay.addWidget(icon)
+        lay.addWidget(name)
+        lay.addWidget(info)
+        lay.addStretch()
+        lay.addWidget(arrow)
+
+        self.setStyleSheet(f"""
+            QFrame#folderRow {{
+                background: {theme.SURFACE};
+                border: 1px solid {theme.BORDER};
+                border-left: 3px solid {theme.ACCENT};
+                border-radius: 8px;
+            }}
+            QFrame#folderRow:hover {{
+                background: {theme.SURFACE_2};
+                border-color: {theme.BORDER_LIGHT};
+                border-left-color: {theme.ACCENT_HOVER};
+            }}""")
+
+    def mouseReleaseEvent(self, event) -> None:
+        if (event.button() == Qt.LeftButton
+                and self.rect().contains(event.position().toPoint())):
+            self._on_open(self._path)
+        super().mouseReleaseEvent(event)
 
 
 class ScriptsWindow(ModuleWindowBase):
@@ -41,6 +99,8 @@ class ScriptsWindow(ModuleWindowBase):
         self._instances: list[ScriptInstance] = []
         self._counters: dict[Path, int] = {}
         self._refs: list[plugins.PluginRef] = []
+        self._folders: list[Path] = []
+        self._cwd: Path | None = None       # None = merged root view
 
         header = QHBoxLayout()
         header.setSpacing(8)
@@ -52,11 +112,14 @@ class ScriptsWindow(ModuleWindowBase):
         header.addWidget(refresh)
         header.addWidget(QLabel("Sort:"))
         header.addWidget(self._sort)
-        folders = " · ".join(
-            str(d) for d in self.settings.plugin_dirs("scripts"))
         header.addSpacing(10)
-        header.addWidget(Caption(f"Folders: {folders}"), stretch=1)
+        self._where = Caption("")
+        header.addWidget(self._where, stretch=1)
         self.content.addLayout(header)
+
+        self._nav = QHBoxLayout()
+        self._nav.setSpacing(4)
+        self.content.addLayout(self._nav)
 
         self._rows_holder = QVBoxLayout()
         self._rows_holder.setSpacing(10)
@@ -70,14 +133,89 @@ class ScriptsWindow(ModuleWindowBase):
 
         self._refresh()
 
+    # ── navigation ────────────────────────────────────────────────────────────
+    def _roots(self) -> list[Path]:
+        return [Path(d) for d in self.settings.plugin_dirs("scripts")]
+
+    def _owning_root(self, path: Path) -> Path | None:
+        for root in self._roots():
+            try:
+                path.relative_to(root)
+                return root
+            except ValueError:
+                continue
+        return None
+
+    def _go_to(self, target: Path | None) -> None:
+        self._cwd = target
+        self._refresh()
+
+    def _go_back(self) -> None:
+        if self._cwd is None:
+            return
+        parent = self._cwd.parent
+        self._go_to(None if parent in self._roots() else parent)
+
+    def _rebuild_nav(self) -> None:
+        while self._nav.count():
+            item = self._nav.takeAt(0)
+            if item.widget() is not None:
+                item.widget().hide()      # no ghost crumb before deferred delete
+                item.widget().deleteLater()
+
+        back = QPushButton("← Back")
+        back.setEnabled(self._cwd is not None)
+        back.clicked.connect(self._go_back)
+        self._nav.addWidget(back)
+        self._nav.addSpacing(8)
+
+        def crumb(text, target, current=False):
+            btn = QPushButton(text)
+            btn.setFlat(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            color = theme.TEXT if current else theme.TEXT_MUTED
+            weight = "600" if current else "400"
+            btn.setStyleSheet(
+                f"QPushButton {{ border: none; background: transparent; "
+                f"color: {color}; font-weight: {weight}; padding: 2px 4px; }} "
+                f"QPushButton:hover {{ color: {theme.ACCENT_SOFT}; }}")
+            btn.clicked.connect(lambda _=False, t=target: self._go_to(t))
+            self._nav.addWidget(btn)
+
+        crumb("⌂ scripts", None, current=self._cwd is None)
+        if self._cwd is not None:
+            root = self._owning_root(self._cwd)
+            parts = (self._cwd.relative_to(root).parts
+                     if root is not None else (self._cwd.name,))
+            base = root if root is not None else self._cwd.parent
+            for i, part in enumerate(parts):
+                sep = QLabel("›")
+                sep.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+                self._nav.addWidget(sep)
+                crumb(part, Path(base, *parts[:i + 1]),
+                      current=i == len(parts) - 1)
+        self._nav.addStretch()
+
     # ── scan / rows ───────────────────────────────────────────────────────────
     def _refresh(self) -> None:
-        refs = plugins.list_plugins(self.settings.plugin_dirs("scripts"))
+        if self._cwd is None:
+            roots = self._roots()
+            self._folders = [f for root in roots for f in list_folder(root)[0]]
+            refs = plugins.list_plugins(roots)
+            self._where.setText(
+                "Folders: " + " · ".join(str(r) for r in roots))
+        else:
+            folders, files = list_folder(self._cwd)
+            self._folders = folders
+            refs = [plugins.PluginRef(p.stem, p, self._cwd, p.stem)
+                    for p in files]
+            self._where.setText(str(self._cwd))
         if self._sort.currentIndex() == 0:
             refs.sort(key=lambda r: script_mtime(r.path), reverse=True)
         else:
             refs.sort(key=lambda r: r.label.lower())
         self._refs = refs
+        self._rebuild_nav()
         self._rebuild_rows()
 
     def _rebuild_rows(self) -> None:
@@ -87,27 +225,31 @@ class ScriptsWindow(ModuleWindowBase):
                 item.widget().hide()      # no ghost frame before deferred delete
                 item.widget().deleteLater()
 
+        for folder in self._folders:
+            self._rows_holder.addWidget(_FolderRow(folder, self._go_to))
+
         listed_paths = set()
         for ref in self._refs:
             listed_paths.add(Path(ref.path))
             self._rows_holder.addWidget(self._make_row(ref))
-        if not self._refs:
+        if not self._refs and not self._folders:
             self._rows_holder.addWidget(Caption(
-                "No scripts found — drop a .py file into a script folder and "
-                "hit Refresh."))
+                "Nothing here — drop a .py file (or a folder of them) into a "
+                "script folder and hit Refresh."))
 
-        orphans = [i for i in self._instances
-                   if i.script_path not in listed_paths]
-        if orphans:
+        elsewhere = [i for i in self._instances
+                     if i.script_path not in listed_paths]
+        if elsewhere:
             card = Card()
-            title = QLabel("Removed scripts")
+            title = QLabel("Running elsewhere")
             title.setStyleSheet("font-weight: 600;")
             card.body.addWidget(title)
             card.body.addWidget(Caption(
-                "These instances were launched from files no longer in the "
-                "scanned folders."))
-            for inst in orphans:
-                card.body.addLayout(self._make_instance_line(inst))
+                "Instances launched from other folders (or from files that "
+                "were removed) — still yours to control."))
+            for inst in elsewhere:
+                card.body.addLayout(
+                    self._make_instance_line(inst, with_name=True))
             self._rows_holder.addWidget(card)
 
     def _make_row(self, ref) -> Card:
@@ -160,12 +302,13 @@ class ScriptsWindow(ModuleWindowBase):
             card.body.addLayout(self._make_instance_line(inst))
         return card
 
-    def _make_instance_line(self, inst: ScriptInstance) -> QHBoxLayout:
+    def _make_instance_line(self, inst: ScriptInstance,
+                            with_name: bool = False) -> QHBoxLayout:
         line = QHBoxLayout()
         line.setSpacing(8)
         dot = QLabel("●")
         dot.setStyleSheet(f"color: {STATE_COLORS[inst.state]};")
-        text = f"#{inst.instance_no}"
+        text = inst.label if with_name else f"#{inst.instance_no}"
         if inst.port:
             text += f"   :{inst.port}"
         lbl = QLabel(text)

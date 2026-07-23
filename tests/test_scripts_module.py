@@ -74,6 +74,22 @@ def test_find_free_port_respects_exclude():
     assert p2 != p1
 
 
+def test_list_folder_splits_and_excludes(tmp_path):
+    from modules.scripts.backend.scan import folder_summary, list_folder
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "_private").mkdir()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "a.py").write_text("", encoding="utf-8")
+    (tmp_path / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "base.py").write_text("", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("", encoding="utf-8")
+    folders, scripts = list_folder(tmp_path)
+    assert [f.name for f in folders] == ["sub"]
+    assert [s.name for s in scripts] == ["a.py"]
+    assert folder_summary(tmp_path) == (1, 1)
+
+
 def test_find_app_browser_existing_or_none():
     from modules.scripts.backend.browser import find_app_browser
     browser = find_app_browser()
@@ -138,6 +154,33 @@ def test_restart_reruns_current_file(qtbot, tmp_path):
     text = inst.log_text()
     assert "ping-v1" in text and "ping-v2" in text
     assert "restarted" in text
+
+
+def test_folder_navigation(qtbot, tmp_path):
+    from modules.common.backend.settings import Settings
+    from modules.scripts.window import ScriptsWindow
+    root = tmp_path / "s"
+    (root / "deep" / "deeper").mkdir(parents=True)
+    (root / "top.py").write_text("print(1)\n", encoding="utf-8")
+    (root / "deep" / "mid.py").write_text("print(1)\n", encoding="utf-8")
+    (root / "deep" / "deeper" / "leaf.py").write_text(
+        "print(1)\n", encoding="utf-8")
+    win = ScriptsWindow(Settings({"scripts": [str(root)]}, ["data"]))
+    qtbot.addWidget(win)
+    # root view merges the in-repo default folder too — check membership only
+    assert any(r.name == "top" for r in win._refs)
+    assert any(f.name == "deep" for f in win._folders)
+
+    win._go_to(root / "deep")
+    assert [r.name for r in win._refs] == ["mid"]
+    assert [f.name for f in win._folders] == ["deeper"]
+    win._go_to(root / "deep" / "deeper")
+    assert [r.name for r in win._refs] == ["leaf"]
+    assert win._folders == []
+    win._go_back()
+    assert win._cwd == root / "deep"
+    win._go_back()
+    assert win._cwd is None       # parent of "deep" is a configured root
 
 
 def test_kill_script_clears_all_instances(qtbot, tmp_path):
