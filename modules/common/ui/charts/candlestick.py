@@ -16,7 +16,8 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QPainter, QPicture
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from .base import HoverTooltip, make_plot, nearest_index, ny_epoch_seconds
+from .base import (HoverTooltip, chart_min_height, make_plot, nearest_index,
+                   ny_epoch_seconds)
 
 UP_COLOR   = "#26a269"
 DOWN_COLOR = "#d64545"
@@ -71,7 +72,7 @@ class TradeChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._plot = make_plot("Time", "Price", datetime_x=True)
-        self._plot.setMinimumHeight(480)
+        self._plot.setMinimumHeight(chart_min_height(480))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._plot)

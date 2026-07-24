@@ -173,6 +173,18 @@ def test_scripts_window_constructs(qtbot, tmp_path):
 
 
 @needs_data
+def test_regime_detector_window_two_tabs(qtbot, settings):
+    from modules.regime_detector.window import RegimeDetectorWindow
+    win = RegimeDetectorWindow(settings)
+    qtbot.addWidget(win)
+    win.show()
+    labels = [win.tabs.tabText(i) for i in range(win.tabs.count())]
+    assert labels == ["New Run", "Explore"]
+    assert win.run_tab._detector.count() > 0          # scaffold discovered
+    assert win.run_tab._module is not None            # contract validated
+
+
+@needs_data
 def test_optimizer_window_three_tabs(qtbot, settings):
     from modules.optimizer.window import OptimizerWindow
     win = OptimizerWindow(settings)

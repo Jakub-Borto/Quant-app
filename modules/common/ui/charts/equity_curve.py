@@ -19,7 +19,8 @@ import pyqtgraph as pg
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
-from .base import HoverTooltip, date_axis, make_plot, nearest_index, ny_epoch_seconds
+from .base import (HoverTooltip, chart_min_height, date_axis, make_plot,
+                   nearest_index, ny_epoch_seconds)
 
 
 class EquityCurveChart(QWidget):
@@ -28,7 +29,7 @@ class EquityCurveChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._plot = make_plot("Date", "Cumulative Ticks", datetime_x=True)
-        self._plot.setMinimumHeight(360)
+        self._plot.setMinimumHeight(chart_min_height(360))
 
         # X-axis mode toggle: calendar time vs plain trade number (no gaps)
         self._trade_number_mode = False
@@ -109,7 +110,7 @@ class MultiLineEquityChart(QWidget):
     def __init__(self, height: int = 360, parent=None):
         super().__init__(parent)
         self._plot = make_plot("Date", "Equity ($)", datetime_x=True)
-        self._plot.setMinimumHeight(height)
+        self._plot.setMinimumHeight(chart_min_height(height))
         self._plot.addLegend(offset=(10, 10))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)

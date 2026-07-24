@@ -32,18 +32,20 @@ SETTINGS_PATH = REPO_ROOT / "settings.json"
 
 # category key -> in-repo default folder name (the locked first entry)
 PLUGIN_CATEGORIES = {
-    "strategies":      "strategies",
-    "data_transforms": "data_transforms",
-    "position_sizing": "position_sizing",
-    "scripts":         "scripts",
+    "strategies":       "strategies",
+    "data_transforms":  "data_transforms",
+    "position_sizing":  "position_sizing",
+    "scripts":          "scripts",
+    "regime_detectors": "regime_detectors",
 }
 
 # Human labels for the settings dialog.
 CATEGORY_LABELS = {
-    "strategies":      "Strategy folders",
-    "data_transforms": "Data-transform folders",
-    "position_sizing": "Position-sizing folders",
-    "scripts":         "Script folders",
+    "strategies":       "Strategy folders",
+    "data_transforms":  "Data-transform folders",
+    "position_sizing":  "Position-sizing folders",
+    "scripts":          "Script folders",
+    "regime_detectors": "Regime-detector folders",
 }
 
 # Default data root — the machine's dedicated data drive location (the data

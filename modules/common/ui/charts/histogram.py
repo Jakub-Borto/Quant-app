@@ -14,7 +14,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from .base import HoverTooltip, make_plot
+from .base import HoverTooltip, chart_min_height, make_plot
 
 SERIES_COLORS = {
     "Planned RR":         "#1f77b4",
@@ -28,7 +28,7 @@ class OverlaidHistogram(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._plot = make_plot("RR (R-multiple)", "Number of trades")
-        self._plot.setMinimumHeight(420)
+        self._plot.setMinimumHeight(chart_min_height(420))
         self._plot.addLegend(offset=(10, 10))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)

@@ -7,6 +7,7 @@ Every configured data root is a full tree following the project blueprint:
     <root>/parquet/{type}/{ASSET}/{dataset}/    YYYY-MM-DD.parquet candles
     <root>/trades/{name}.parquet                saved backtests
     <root>/optimizations/{run}/                 optimizer runs
+    <root>/regimes/{ASSET}/{run_name}/          regime label files (no {type} level)
     <root>/news_and_holidays/ff_usd_events.parquet
 
 Pickers show the UNION across roots; a label gets a "[rootname]" suffix only
@@ -162,6 +163,57 @@ def clear_temp_files(roots: list[Path]) -> int:
 
 def optimizations_root(root: Path) -> Path:
     return Path(root) / "optimizations"
+
+
+# ── regime runs ───────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class RegimeRunRef:
+    """One regime run folder inside one data root. No {type} level — the
+    regimes tree is <root>/regimes/{ASSET}/{run_name}/."""
+    root: Path
+    asset: str         # UPPERCASE ticker folder, e.g. "ES"
+    run_name: str
+    label: str         # "ASSET/run_name", or with "  [rootname]" on collision
+
+    @property
+    def path(self) -> Path:
+        return self.root / "regimes" / self.asset / self.run_name
+
+
+def regimes_dir(root: Path, asset: str) -> Path:
+    """Output location for regime runs of one asset inside one root."""
+    return Path(root) / "regimes" / asset
+
+
+def list_regime_runs(roots: list[Path]) -> list[RegimeRunRef]:
+    """Union of every root's regimes/{ASSET}/{run}/ folders that hold a
+    meta.json (a folder with a meta.json IS a run — the optimizations/
+    precedent), sorted by asset then run name per root; asset/run collisions
+    across roots get the root-name label suffix."""
+    refs = []
+    for root in roots:
+        root = Path(root)
+        rdir = root / "regimes"
+        if not rdir.exists():
+            continue
+        for asset_dir in sorted(p for p in rdir.iterdir() if p.is_dir()):
+            for run_dir in sorted(p for p in asset_dir.iterdir() if p.is_dir()):
+                if (run_dir / "meta.json").exists():
+                    refs.append(RegimeRunRef(
+                        root, asset_dir.name, run_dir.name,
+                        f"{asset_dir.name}/{run_dir.name}"))
+
+    counts = {}
+    for r in refs:
+        key = (r.asset, r.run_name)
+        counts[key] = counts.get(key, 0) + 1
+    return [
+        RegimeRunRef(r.root, r.asset, r.run_name,
+                     f"{r.label}  [{r.root.name}]"
+                     if counts[(r.asset, r.run_name)] > 1 else r.label)
+        for r in refs
+    ]
 
 
 def ff_events_path(root: Path) -> Path:

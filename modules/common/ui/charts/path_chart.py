@@ -11,7 +11,7 @@ import pandas as pd
 import pyqtgraph as pg
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from .base import HoverTooltip, make_plot
+from .base import HoverTooltip, chart_min_height, make_plot
 
 IS_COLOR, OOS_COLOR = "#1f77b4", "#ff7f0e"   # app's two-series pair (CVD-safe)
 
@@ -20,7 +20,7 @@ class CombinePathChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._plot = make_plot("set size k", "total ticks (merged, no-overlap)")
-        self._plot.setMinimumHeight(340)
+        self._plot.setMinimumHeight(chart_min_height(340))
         self._plot.addLegend(offset=(10, 10))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)

@@ -48,8 +48,9 @@ the Optimizer) is the docstring of `modules/common/ui/params_form.py`.
 | `position_sizing/` | Analytics, Monte Carlo | `apply(trades, params) -> pd.DataFrame` (+ `PARAMS`) |
 | `modules/monte_carlo/methods/` | Monte Carlo | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`; `PROP_FIRM = True` opts into the dedicated prop-firm UI) |
 | `scripts/` | Scripts | no Python contract — any quick one-off script. A `# app: streamlit` comment (or `STREAMLIT = True`) in the first 30 lines → launched as `streamlit run` on a free port + opened in the dedicated scripts browser (Chrome/Edge with a private `--user-data-dir` profile — first run opens its window, later runs add tabs there; Opera ignores the flags, so it's never a candidate); otherwise run as `python -u` with output in the module's console. cwd is the script's own folder (NOT repo root — root `inspect.py` shadowing); repo imports via the sys.path.append idiom in `scripts/example_hello.py` |
+| `regime_detectors/` | Regime Detector | `run_all(input_folder, output_folder, skip_existing, on_progress, params) -> None` + required `PARAMS` (must include `rth_start`, `rth_end`, `snapshot_minutes`, `lookback_days`), `REGIME_STATES`, `COLUMN_TIERS`, `SCRIPT_VERSION` (optional `PARAMS_OPTIONS`). Import the helper as `from modules.regime_detector.backend.runner import RegimeContext, SHARED_PARAMS` — NEVER `from base import ...`: several plugin folders own a `base.py` and the first one loaded wins `sys.modules['base']` (details in `regime_detectors/base.py`) |
 
-The first three folders and `scripts/` are **configurable in Settings**
+Every folder above except MC methods is **configurable in Settings**
 (gear icon): each category searches the in-repo default folder plus any
 extra folders you add. MC methods are internal (not a settings category).
 
@@ -68,6 +69,7 @@ folders and the **data roots**. Each data root is a full tree:
 <root>/parquet/{type}/{asset}/{dataset}/   YYYY-MM-DD.parquet (working layer)
 <root>/trades/{name}.parquet               backtest outputs (flat)
 <root>/optimizations/{run}/                optimizer runs (trades.parquet + meta.json)
+<root>/regimes/{ASSET}/{run_name}/         regime label files (daily parquets + meta.json; NO {type} level)
 <root>/news_and_holidays/ff_usd_events.parquet
 ```
 
@@ -114,10 +116,19 @@ modules/
   scripts/                 quick-script launcher: backend/{ports,scan,browser}.py
                            (pure) + process_manager.py (QProcess per script
                            instance) + log_panel.py + window.py
+  regime_detector/         backend/{schema,io,runner}.py (pure: contract +
+                           run persistence + RegimeContext day walk) — the
+                           strict-before snapshot rule and never-stale
+                           lookback live in runner.py; UI: run_tab,
+                           explore_tab, regime_chart, window.py. Consumers
+                           must join regimes AS-OF the trade's entry time,
+                           never on date (module __init__ docstring).
 strategies/                strategy plugins (single-file or package)
 data_transforms/           raw DBN -> enriched parquet plugins
 position_sizing/           fixed.py, kelly.py, risk_based.py
 scripts/                   quick-script plugins for the Scripts module
+regime_detectors/          regime-detector plugins (+ base.py: import-idiom
+                           doc; scaffold `_scaffold_example.py`)
 forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
 orderbook_replay_cpp/      C++ (pybind11) L3 order-book replay kernel
 tests/                     pytest suite (optimizer backend + metrics + Qt smoke)
@@ -138,6 +149,7 @@ parquet/  --(Optimizer + a strategy grid)---->  optimizations/{run}/  (all cells
 optimizations/{container}/ --(Combine)------->  {container}/_combined/{run}/  (variant-set selection, no re-runs)
 trades/   --(Analytics + a sizer)------------>  sized equity curve + $ metrics
 trades/   --(Monte Carlo + a sizer)---------->  equity_matrix -> fan chart + stats
+parquet/  --(Regime Detector + a detector)--->  regimes/{ASSET}/{run}/  (per-snapshot labels, one file per day)
 ```
 
 Data passes **as files on disk** between stages (parquet) and **as
@@ -172,7 +184,7 @@ column schema, not Python imports.
   registration; on Python 3.13 string dataclass annotations crash
   `dataclasses._is_type` (`sys.modules.get(module)` is `None`) at UI load
   time. Normal imports (pytest) don't catch it — load plugins via
-  `plugins.load_module` in tests (see tests/test_options_gex.py).
+  `plugins.load_module` in tests (see tests/test_regime_runner.py).
 
 ## ASSET_INFO / HIDDEN_PARAMS
 

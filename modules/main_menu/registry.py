@@ -39,6 +39,9 @@ class ModuleSpec:
         if self.key == "scripts":
             from modules.scripts.window import ScriptsWindow
             return ScriptsWindow(settings)
+        if self.key == "regime_detector":
+            from modules.regime_detector.window import RegimeDetectorWindow
+            return RegimeDetectorWindow(settings)
         raise KeyError(f"Unknown module key: {self.key}")
 
 
@@ -56,4 +59,7 @@ MODULES = [
     ModuleSpec("scripts", "06", "Scripts",
                "Run quick research scripts — Streamlit apps in the browser or "
                "plain Python in the console."),
+    ModuleSpec("regime_detector", "07", "Regime Detector",
+               "Label each trading day's regime per snapshot — only from "
+               "bars available at that moment — and explore it on a chart."),
 ]

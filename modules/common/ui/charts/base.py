@@ -20,6 +20,20 @@ from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QToolButton, QToolTip
 
 
+# ── vertical sizing ───────────────────────────────────────────────────────────
+
+# The one knob for how tall charts are: every chart widget passes its design
+# height through chart_min_height(), so changing this factor resizes every
+# chart in the app at once. (The optimizer heatmap is the exception — it is
+# content-sized from its row count.)
+CHART_HEIGHT_FACTOR = 1.4
+
+
+def chart_min_height(design_px: int) -> int:
+    """A chart's design-time height -> its actual minimum pixel height."""
+    return round(design_px * CHART_HEIGHT_FACTOR)
+
+
 # ── time helpers ──────────────────────────────────────────────────────────────
 
 def ny_epoch_seconds(values) -> "pd.Index":
