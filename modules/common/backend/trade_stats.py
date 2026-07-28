@@ -28,6 +28,10 @@ DAY_TYPE_ORDER = [
     ("normal",      "Normal Trading Days"),
 ]
 
+# The regime module's explicit "no answer" — never a real regime, always last
+# in a breakdown (mirrors regime_join.UNKNOWN / schema.UNKNOWN_STATE).
+UNKNOWN_REGIME = "unknown"
+
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
@@ -177,23 +181,22 @@ def exit_breakdown_table(trades: pd.DataFrame) -> pd.DataFrame:
 
 # ── News & holiday breakdown ─────────────────────────────────────────────────
 
-def news_holiday_rows(trades: pd.DataFrame) -> list[dict] | None:
+def _bucket_rows(trades: pd.DataFrame, column: str,
+                 buckets: list[tuple[str, str]],
+                 label_header: str) -> list[dict]:
     """
-    Rows for the News & Holiday Exposure table — computed from the
-    trade_type-filtered trades but unaffected by the day_type filter. Rows are
-    driven by DAY_TYPE_ORDER so every day-type category (incl. the carved-out
-    event categories) appears. None when trades carry no day_type column.
+    One performance row per (tag, label) bucket of `column`. Buckets with no
+    trades still get a row, so the table shape is stable across filters.
+    Shared by the news/holiday and the per-regime breakdowns — same columns,
+    same formatting.
     """
-    if "day_type" not in trades.columns:
-        return None
-
     rows = []
-    for tag, label in DAY_TYPE_ORDER:
-        subset = trades[trades["day_type"] == tag]
+    for tag, label in buckets:
+        subset = trades[trades[column] == tag]
         n      = len(subset)
         if n == 0:
             rows.append({
-                "Day Type":    label,
+                label_header:  label,
                 "Trades":      0,
                 "Wins":        0,
                 "Losses":      0,
@@ -205,7 +208,7 @@ def news_holiday_rows(trades: pd.DataFrame) -> list[dict] | None:
             wins   = (subset["ticks"] > 0).sum()
             losses = (subset["ticks"] < 0).sum()
             rows.append({
-                "Day Type":    label,
+                label_header:  label,
                 "Trades":      n,
                 "Wins":        wins,
                 "Losses":      losses,
@@ -214,6 +217,40 @@ def news_holiday_rows(trades: pd.DataFrame) -> list[dict] | None:
                 "Avg Ticks":   f"{subset['ticks'].mean():.1f}",
             })
     return rows
+
+
+def news_holiday_rows(trades: pd.DataFrame) -> list[dict] | None:
+    """
+    Rows for the News & Holiday Exposure table — computed from the
+    trade_type-filtered trades but unaffected by the day_type filter. Rows are
+    driven by DAY_TYPE_ORDER so every day-type category (incl. the carved-out
+    event categories) appears. None when trades carry no day_type column.
+    """
+    if "day_type" not in trades.columns:
+        return None
+    return _bucket_rows(trades, "day_type", DAY_TYPE_ORDER, "Day Type")
+
+
+def regime_performance_rows(trades: pd.DataFrame, column: str = "regime",
+                            states: list[str] | None = None) -> list[dict] | None:
+    """
+    Rows for the per-regime performance table. `states` is the run's DECLARED
+    state list (meta["states"][col]["states"]) so the row order is stable
+    regardless of what the filtered range happens to contain; 'unknown' is
+    always last because it is an explicit "no answer", not a regime.
+    None when trades carry no regime column.
+    """
+    if column not in trades.columns:
+        return None
+    observed = [s for s in trades[column].dropna().unique().tolist()]
+    ordered = list(states) if states else sorted(s for s in observed
+                                                 if s != UNKNOWN_REGIME)
+    for state in observed:                      # anything undeclared, kept visible
+        if state not in ordered and state != UNKNOWN_REGIME:
+            ordered.append(state)
+    if UNKNOWN_REGIME in observed or states is not None:
+        ordered.append(UNKNOWN_REGIME)
+    return _bucket_rows(trades, column, [(s, s) for s in ordered], "Regime")
 
 
 # ── RR distribution ───────────────────────────────────────────────────────────
