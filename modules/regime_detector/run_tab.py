@@ -21,8 +21,8 @@ from modules.common.backend.data_roots import regimes_dir, scan_structure
 from modules.common.backend.plugins import PluginRef, list_plugins, load_module
 from modules.common.ui.params_form import ParamsForm
 from modules.common.ui.widgets import (Banner, Caption, ProgressLogPanel,
-                                       SectionHeader)
-from modules.common.ui.widgets import wrap_card
+                                       SectionHeader, pin_minimum_height,
+                                       wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.regime_detector.backend import io as rio
 from modules.regime_detector.backend import schema
@@ -42,6 +42,7 @@ class RunTab(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 8, 0, 0)
         outer.setSpacing(10)
+        pin_minimum_height(self)
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(24)

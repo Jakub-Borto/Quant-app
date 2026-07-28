@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QGridLayout,
                                QHBoxLayout, QLabel, QPushButton, QSlider,
                                QSpinBox, QVBoxLayout, QWidget)
 
-from modules.common.ui.charts.base import chart_min_height, make_plot
+from modules.common.ui.charts.base import make_plot, set_chart_height
 from modules.common.ui.charts.fan_chart import FanChart
 from modules.common.ui.dataframe_model import make_table_view
 from modules.common.ui.widgets import Banner, Caption, MetricTile, SectionHeader
@@ -387,7 +387,7 @@ class PropFirmPanel(QWidget):
                                          "nothing to chart."))
         else:
             plot = make_plot("Trade # (challenge → reset → funded)", "Equity ($)")
-            plot.setMinimumHeight(chart_min_height(440))
+            set_chart_height(plot, 440)
             x = np.arange(mat.shape[1], dtype=float)
             rng_ = np.random.default_rng(0)
             sample = rng_.choice(mat.shape[0],

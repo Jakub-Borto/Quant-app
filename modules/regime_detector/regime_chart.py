@@ -15,9 +15,9 @@ from PySide6.QtCore import QRectF, Signal
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from modules.common.ui.charts.base import (HoverTooltip, chart_min_height,
-                                           make_plot, nearest_index,
-                                           ny_epoch_seconds)
+from modules.common.ui.charts.base import (HoverTooltip, make_plot,
+                                           nearest_index, ny_epoch_seconds,
+                                           set_chart_height)
 from modules.regime_detector.backend.schema import UNKNOWN_COLOR, UNKNOWN_STATE
 
 _HALF_DAY_S = 43200.0
@@ -90,7 +90,7 @@ class RegimeChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._plot = make_plot("Date", "Price", datetime_x=True)
-        self._plot.setMinimumHeight(chart_min_height(420))
+        set_chart_height(self._plot, 420)
 
         self._legend = QLabel("")
         self._legend.setTextFormat(pg.QtCore.Qt.TextFormat.RichText)

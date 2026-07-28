@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDateEdit, QGridLayout,
 from modules.common.backend.data_roots import RegimeRunRef, list_regime_runs
 from modules.common.ui.dataframe_model import make_table_view, update_table_view
 from modules.common.ui.widgets import (Banner, Caption, ProgressLogPanel,
-                                       SectionHeader, wrap_card)
+                                       SectionHeader, pin_minimum_height,
+                                       wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.regime_detector.backend import io as rio
 from modules.regime_detector.regime_chart import RegimeChart
@@ -45,6 +46,7 @@ class ExploreTab(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 8, 0, 0)
         outer.setSpacing(10)
+        pin_minimum_height(self)
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(24)
@@ -191,7 +193,7 @@ class ExploreTab(QWidget):
                                                  "selected date range.")
             return
         meta = self._meta or {}
-        regime_cols = list(meta.get("schema", {}).get("regime", []))
+        regime_cols = list(_tiers(meta).get("regime", []))
         session = meta.get("globex_session") or {}
         start = session.get("start") or _DEFAULT_SESSION["start"]
         end = session.get("end") or _DEFAULT_SESSION["end"]
@@ -253,10 +255,14 @@ class ExploreTab(QWidget):
             return
         df = self._detail_df
         if not self._show_diag.isChecked():
-            diag = set((self._meta or {}).get("schema", {})
-                       .get("diagnostic", []))
+            diag = set(_tiers(self._meta or {}).get("diagnostic", []))
             df = df[[c for c in df.columns if c not in diag]]
         update_table_view(self._table, df)
+
+
+def _tiers(meta: dict) -> dict:
+    """The meta schema's tier split (io.tiers owns the v1/v2 shim)."""
+    return rio.tiers(meta)
 
 
 def _empty_frame():

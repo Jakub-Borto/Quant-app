@@ -25,7 +25,7 @@ from modules.common.ui.dataframe_model import make_table_view, update_table_view
 from modules.common.ui.trade_report.filters import CheckboxFilterRow
 from modules.common.ui.widgets import (Banner, Caption, CollapsibleSection,
                                        ProgressLogPanel, SectionHeader,
-                                       hline, wrap_card)
+                                       hline, pin_minimum_height, wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.optimizer.backend.buckets import BUCKET_ORDER
 from modules.optimizer.backend.combine import io as cmb_io
@@ -62,6 +62,7 @@ class CombineTab(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
+        pin_minimum_height(self)
 
         # ── container + entry runs ────────────────────────────────────────────
         sel = QGridLayout()

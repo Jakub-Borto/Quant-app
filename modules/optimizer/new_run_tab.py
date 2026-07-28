@@ -27,7 +27,7 @@ from modules.common.backend.data_roots import (DatasetRef, available_dates,
                                                scan_structure)
 from modules.common.backend.plugins import PluginRef, list_strategies, load_strategy
 from modules.common.ui.widgets import (Banner, Caption, ProgressLogPanel,
-                                       wrap_card)
+                                       pin_minimum_height, wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.optimizer.backend.engine import (check_param_columns,
                                               estimate_worker_memory,
@@ -67,6 +67,7 @@ class NewRunTab(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
+        pin_minimum_height(self)
 
         # ── setup controls ────────────────────────────────────────────────────
         grid = QGridLayout()

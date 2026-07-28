@@ -23,7 +23,7 @@ from modules.monte_carlo.backend.stats import (BAND_ALPHAS, BAND_COLOR,
                                                BAND_LABELS, BAND_PERCENTILES,
                                                FEATURED_COLORS,
                                                SAMPLE_PATH_COUNT)
-from .base import HoverTooltip, chart_min_height, make_plot
+from .base import HoverTooltip, make_plot, set_chart_height
 
 _BAND_RGB = tuple(int(c) for c in BAND_COLOR.split(","))
 
@@ -39,7 +39,7 @@ class FanChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._plot = make_plot("Trade #", "Equity ($)")
-        self._plot.setMinimumHeight(chart_min_height(480))
+        set_chart_height(self._plot, 480)
         self._plot.addLegend(offset=(10, 10))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
