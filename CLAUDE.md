@@ -98,10 +98,14 @@ modules/
                            cancellation), widgets, params_form, dataframe
                            model, settings dialog, charts/ (pyqtgraph:
                            equity, candlestick, histogram, fan, heatmap,
-                           path), trade_report/ (the shared report panel +
-                           TradeActionsRow (Save Trades / Go to Analytics /
-                           Go to Monte Carlo), used by Backtester AND
-                           Optimizer cell detail)
+                           path), trade_report/ (the shared report as an
+                           ORDERED STACK of sections — sections.py holds the
+                           registry + SectionStack, layout_dialog.py the gear
+                           UI; order/visibility persist in settings.json
+                           ui_prefs and are shared by Backtester AND
+                           Optimizer cell detail. Also TradeActionsRow (Save
+                           Trades / Go to Analytics / Go to Monte Carlo) and
+                           the regime source/filter sections)
   data_formatter/          backend/scan.py + window.py
   backtester/              backend/{run,day_types}.py + window.py
   analytics/               backend/{io,sizing,costs,metrics}.py +
@@ -150,7 +154,16 @@ optimizations/{container}/ --(Combine)------->  {container}/_combined/{run}/  (v
 trades/   --(Analytics + a sizer)------------>  sized equity curve + $ metrics
 trades/   --(Monte Carlo + a sizer)---------->  equity_matrix -> fan chart + stats
 parquet/  --(Regime Detector + a detector)--->  regimes/{ASSET}/{run}/  (per-snapshot labels, one file per day)
+regimes/  --(Backtester/Optimizer regime section)-->  trades sliced by regime state
 ```
+
+**Regime consumers join AS-OF the trade's entry**, never on date — the final
+row of a regime file knows how the day ended. The one implementation is
+`modules/common/backend/regime_join.py` (`attach_regime`, modes asof/exact/
+final); never hand-roll the merge. It also absorbs two verified hazards: the
+`entry_time` unit varies by strategy (ns vs us) while regime indexes are us,
+and a backward join would otherwise carry a 17:00 label onto the next
+evening's entry (guarded by matching the snapshot's own RTH date).
 
 Data passes **as files on disk** between stages (parquet) and **as
 DataFrames** within a stage. The contract between stages is the parquet

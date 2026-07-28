@@ -57,14 +57,16 @@ class ScriptInstance(QObject):
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def start(self) -> None:
+        # -u in BOTH modes: stdout is a pipe, so without it Python
+        # block-buffers (~8 KB) and print() from the script only shows at
+        # process exit instead of live in the console.
         if self.kind == "streamlit":
-            args = ["-m", "streamlit", "run", str(self.script_path),
+            args = ["-u", "-m", "streamlit", "run", str(self.script_path),
                     "--server.port", str(self.port),
                     "--server.headless", "true",
                     "--server.runOnSave", "true",   # saving the file reruns
                     "--browser.gatherUsageStats", "false"]
         else:
-            # -u: unbuffered, so prints stream live instead of one flush at exit
             args = ["-u", str(self.script_path)]
         self._proc.start(sys.executable, args)
 
