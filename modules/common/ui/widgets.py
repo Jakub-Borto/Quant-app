@@ -159,8 +159,17 @@ class CollapsibleSection(QWidget):
         lay.setSpacing(0)
         lay.addWidget(self._button)
         lay.addWidget(self.content)
+        # without this the header button itself is crushed (37 -> 19px) for a
+        # frame while the body is shown/hidden — a flicker on the very row
+        # being clicked. Same mechanism as the section stack.
+        pin_minimum_height(self)
 
     def _on_toggled(self, checked: bool) -> None:
+        # NOTE: do NOT wrap this in window().setUpdatesEnabled(False/True).
+        # It looks like batching but forces a full-window repaint on re-enable
+        # — measured 849 paint events per toggle versus 438 without it. The
+        # thing that actually makes this cheap is WA_StaticContents on the
+        # scrolled page (see ModuleWindowBase), which brings it to 72.
         self._button.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
         self.content.setVisible(checked)
 
@@ -217,6 +226,45 @@ class ProgressLogPanel(QWidget):
     def log_line(self, message: str) -> None:
         """Message-only entry point (the combiner's log(msg) callback)."""
         self.on_progress(0, 1, message)
+
+
+def pin_minimum_height(widget: QWidget) -> None:
+    """
+    Make `widget` grow with its content instead of being squeezed below it.
+
+    Why this exists: expanding a collapsible section makes its container's
+    children need more room, but the container is only resized by ITS parent
+    on a later pass. For that one pass Qt absorbs the deficit by shrinking the
+    siblings PAST THEIR OWN MINIMUMS — the visible "everything squashes for a
+    frame" jitter (clipped metric tiles, a half-height equity chart). Traced
+    order before the fix: the expanding frame grew to 313, equity was crushed
+    572->313 and metrics 330->313, and only then did the container grow
+    1432->1849.
+
+    SetMinimumSize makes the container's minimum track its content, so it
+    grows FIRST and the deficit never exists. It also pins a minimum WIDTH,
+    which was measured to make no difference: the page is already sized to its
+    size hint (1805px) at narrow window widths either way.
+    """
+    layout = widget.layout()
+    if layout is not None:
+        layout.setSizeConstraint(QLayout.SetMinimumSize)
+
+
+def gear_button(tooltip: str = "Settings") -> QToolButton:
+    """The ⚙ settings button — one styling home for the main menu's gear and
+    every module window's header action. Qt eats a single '&' as a mnemonic,
+    so callers pass '&&' for a literal ampersand."""
+    gear = QToolButton()
+    gear.setText("⚙")
+    gear.setToolTip(tooltip)
+    gear.setCursor(Qt.PointingHandCursor)
+    gear.setStyleSheet(
+        f"QToolButton {{ font-size: 20px; padding: 6px 10px; "
+        f"background: {theme.SURFACE}; border: 1px solid {theme.BORDER}; "
+        f"border-radius: 8px; }} "
+        f"QToolButton:hover {{ border-color: {theme.ACCENT}; }}")
+    return gear
 
 
 def hline() -> QFrame:

@@ -23,15 +23,34 @@ from PySide6.QtWidgets import QToolButton, QToolTip
 # ── vertical sizing ───────────────────────────────────────────────────────────
 
 # The one knob for how tall charts are: every chart widget passes its design
-# height through chart_min_height(), so changing this factor resizes every
+# height through set_chart_height(), so changing this factor resizes every
 # chart in the app at once. (The optimizer heatmap is the exception — it is
 # content-sized from its row count.)
 CHART_HEIGHT_FACTOR = 1.4
 
 
 def chart_min_height(design_px: int) -> int:
-    """A chart's design-time height -> its actual minimum pixel height."""
+    """A chart's design-time height -> its actual pixel height."""
     return round(design_px * CHART_HEIGHT_FACTOR)
+
+
+def set_chart_height(plot, design_px: int) -> None:
+    """
+    Give a chart ONE unambiguous height.
+
+    Use this instead of setMinimumHeight. A pyqtgraph PlotWidget is an
+    Expanding QGraphicsView whose sizeHint (600) differs from the minimum we
+    want, so with only a minimum it renegotiates on every layout pass — and
+    the app's QSS puts a 1px border on it, so it settles 2px above whatever
+    minimum we set. Those 2px then cascade: content +2, section frame +2,
+    stack +2, and the scrolled page resizes a SECOND time, which is the
+    visible double-jump when a dropdown opens.
+
+    Pages are scroll-area content sized to their contents, so charts never
+    actually grew into spare space; pinning the height changes nothing
+    visually and removes the negotiation.
+    """
+    plot.setFixedHeight(chart_min_height(design_px))
 
 
 # ── time helpers ──────────────────────────────────────────────────────────────
@@ -130,29 +149,47 @@ class HoverTooltip:
     """
     Attach to a PlotWidget; `text_fn(x, y) -> str | None` receives the cursor
     position in DATA coordinates and returns the HTML to show (None hides).
-    Rate-limited to 30 Hz. Keep a reference (attaching stores it on the plot).
+    Keep a reference (attaching stores it on the plot).
+
+    The tooltip is only re-shown when its CONTENT changes — i.e. when the
+    cursor moves to a different data point. Calling QToolTip.showText on every
+    mouse move re-anchors the popup to the cursor each time, so it visibly
+    chases the mouse and flickers while you read it. Since text_fn is
+    point-based, the same text means the same point, and leaving the popup
+    exactly where it is keeps it readable while you move within one point.
     """
 
     def __init__(self, plot: pg.PlotWidget, text_fn):
         self._plot = plot
         self._text_fn = text_fn
+        self._last_html: str | None = None
         self._proxy = pg.SignalProxy(plot.scene().sigMouseMoved, rateLimit=30,
                                      slot=self._on_move)
         # keep this object alive as long as the plot lives
         plot._hover_tooltip_ref = self
 
+    def _hide(self) -> None:
+        if self._last_html is not None:
+            self._last_html = None
+            QToolTip.hideText()
+
     def _on_move(self, event) -> None:
         pos = event[0]
         vb = self._plot.getPlotItem().vb
         if not self._plot.sceneBoundingRect().contains(pos):
-            QToolTip.hideText()
+            self._hide()
             return
         point = vb.mapSceneToView(pos)
         html = self._text_fn(point.x(), point.y())
-        if html:
-            QToolTip.showText(QCursor.pos(), html, self._plot)
-        else:
-            QToolTip.hideText()
+        if not html:
+            self._hide()
+            return
+        # same point -> leave the popup untouched (no re-anchor, no repaint).
+        # isVisible() guards Qt's own tooltip timeout having hidden it.
+        if html == self._last_html and QToolTip.isVisible():
+            return
+        self._last_html = html
+        QToolTip.showText(QCursor.pos(), html, self._plot)
 
 
 def nearest_index(x_array, x: float) -> int | None:

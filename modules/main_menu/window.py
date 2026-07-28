@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel,
 from modules.common.backend.settings import Settings
 from modules.common.ui import theme
 from modules.common.ui.settings_dialog import SettingsDialog
+from modules.common.ui.widgets import gear_button
 from .cards import ModuleCard
 from .registry import MODULES
 
@@ -59,14 +60,7 @@ class MainMenuWindow(QWidget):
         header.addLayout(title_box)
         header.addStretch()
 
-        gear = QToolButton()
-        gear.setText("⚙")
-        gear.setToolTip("Settings — plugin folders && data roots")
-        gear.setStyleSheet(
-            f"QToolButton {{ font-size: 20px; padding: 6px 10px; "
-            f"background: {theme.SURFACE}; border: 1px solid {theme.BORDER}; "
-            f"border-radius: 8px; }} "
-            f"QToolButton:hover {{ border-color: {theme.ACCENT}; }}")
+        gear = gear_button("Settings — plugin folders && data roots")
         gear.clicked.connect(self._open_settings)
         header.addWidget(gear, alignment=Qt.AlignTop)
         lay.addLayout(header)
