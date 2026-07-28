@@ -96,12 +96,27 @@ def test_data_formatter_window(qtbot, settings):
 
 @needs_data
 def test_backtester_window(qtbot, settings):
+    from modules.common.ui.trade_report.sections import DEFAULT_ORDER
     from modules.backtester.window import BacktesterWindow
     win = BacktesterWindow(settings)
     qtbot.addWidget(win)
     win.show()
     assert win._strategy.count() > 0
     assert win._params_form is not None or win._strategy.count() == 0
+    # every registry section is composed, and the layout gear is pinned
+    assert sorted(win._panel.sections.keys()) == sorted(DEFAULT_ORDER)
+    assert win._header_actions is not None
+
+
+@needs_data
+def test_optimizer_cell_detail_constructs(qtbot, settings):
+    """The Optimizer smoke test never reaches the drill-down (it needs a
+    heatmap click), so construct it directly."""
+    from modules.common.ui.trade_report.sections import DEFAULT_ORDER
+    from modules.optimizer.cell_detail import CellDetailPanel
+    panel = CellDetailPanel(settings, track_worker=lambda w: None)
+    qtbot.addWidget(panel)
+    assert sorted(panel._panel.sections.keys()) == sorted(DEFAULT_ORDER)
 
 
 @needs_data
@@ -293,6 +308,8 @@ def test_worker_import_chain_is_qt_free():
         "import sys; "
         "import modules.optimizer.backend.engine; "
         "import modules.optimizer.backend.run_setup; "
+        "import modules.common.backend.regime_join; "
+        "import modules.regime_detector.backend.runner; "
         "assert 'PySide6' not in sys.modules, 'engine import pulled in Qt'; "
         "assert 'pyqtgraph' not in sys.modules, 'engine import pulled in pyqtgraph'; "
         "print('CLEAN')"

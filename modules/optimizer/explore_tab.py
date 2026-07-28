@@ -26,7 +26,8 @@ from modules.common.ui import theme
 from modules.common.ui.charts.heatmap import HeatmapChart
 from modules.common.ui.trade_report.filters import CheckboxFilterRow
 from modules.common.ui.widgets import (Banner, Caption, CollapsibleSection,
-                                       SectionHeader, wrap_card)
+                                       SectionHeader, pin_minimum_height,
+                                       wrap_card)
 from modules.optimizer.backend import io as opt_io
 from modules.optimizer.backend.buckets import BUCKET_ORDER
 from modules.optimizer.backend.heatmap_model import (MIN_TRADES_DEFAULT,
@@ -45,16 +46,19 @@ class ExploreTab(QWidget):
     """Run state (trades/meta/unsaved/loaded_run/run_root) lives on the
     OptimizerWindow (`state`) — New Run hands off through it."""
 
-    def __init__(self, settings, state, parent=None):
+    def __init__(self, settings, state, track_worker=None, parent=None):
         super().__init__(parent)
         self.settings = settings
         self.state = state
+        # only the cell drill-down needs it (regime loading); passed through
+        self._track_worker = track_worker
         self._grid = None
         self._grid_key = None
         self._slider_widgets: list[tuple[dict, QSlider | None, QLabel]] = []
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
+        pin_minimum_height(self)      # tab pages need it too — see widgets.py
 
         self._success = Banner()
         lay.addWidget(self._success)
@@ -203,7 +207,7 @@ class ExploreTab(QWidget):
         self._reading.setVisible(False)
         lay.addWidget(self._reading)
 
-        self.cell_detail = CellDetailPanel(settings)
+        self.cell_detail = CellDetailPanel(settings, track_worker)
         lay.addWidget(self.cell_detail)
         # un-clicking the selected square closes its drill-down report
         self._heatmap.cellDeselected.connect(self.cell_detail.hide_detail)

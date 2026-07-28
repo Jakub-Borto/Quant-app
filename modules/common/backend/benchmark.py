@@ -123,6 +123,10 @@ def _fit_alpha_beta(y: pd.Series, x: pd.Series) -> dict | None:
         "t_beta":    float(res.tvalues[1]),
         "r2":        float(res.rsquared),
         "n":         int(res.nobs),
+        # the points the fit was computed from, so the UI can draw the
+        # scatter + fitted line instead of only reporting the coefficients
+        "x":         x.to_numpy(dtype=float),
+        "y":         y.to_numpy(dtype=float),
     }
 
 

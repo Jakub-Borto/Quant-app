@@ -17,19 +17,21 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
+                               QWidget)
 
-from .base import (HoverTooltip, chart_min_height, date_axis, make_plot,
-                   nearest_index, ny_epoch_seconds)
+from .. import theme
+from .base import (HoverTooltip, date_axis, make_plot, nearest_index,
+                   ny_epoch_seconds, set_chart_height)
 
 
 class EquityCurveChart(QWidget):
-    pointClicked = Signal(int)   # row index into the trades frame
+    pointClicked = Signal(int)   # row index into the trades frame, -1 = cleared
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._plot = make_plot("Date", "Cumulative Ticks", datetime_x=True)
-        self._plot.setMinimumHeight(chart_min_height(360))
+        set_chart_height(self._plot, 360)
 
         # X-axis mode toggle: calendar time vs plain trade number (no gaps)
         self._trade_number_mode = False
@@ -37,7 +39,12 @@ class EquityCurveChart(QWidget):
         self._axis_btn.setToolTip("Toggle the X axis between calendar time "
                                   "and trade number (removes calendar gaps)")
         self._axis_btn.clicked.connect(self._toggle_axis_mode)
+        # names the highlighted trade; clicking that point again clears it
+        self._selected_label = QLabel("")
+        self._selected_label.setStyleSheet(
+            f"color: {theme.TEXT_MUTED}; font-size: 12px;")
         btn_row = QHBoxLayout()
+        btn_row.addWidget(self._selected_label)
         btn_row.addStretch()
         btn_row.addWidget(self._axis_btn)
 
@@ -52,6 +59,7 @@ class EquityCurveChart(QWidget):
         self._y = np.array([])
         self._dates: list[str] = []
         self._scatter: pg.ScatterPlotItem | None = None
+        self._selected: int | None = None
         HoverTooltip(self._plot, self._hover_text)
 
     def set_trades(self, trades: pd.DataFrame) -> None:
@@ -73,7 +81,17 @@ class EquityCurveChart(QWidget):
             brush=pg.mkBrush(91, 120, 240, 160), pen=None)
         self._scatter.sigClicked.connect(self._on_clicked)
         self._plot.addItem(self._scatter)
+
+        # NOTE: the selection is drawn by recolouring the point INSIDE this
+        # scatter (see _refresh_marker) rather than by adding a marker item on
+        # top. pyqtgraph's ScatterPlotItem.mouseClickEvent accepts the event
+        # whenever a point is under the cursor, so an overlay scatter swallows
+        # the click on the highlighted trade and deselecting becomes
+        # impossible — setAcceptedMouseButtons does not help, because the
+        # scene's own hit-testing never consults it.
+
         self._plot.autoRange()
+        self._refresh_marker()          # survives a re-plot (axis toggle)
 
     def _toggle_axis_mode(self) -> None:
         self._trade_number_mode = not self._trade_number_mode
@@ -90,10 +108,43 @@ class EquityCurveChart(QWidget):
         if self._trades is not None:
             self.set_trades(self._trades)
 
+    # ── selection ─────────────────────────────────────────────────────────────
+    def select(self, row: int | None) -> None:
+        """Highlight a trade (None clears). Emits pointClicked; -1 = cleared."""
+        self._selected = row
+        self._refresh_marker()
+        self.pointClicked.emit(-1 if row is None else int(row))
+
+    def selected(self) -> int | None:
+        return self._selected
+
+    def _refresh_marker(self) -> None:
+        """Recolour the picked point white, in place, inside the data scatter."""
+        if self._scatter is None:
+            return
+        n = len(self._x)
+        row = self._selected
+        valid = row is not None and 0 <= row < n
+
+        brushes = [pg.mkBrush(91, 120, 240, 160)] * n
+        sizes = [7] * n
+        if valid:
+            brushes[row] = pg.mkBrush("#ffffff")
+            sizes[row] = 11
+        self._scatter.setBrush(brushes)
+        self._scatter.setSize(sizes)
+
+        self._selected_label.setText(
+            "" if not valid else
+            f"Trade #{row + 1} — {self._dates[row]}  ·  click it again to clear")
+
     # ── interactions ──────────────────────────────────────────────────────────
     def _on_clicked(self, _item, points) -> None:
-        if len(points):
-            self.pointClicked.emit(int(points[0].index()))
+        if not len(points):
+            return
+        row = int(points[0].index())
+        # clicking the highlighted trade again deselects it
+        self.select(None if row == self._selected else row)
 
     def _hover_text(self, x: float, y: float) -> str | None:
         i = nearest_index(self._x, x)
@@ -110,7 +161,7 @@ class MultiLineEquityChart(QWidget):
     def __init__(self, height: int = 360, parent=None):
         super().__init__(parent)
         self._plot = make_plot("Date", "Equity ($)", datetime_x=True)
-        self._plot.setMinimumHeight(chart_min_height(height))
+        set_chart_height(self._plot, height)
         self._plot.addLegend(offset=(10, 10))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)

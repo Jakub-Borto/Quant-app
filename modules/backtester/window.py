@@ -41,9 +41,12 @@ from modules.common.ui.params_form import ParamsForm
 from modules.common.ui.trade_report.filters import (make_day_type_filter,
                                                     make_trade_type_filter)
 from modules.common.ui.trade_report.actions_row import TradeActionsRow
+from modules.common.ui.trade_report.layout_dialog import ReportLayoutDialog
 from modules.common.ui.trade_report.news_section import NewsBreakdownTable
 from modules.common.ui.trade_report.panel import TradeReportPanel
-from modules.common.ui.widgets import Banner, Caption, SectionHeader, wrap_card
+from modules.common.ui.trade_report.regime_section import RegimeSection
+from modules.common.ui.widgets import (Banner, Caption, SectionHeader,
+                                       gear_button, wrap_card)
 from modules.common.ui.workers import FunctionWorker
 
 
@@ -62,10 +65,19 @@ class BacktesterWindow(ModuleWindowBase):
         self._strategy_module = None
         self._structure: dict = {}
         self._params_form: ParamsForm | None = None
+        self._regime_tagged: pd.DataFrame | None = None   # _tagged + regime
+
+        self._layout_gear = gear_button("Report layout — order and show/hide "
+                                        "the report's sections")
+        self._layout_gear.clicked.connect(self._open_layout_dialog)
+        self.add_header_action(self._layout_gear)
 
         self._build_controls()
         self._build_results_area()
         self._rescan()
+
+    def _open_layout_dialog(self) -> None:
+        ReportLayoutDialog(self.settings, parent=self).exec()
 
     # ══ controls ═══════════════════════════════════════════════════════════════
     def _build_controls(self) -> None:
@@ -125,36 +137,46 @@ class BacktesterWindow(ModuleWindowBase):
         self._strategy.currentIndexChanged.connect(self._on_strategy_changed)
 
     def _build_results_area(self) -> None:
+        """Build every results widget, hand the host-owned ones to the panel,
+        and let the panel lay them all out in the user's saved order. Only the
+        two banners live outside the section stack — they are transient
+        messages, not sections."""
         self._results = QWidget()
         self._results.setVisible(False)
         lay = QVBoxLayout(self._results)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
 
-        self._tt_caption = Caption("Filter by trade type")
-        self._tt_holder = QVBoxLayout()
-        self._tt_filter = None
-        lay.addWidget(self._tt_caption)
-        lay.addLayout(self._tt_holder)
-
-        self._news = NewsBreakdownTable()
-        lay.addWidget(self._news)
-
-        lay.addWidget(Caption("Filter by day type"))
-        self._dt_filter = make_day_type_filter()
-        self._dt_filter.selectionChanged.connect(self._apply_filters)
-        lay.addWidget(self._dt_filter)
-
         self._filter_banner = Banner()
         lay.addWidget(self._filter_banner)
 
-        self._panel = TradeReportPanel()
-        lay.addWidget(self._panel)
+        self._panel = TradeReportPanel(self.settings)
 
-        lay.addWidget(SectionHeader("Trades"))
+        # trade-type filter: a stable container, because the filter row itself
+        # is rebuilt from each run's trade_type values
+        self._tt_container = QWidget()
+        self._tt_holder = QVBoxLayout(self._tt_container)
+        self._tt_holder.setContentsMargins(0, 0, 0, 0)
+        self._tt_holder.addWidget(Caption("Filter by trade type"))
+        self._tt_filter = None
+
+        self._dt_container = QWidget()
+        dt_lay = QVBoxLayout(self._dt_container)
+        dt_lay.setContentsMargins(0, 0, 0, 0)
+        dt_lay.addWidget(Caption("Filter by day type"))
+        self._dt_filter = make_day_type_filter()
+        self._dt_filter.selectionChanged.connect(self._apply_filters)
+        dt_lay.addWidget(self._dt_filter)
+
+        self._news = NewsBreakdownTable()
+        self._regime = RegimeSection(self.settings, self.track_worker)
+        self._regime.sourceChanged.connect(self._on_regime_source_changed)
+        self._regime.selectionChanged.connect(self._apply_filters)
         self._table = make_table_view(pd.DataFrame(), height=420)
-        lay.addWidget(self._table)
 
+        actions_holder = QWidget()
+        save_col = QVBoxLayout(actions_holder)
+        save_col.setContentsMargins(0, 0, 0, 0)
         save_row = QHBoxLayout()
         self._save_banner = Banner()
         self._actions_row = TradeActionsRow(self.settings, self._actions_context,
@@ -162,8 +184,18 @@ class BacktesterWindow(ModuleWindowBase):
         save_row.addStretch()
         save_row.addWidget(self._actions_row)
         save_row.addStretch()
-        lay.addLayout(save_row)
-        lay.addWidget(self._save_banner)
+        save_col.addLayout(save_row)
+        save_col.addWidget(self._save_banner)
+
+        for key, widget in (("trade_type_filter", self._tt_container),
+                            ("day_type_filter", self._dt_container),
+                            ("news", self._news),
+                            ("regime", self._regime),
+                            ("trades_table", self._table),
+                            ("actions", actions_holder)):
+            self._panel.attach_host_section(key, widget)
+        self._panel.build_sections()
+        lay.addWidget(self._panel)
 
         self.content.addWidget(self._results)
         self.content.addStretch()
@@ -317,7 +349,7 @@ class BacktesterWindow(ModuleWindowBase):
         unique_types = []
         if "trade_type" in self._tagged.columns:
             unique_types = sorted(self._tagged["trade_type"].dropna().unique().tolist())
-        self._tt_caption.setVisible(bool(unique_types))
+        self._panel.set_section_visible("trade_type_filter", bool(unique_types))
         if unique_types:
             self._tt_filter = make_trade_type_filter(unique_types)
             self._tt_filter.selectionChanged.connect(self._apply_filters)
@@ -329,14 +361,32 @@ class BacktesterWindow(ModuleWindowBase):
                                 ASSET_INFO[self._run_asset]["ticks_per_point"],
                                 candles_folder=panel_ref.path,
                                 parquet_root=panel_ref.root / "parquet")
+        # regimes: narrow the run list to this asset and the load to this run's
+        # dates, then re-join if a run is already loaded
+        dates = pd.to_datetime(self._tagged["date"])
+        self._regime.set_context(self._run_asset,
+                                 dates.min().strftime("%Y-%m-%d"),
+                                 dates.max().strftime("%Y-%m-%d"))
+        self._regime_tagged = self._regime.annotate(self._tagged)
+
         self._results.setVisible(True)
         self._apply_filters()
 
     # ══ filters + report (the old post-run render chain, verbatim order) ═══════
+    def _on_regime_source_changed(self) -> None:
+        """Re-run the (potentially expensive) regime join once per source
+        change, not once per filter toggle."""
+        if self._tagged is None:
+            return
+        self._regime_tagged = self._regime.annotate(self._tagged)
+        self._apply_filters()
+
     def _apply_filters(self) -> None:
         if self._tagged is None:
             return
-        trades = self._tagged
+        trades = getattr(self, "_regime_tagged", None)
+        if trades is None or len(trades) != len(self._tagged):
+            trades = self._tagged
         self._filter_banner.clear_message()
 
         # ── trade-type filter ─────────────────────────────────────────────────
@@ -356,7 +406,8 @@ class BacktesterWindow(ModuleWindowBase):
                 self._selected_trade_types_meta = selected_types
 
         # ── news & holiday breakdown — BEFORE the day-type filter ─────────────
-        self._news.set_trades(trades)
+        has_news = self._news.set_trades(trades)
+        self._panel.set_section_visible("news", has_news)
 
         # ── day-type filter ───────────────────────────────────────────────────
         selected_day_types = self._dt_filter.selected()
@@ -373,7 +424,32 @@ class BacktesterWindow(ModuleWindowBase):
             return
 
         day_type_filtered = len(selected_day_types) < len(DAY_TYPE_ORDER)
-        self._filtered = day_type_filtered or trade_type_filtered
+
+        # ── regime breakdown — BEFORE the regime filter, so the table always
+        #    shows every state (same rule as the news table above) ────────────
+        regime_states = self._regime.states()
+        self._regime.set_trades(trades)
+
+        # ── regime filter ─────────────────────────────────────────────────────
+        regime_filtered = False
+        selected_regimes = self._regime.selected()
+        if selected_regimes is not None and "regime" in trades.columns:
+            if not selected_regimes:
+                self._filter_banner.show_message("warning",
+                                                 "No regime states selected.")
+                self._set_report_visible(False)
+                return
+            trades = trades[trades["regime"].isin(selected_regimes)].copy()
+            trades["cumulative_ticks"] = trades["ticks"].cumsum()
+            if trades.empty:
+                self._filter_banner.show_message(
+                    "warning", "No trades match the selected regime states.")
+                self._set_report_visible(False)
+                return
+            regime_filtered = len(selected_regimes) < len(regime_states) + 1
+
+        self._filtered = (day_type_filtered or trade_type_filtered
+                          or regime_filtered)
         self._selected_day_types = selected_day_types
         self._filtered_trades = trades
 
@@ -382,16 +458,13 @@ class BacktesterWindow(ModuleWindowBase):
 
         display_cols = ["date", "direction", "entry_time", "exit_time",
                         "entry_price", "exit_price", "exit_reason", "ticks"]
-        if "trade_type" in trades.columns:
-            display_cols.append("trade_type")
-        if "day_type" in trades.columns:
-            display_cols.append("day_type")
+        for optional in ("trade_type", "day_type", "regime"):
+            if optional in trades.columns:
+                display_cols.append(optional)
         update_table_view(self._table, trades[display_cols])
 
     def _set_report_visible(self, visible: bool) -> None:
-        self._panel.setVisible(visible)
-        self._table.setVisible(visible)
-        self._actions_row.setVisible(visible)
+        self._panel.set_report_visible(visible)
 
     # ══ save / go to Analytics / Monte Carlo (shared TradeActionsRow) ═══════════
     def _actions_context(self) -> dict | None:

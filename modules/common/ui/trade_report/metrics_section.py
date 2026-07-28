@@ -1,28 +1,29 @@
 """
-Performance metric tiles + exit breakdown table — the Qt analog of the old
-render_metrics. Row layout, labels, format strings and help texts are
-verbatim from legacy_streamlit/views/trade_report.py.
+Performance metric tiles — the Qt analog of the old render_metrics. Row
+layout, labels, format strings and help texts are verbatim from
+legacy_streamlit/views/trade_report.py.
+
+The exit-breakdown table used to live here too; it is now its own section
+(exit_section.py) so it can be ordered and collapsed independently.
 """
 
 import pandas as pd
-from PySide6.QtWidgets import QGridLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QVBoxLayout
 
-from modules.common.backend.trade_stats import (compute_metrics,
-                                                exit_breakdown_table)
-from ..dataframe_model import make_table_view, update_table_view
-from ..widgets import MetricTile, SectionHeader
+from modules.common.backend.trade_stats import compute_metrics
+from ..widgets import MetricTile
+from .sections import ReportSection
 
 _SHARPE_DAILY_HELP = ("daily P&L over every business day between first and "
                       "last trade — days without trades count as 0; ×√252")
 _SHARPE_TRADE_HELP = "daily P&L over days with at least one trade; ×√252"
 
 
-class MetricsSection(QWidget):
+class MetricsSection(ReportSection):
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(SectionHeader("Performance"))
 
         self._tiles: dict[str, MetricTile] = {}
         grid = QGridLayout()
@@ -48,10 +49,6 @@ class MetricsSection(QWidget):
                 self._tiles[label] = tile
                 grid.addWidget(tile, r, c)
         lay.addLayout(grid)
-
-        lay.addWidget(SectionHeader("Exit Breakdown"))
-        self._exit_table = make_table_view(pd.DataFrame(), height=190)
-        lay.addWidget(self._exit_table)
 
     def set_trades(self, trades: pd.DataFrame) -> None:
         m = compute_metrics(trades)
@@ -96,5 +93,3 @@ class MetricsSection(QWidget):
         }
         for label, value in values.items():
             self._tiles[label].set_value(value)
-
-        update_table_view(self._exit_table, exit_breakdown_table(trades))

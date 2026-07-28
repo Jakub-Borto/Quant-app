@@ -25,14 +25,19 @@ from modules.common.ui.trade_report.filters import (make_day_type_filter,
 from modules.common.ui.trade_report.actions_row import TradeActionsRow
 from modules.common.ui.trade_report.news_section import NewsBreakdownTable
 from modules.common.ui.trade_report.panel import TradeReportPanel
-from modules.common.ui.widgets import Banner, Caption, SectionHeader, hline
+from modules.common.ui.trade_report.regime_section import RegimeSection
+from modules.common.ui.widgets import (Banner, Caption, SectionHeader, hline,
+                                       pin_minimum_height)
 from modules.optimizer.backend.heatmap_model import _fmt_axis_value
 
 
 class CellDetailPanel(QWidget):
-    def __init__(self, settings, parent=None):
+    def __init__(self, settings, track_worker=None, parent=None):
         super().__init__(parent)
         self._settings = settings
+        # the Explore tab runs no background work of its own; regime loading
+        # needs one, so the window's tracker is threaded down to here
+        self._track_worker = track_worker or (lambda w: None)
         self._cell_df: pd.DataFrame | None = None   # cell trades pre type/day filters
         # handoff context for the Go to Analytics / Monte Carlo row
         self._filtered_trades: pd.DataFrame | None = None
@@ -47,43 +52,56 @@ class CellDetailPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
+        # the report is nested deeper here than in the Backtester
+        # (page -> tabs -> ExploreTab -> CellDetailPanel -> panel -> stack);
+        # every link needs pinning or the squeeze reappears at that level
+        pin_minimum_height(self)
         lay.addWidget(hline())
         self._header = SectionHeader("Cell detail")
         lay.addWidget(self._header)
         self._banner = Banner()
         lay.addWidget(self._banner)
 
-        self._tt_caption = Caption("Filter by trade type")
-        self._tt_caption.setVisible(False)
-        lay.addWidget(self._tt_caption)
-        self._tt_holder = QVBoxLayout()
-        lay.addLayout(self._tt_holder)
+        self._panel = TradeReportPanel(settings)
+
+        # both filter rows are rebuilt per cell, so each lives in a stable
+        # container that gets registered once
+        self._tt_container = QWidget()
+        self._tt_holder = QVBoxLayout(self._tt_container)
+        self._tt_holder.setContentsMargins(0, 0, 0, 0)
+        self._tt_holder.addWidget(Caption("Filter by trade type"))
         self._tt_filter = None
 
-        self._news = NewsBreakdownTable()
-        lay.addWidget(self._news)
-
-        self._dt_caption = Caption("Filter by day type")
-        lay.addWidget(self._dt_caption)
-        self._dt_holder = QVBoxLayout()
-        lay.addLayout(self._dt_holder)
+        self._dt_container = QWidget()
+        self._dt_holder = QVBoxLayout(self._dt_container)
+        self._dt_holder.setContentsMargins(0, 0, 0, 0)
+        self._dt_holder.addWidget(Caption("Filter by day type"))
         self._dt_filter = None
 
-        self._panel = TradeReportPanel()
-        lay.addWidget(self._panel)
-
-        self._table_header = SectionHeader("Trades")
-        lay.addWidget(self._table_header)
+        self._news = NewsBreakdownTable()
+        self._regime = RegimeSection(settings, self._track_worker)
+        self._regime.sourceChanged.connect(self._on_regime_source_changed)
+        self._regime.selectionChanged.connect(self._apply_filters)
         self._table = make_table_view(pd.DataFrame(), height=380)
-        lay.addWidget(self._table)
 
         self._actions_row = TradeActionsRow(settings, self._actions_context,
                                             self._banner)
-        actions_lay = QHBoxLayout()
+        actions_holder = QWidget()
+        actions_lay = QHBoxLayout(actions_holder)
+        actions_lay.setContentsMargins(0, 0, 0, 0)
         actions_lay.addStretch()
         actions_lay.addWidget(self._actions_row)
         actions_lay.addStretch()
-        lay.addLayout(actions_lay)
+
+        for key, widget in (("trade_type_filter", self._tt_container),
+                            ("day_type_filter", self._dt_container),
+                            ("news", self._news),
+                            ("regime", self._regime),
+                            ("trades_table", self._table),
+                            ("actions", actions_holder)):
+            self._panel.attach_host_section(key, widget)
+        self._panel.build_sections()
+        lay.addWidget(self._panel)
         self.setVisible(False)
 
     # ── entry point from the heatmap click ────────────────────────────────────
@@ -141,7 +159,7 @@ class CellDetailPanel(QWidget):
         unique_types = []
         if "trade_type" in df.columns:
             unique_types = sorted(df["trade_type"].dropna().unique().tolist())
-        self._tt_caption.setVisible(bool(unique_types))
+        self._panel.set_section_visible("trade_type_filter", bool(unique_types))
         if unique_types:
             self._tt_filter = make_trade_type_filter(unique_types)
             self._tt_filter.selectionChanged.connect(self._apply_filters)
@@ -161,6 +179,12 @@ class CellDetailPanel(QWidget):
             meta.get("ticks_per_point"),
             candles_folder=run_root / "parquet" / meta.get("dataset", ""),
             parquet_root=run_root / "parquet")
+
+        cell_dates = pd.to_datetime(df["date"])
+        self._regime.set_context(meta.get("ticker"),
+                                 cell_dates.min().strftime("%Y-%m-%d"),
+                                 cell_dates.max().strftime("%Y-%m-%d"))
+        self._regime_df = self._regime.annotate(df)
         self._apply_filters()
 
     def hide_detail(self) -> None:
@@ -169,10 +193,19 @@ class CellDetailPanel(QWidget):
         self._filtered_trades = None
 
     # ── filters (verbatim backtester ordering) ────────────────────────────────
+    def _on_regime_source_changed(self) -> None:
+        """Re-join once per regime source change, not per filter toggle."""
+        if self._cell_df is None:
+            return
+        self._regime_df = self._regime.annotate(self._cell_df)
+        self._apply_filters()
+
     def _apply_filters(self) -> None:
         if self._cell_df is None:
             return
-        df = self._cell_df
+        df = getattr(self, "_regime_df", None)
+        if df is None or len(df) != len(self._cell_df):
+            df = self._cell_df
         self._banner.clear_message()
 
         self._selected_trade_types_meta = "all"
@@ -190,7 +223,7 @@ class CellDetailPanel(QWidget):
                 self._selected_trade_types_meta = selected_types
 
         # news & holiday breakdown — before the day filter (backtester order)
-        self._news.set_trades(df)
+        self._panel.set_section_visible("news", self._news.set_trades(df))
 
         selected_day_types = self._dt_filter.selected()
         if not selected_day_types:
@@ -204,7 +237,27 @@ class CellDetailPanel(QWidget):
             return
         df["cumulative_ticks"] = df["ticks"].cumsum()
 
-        self._filtered = (trade_type_filtered
+        # regime breakdown before the regime filter (same rule as news)
+        regime_states = self._regime.states()
+        self._regime.set_trades(df)
+
+        regime_filtered = False
+        selected_regimes = self._regime.selected()
+        if selected_regimes is not None and "regime" in df.columns:
+            if not selected_regimes:
+                self._banner.show_message("warning", "No regime states selected.")
+                self._set_report_visible(False)
+                return
+            df = df[df["regime"].isin(selected_regimes)].copy()
+            if df.empty:
+                self._banner.show_message(
+                    "info", "No trades match the selected regime states.")
+                self._set_report_visible(False)
+                return
+            df["cumulative_ticks"] = df["ticks"].cumsum()
+            regime_filtered = len(selected_regimes) < len(regime_states) + 1
+
+        self._filtered = (trade_type_filtered or regime_filtered
                           or len(selected_day_types) < len(DAY_TYPE_ORDER))
         self._selected_day_types = selected_day_types
         self._filtered_trades = df
@@ -215,16 +268,13 @@ class CellDetailPanel(QWidget):
         display_cols = [c for c in ["date", "direction", "entry_time",
                                     "exit_time", "entry_price", "exit_price",
                                     "exit_reason", "ticks", "trade_type",
-                                    "day_type"] if c in df.columns]
+                                    "day_type", "regime"] if c in df.columns]
         table = df[display_cols].copy()
         table["date"] = pd.to_datetime(table["date"]).dt.date
         update_table_view(self._table, table)
 
     def _set_report_visible(self, visible: bool) -> None:
-        self._panel.setVisible(visible)
-        self._table.setVisible(visible)
-        self._table_header.setVisible(visible)
-        self._actions_row.setVisible(visible)
+        self._panel.set_report_visible(visible)
 
     def _actions_context(self) -> dict | None:
         if (self._filtered_trades is None or self._run_root is None

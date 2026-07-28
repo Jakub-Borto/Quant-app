@@ -7,7 +7,7 @@ backtester view and the optimizer cell detail.
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QCheckBox, QGridLayout, QWidget
 
-from modules.common.backend.trade_stats import DAY_TYPE_ORDER
+from modules.common.backend.trade_stats import DAY_TYPE_ORDER, UNKNOWN_REGIME
 
 
 class CheckboxFilterRow(QWidget):
@@ -48,3 +48,11 @@ def make_day_type_filter(checked_tags: set | None = None) -> CheckboxFilterRow:
     """Filter row over DAY_TYPE_ORDER (all checked unless told otherwise)."""
     return CheckboxFilterRow(list(DAY_TYPE_ORDER), checked_tags=checked_tags,
                              per_row=len(DAY_TYPE_ORDER))
+
+
+def make_regime_filter(states: list[str]) -> CheckboxFilterRow:
+    """Filter row over a regime column's declared states, plus the implicit
+    'unknown' (trades the run could not label) — all checked. Unknown is
+    offered as its own box precisely so it can be excluded in one click."""
+    tags = list(states) + [UNKNOWN_REGIME]
+    return CheckboxFilterRow([(s, s) for s in tags], per_row=len(tags))

@@ -14,6 +14,8 @@ import pandas as pd
 from PySide6.QtWidgets import QTabWidget, QVBoxLayout
 
 from modules.common.ui.module_window import ModuleWindowBase
+from modules.common.ui.trade_report.layout_dialog import ReportLayoutDialog
+from modules.common.ui.widgets import gear_button
 from modules.optimizer.combine_tab import CombineTab
 from modules.optimizer.explore_tab import ExploreTab
 from modules.optimizer.new_run_tab import NewRunTab
@@ -38,9 +40,15 @@ class OptimizerWindow(ModuleWindowBase):
                          "'best' config.", parent)
         self.state = RunState()
 
+        gear = gear_button("Report layout — order and show/hide the cell "
+                           "detail report's sections")
+        gear.clicked.connect(
+            lambda: ReportLayoutDialog(settings, parent=self).exec())
+        self.add_header_action(gear)
+
         self.tabs = QTabWidget()
         self.new_run = NewRunTab(settings, self.track_worker)
-        self.explore = ExploreTab(settings, self.state)
+        self.explore = ExploreTab(settings, self.state, self.track_worker)
         self.combine = CombineTab(settings, self.track_worker)
         self.tabs.addTab(self.new_run, "New Run")
         self.tabs.addTab(self.explore, "Explore")

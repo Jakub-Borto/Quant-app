@@ -12,20 +12,19 @@ from PySide6.QtCore import QTime, Signal
 from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QRadioButton,
                                QSpinBox, QTimeEdit, QVBoxLayout, QWidget)
 
-from ..widgets import SectionHeader
+from .sections import ReportSection
 
 MODE_FIXED   = "Fixed session time"
 MODE_CANDLES = "Candles before entry"
 
 
-class ChartViewControls(QWidget):
+class ChartViewControls(ReportSection):
     settingsChanged = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(SectionHeader("Chart View Settings"))
 
         row = QHBoxLayout()
 

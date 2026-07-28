@@ -25,6 +25,12 @@ from modules.common.backend.trade_files import save_temp_trades, save_trades
 # user closes the last one.)
 _SPAWNED_WINDOWS: list = []
 
+# Columns the report DERIVES from other data (day-type tagging, a regime
+# join) rather than the strategy producing them. They are stripped before a
+# save so they never masquerade as strategy output in a trades file — and so
+# re-running the same strategy keeps producing byte-comparable files.
+DERIVED_COLUMNS = ("day_type", "regime")
+
 
 def _forget_spawned(window) -> None:
     if window in _SPAWNED_WINDOWS:
@@ -38,8 +44,8 @@ class TradeActionsRow(QWidget):
 
     The host supplies:
     - context_provider() -> dict | None. None (or empty trades) = nothing
-      ready, clicks no-op. Keys: trades (DataFrame; a derived day_type
-      column is stripped before saving), asset (ticker, first filename
+      ready, clicks no-op. Keys: trades (DataFrame; DERIVED_COLUMNS are
+      stripped before saving), asset (ticker, first filename
       token downstream), root (the data root receiving the file), save_name
       (base filename for Save Trades, no extension), filtered (bool),
       day_types (list), trade_types ("all" | list).
@@ -66,16 +72,15 @@ class TradeActionsRow(QWidget):
 
     # ── shared context handling ───────────────────────────────────────────────
     def _save_ready_context(self) -> dict | None:
-        """The host context with save-ready trades (day_type stripped), or
-        None when nothing is ready (buttons are hidden in that state)."""
+        """The host context with save-ready trades (derived columns stripped),
+        or None when nothing is ready (buttons are hidden in that state)."""
         ctx = self._context_provider()
         if ctx is None:
             return None
         trades = ctx["trades"]
         if trades is None or trades.empty:
             return None
-        # Strip day_type before saving — it's derived, not strategy output
-        save_cols = [c for c in trades.columns if c != "day_type"]
+        save_cols = [c for c in trades.columns if c not in DERIVED_COLUMNS]
         return {**ctx, "trades": trades[save_cols]}
 
     # ── save trades (regular save into <root>/trades/) ────────────────────────

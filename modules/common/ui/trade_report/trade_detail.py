@@ -18,13 +18,16 @@ from ..widgets import Banner, Caption, MetricTile, SectionHeader, hline
 
 
 class TradeDetailView(QWidget):
-    """Hidden until show_trade() is called with an equity-curve click."""
+    """Content for the equity-curve drill-in.
+
+    Visibility is NOT self-managed: the panel shows/hides this section's frame
+    via SectionStack.set_frame_visible (one owner, so a layout change can't
+    fight a click)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._lay = QVBoxLayout(self)
         self._lay.setContentsMargins(0, 0, 0, 0)
-        self.setVisible(False)
 
     def clear(self) -> None:
         while self._lay.count():
@@ -32,7 +35,6 @@ class TradeDetailView(QWidget):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        self.setVisible(False)
 
     def show_trade(self, trade, chart_settings: dict, folder_path,
                    ticks_per_point: float) -> None:
