@@ -7,15 +7,19 @@ Output schema (per daily YYYY-MM-DD.parquet):
   A snapshot stamped T uses only bars STRICTLY BEFORE T.
 - always-present columns: ALWAYS_COLUMNS below.
 - script columns: named by the detector, classified by COLUMN_TIERS
-  (regime / score / diagnostic) and prefixed by input family:
-      gbx_        full globex session, this session so far
-      gbx_hist_   full globex session, completed prior days only
-      rth_        RTH only, this session so far
-      rth_hist_   RTH only, completed prior days only
-  gbx_hist_* is constant within a file by construction (completed days
-  can't change intraday); rth_hist_* may legitimately vary by snapshot
-  (time-of-day-matched comparisons). Which one a given _hist_ column is
-  gets recorded per column in meta.json.
+  (regime / score / diagnostic) and OPTIONALLY prefixed by input family,
+  parsed as {scope}_[hist_]{name}:
+      scope    open set — gbx / rth / on today, anything tomorrow. Unknown
+               or absent prefixes are allowed, never an error; they simply
+               group under "other" in UIs. KNOWN_SCOPES exists purely for
+               display ordering.
+      hist     binary marker: built from completed prior days only.
+  IMPORTANT: the prefix does NOT determine within-day constancy. A
+  matched-window rth_hist_* column legitimately varies by snapshot, while
+  rth_hist_daily_* is constant — both are history columns. Constancy is a
+  fact about the output, so the runner MEASURES it per column per file and
+  records the aggregate in meta.json (all / some / none); scripts may
+  declare CONSTANT_COLUMNS and the runner warns (never fails) on mismatch.
 
 State convention: regime states are plain strings (no pandas Categorical —
 keeps the parquet round-trip boring). Every regime column may additionally
@@ -37,24 +41,37 @@ REQUIRED_PARAMS = ("rth_start", "rth_end", "snapshot_minutes", "lookback_days")
 REQUIRED_DECLARATIONS = ("PARAMS", "REGIME_STATES", "COLUMN_TIERS",
                          "SCRIPT_VERSION", "run_all")
 
-# Column-tier keys (meta.json `schema` mirrors this split).
+# Column-tier keys (meta.json `schema.tiers` mirrors this split).
 TIERS = ("regime", "score", "diagnostic")
 
-# hist prefixes first — "gbx_hist_x" must not classify as plain "gbx_".
-_FAMILIES = (("gbx_hist_", "gbx_hist"), ("rth_hist_", "rth_hist"),
-             ("gbx_", "gbx"), ("rth_", "rth"))
+# Display ordering ONLY — the scope set is open; unknown scopes always pass
+# and sort last ("other"). Never turn this into a validation list.
+KNOWN_SCOPES = ("gbx", "rth", "on")
 
 UNKNOWN_STATE = "unknown"
 UNKNOWN_COLOR = "#6a6f7a"
 
 
-def column_family(name: str) -> str | None:
-    """'gbx' | 'gbx_hist' | 'rth' | 'rth_hist' for a prefixed script column,
-    None for anything else (including the always-present columns)."""
-    for prefix, family in _FAMILIES:
-        if name.startswith(prefix):
-            return family
-    return None
+def parse_column(name: str) -> tuple[str | None, bool, str]:
+    """(scope, is_hist, base) for a column named {scope}_[hist_]{name}.
+
+    Documentation, not constraint: any prefix parses, absent prefixes give
+    scope None. The always-present module columns are never scoped."""
+    if name in ALWAYS_COLUMNS:
+        return None, False, name
+    parts = name.split("_")
+    if len(parts) < 2:
+        return None, False, name
+    scope = parts[0]
+    if len(parts) >= 3 and parts[1] == "hist":
+        return scope, True, "_".join(parts[2:])
+    return scope, False, "_".join(parts[1:])
+
+
+def display_group(name: str) -> str:
+    """UI grouping label: a known scope, or 'other' for everything else."""
+    scope, _hist, _base = parse_column(name)
+    return scope if scope in KNOWN_SCOPES else "other"
 
 
 # ── detector-module validation ────────────────────────────────────────────────
@@ -96,6 +113,12 @@ def validate_detector(module) -> list[str]:
         if UNKNOWN_STATE in spec["states"]:
             errors.append(f"REGIME_STATES[{col!r}]: do not declare "
                           f"'{UNKNOWN_STATE}' — it is implicit, not a regime")
+
+    constant = getattr(module, "CONSTANT_COLUMNS", None)
+    if constant is not None and (
+            not isinstance(constant, (list, tuple))
+            or not all(isinstance(c, str) for c in constant)):
+        errors.append("`CONSTANT_COLUMNS` must be a list of column names")
 
     tiers = module.COLUMN_TIERS
     if not isinstance(tiers, dict):

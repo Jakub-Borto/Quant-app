@@ -69,6 +69,38 @@ def read_contract(path: Path) -> str:
     return ""
 
 
+def snapshot_grid(index: pd.DatetimeIndex,
+                  minutes: int) -> pd.DatetimeIndex:
+    """Clock-anchored snapshot grid from a day's bar index: every `minutes`
+    boundary STRICTLY AFTER the first bar, through the first boundary
+    strictly after the last bar. Shared by RegimeContext.snapshot_times and
+    by detector summarize() functions that need the same grid on prior days."""
+    if not len(index):
+        return pd.DatetimeIndex([], tz=NY)
+    step = pd.Timedelta(minutes=minutes)
+    first, last = index[0], index[-1]
+    start = first.ceil(step)
+    if start <= first:
+        start += step
+    end = last.ceil(step)
+    if end <= last:
+        end += step
+    return pd.date_range(start, end, freq=step)
+
+
+def _merge_constancy(state: str | None, constant_this_file: bool) -> str:
+    """Aggregate per-file constancy into 'all' / 'some' / 'none'. 'some' is a
+    signal, not an error — constant on 306 days and varying on one means
+    something happened that day."""
+    if state is None:
+        return "all" if constant_this_file else "none"
+    if state == "all" and not constant_this_file:
+        return "some"
+    if state == "none" and constant_this_file:
+        return "some"
+    return state
+
+
 def _derive_root_and_asset(input_folder: Path) -> tuple[str, str]:
     """(data_root, ASSET) from a .../parquet/{type}/{ASSET}/{dataset} path;
     empty strings when the path doesn't follow the blueprint."""
@@ -89,7 +121,8 @@ class RegimeContext:
                  script_name: str, script_version: str,
                  states: dict, tiers: dict,
                  summarize=None, skip_existing: bool = True,
-                 on_progress=None, script_file: str = ""):
+                 on_progress=None, script_file: str = "",
+                 constant_columns=None):
         self.input_folder = Path(input_folder)
         self.output_folder = Path(output_folder)
         self.params = dict(params)
@@ -121,7 +154,15 @@ class RegimeContext:
         self._contracts: list[str] = []
         self._session_start: str | None = None          # earliest first-bar wall time
         self._session_end: str | None = None            # latest grid-end wall time
-        self._hist_constant: dict[str, bool] = {}
+        # measured per-column within-day constancy, aggregated across files:
+        # 'all' / 'some' / 'none' (a fact about the output — never inferred
+        # from the column name)
+        self._col_state: dict[str, str] = {}
+        self._constant_columns = list(constant_columns or [])
+        # free-form dict a script may fill (e.g. chain-reset days); lands in
+        # meta.json under "script_extras"
+        self.meta_extra: dict = {}
+        self._tiers = {tier: list(tiers.get(tier, [])) for tier in schema.TIERS}
         self._meta_static = {
             "script_name": script_name,
             "script_version": script_version,
@@ -129,8 +170,6 @@ class RegimeContext:
             "params": dict(params),
             "input_dataset_path": str(self.input_folder),
             "states": states,
-            "schema": {tier: list(tiers.get(tier, []))
-                       for tier in schema.TIERS},
         }
         root, asset = _derive_root_and_asset(self.input_folder)
         self._meta_static["input_data_root"] = root
@@ -139,14 +178,22 @@ class RegimeContext:
         self._states = states
 
         # Resuming into an existing run: dataset-level facts (session bounds,
-        # contracts seen, hist-column constancy) carry over from the previous
-        # meta — a resume that skips every day must not blank them.
+        # contracts seen, measured column constancy) carry over from the
+        # previous meta — a resume that skips every day must not blank them.
         try:
             prev = rio.read_meta(self.output_folder)
             self._session_start = prev.get("globex_session", {}).get("start")
             self._session_end = prev.get("globex_session", {}).get("end")
             self._contracts = list(prev.get("contracts", []))
-            self._hist_constant = dict(prev.get("hist_constant_within_day", {}))
+            prev_cols = prev.get("schema", {}).get("columns", {})
+            if isinstance(prev_cols, dict):
+                self._col_state = {
+                    col: info["constant_within_day"]
+                    for col, info in prev_cols.items()
+                    if isinstance(info, dict)
+                    and info.get("constant_within_day") in ("all", "some",
+                                                            "none")
+                }
         except (OSError, ValueError):
             pass
 
@@ -164,9 +211,11 @@ class RegimeContext:
             self._contract = ""
             self._lookback_used = None
             yield day
-        if self.on_progress is not None:
-            self.on_progress(total, total, "done")
         self.write_meta()
+        if self.on_progress is not None:
+            for warning in self._constancy_warnings():
+                self.on_progress(total, total, f"WARNING: {warning}")
+            self.on_progress(total, total, "done")
 
     def out_path(self, day: str) -> Path:
         return self.output_folder / f"{day}.parquet"
@@ -229,21 +278,11 @@ class RegimeContext:
         return self._contract
 
     def snapshot_times(self, day: str) -> pd.DatetimeIndex:
-        """Clock-anchored grid from the file's own bar range: every
-        `snapshot_minutes` boundary STRICTLY AFTER the first bar, through the
-        first boundary strictly after the last bar (which therefore sees the
-        whole session and becomes the final row)."""
+        """Clock-anchored grid from the file's own bar range (see
+        snapshot_grid); the last boundary sees the whole session and becomes
+        the final row."""
         bars = self.bars(day)
-        if bars.empty:
-            return pd.DatetimeIndex([], tz=NY)
-        first, last = bars.index[0], bars.index[-1]
-        start = first.ceil(self._step)
-        if start <= first:
-            start += self._step
-        end = last.ceil(self._step)
-        if end <= last:
-            end += self._step
-        grid = pd.date_range(start, end, freq=self._step)
+        grid = snapshot_grid(bars.index, self.snapshot_minutes)
         if len(grid):
             wall = grid[-1].strftime("%H:%M")
             if self._session_end is None or \
@@ -304,11 +343,11 @@ class RegimeContext:
             raise ValueError(f"{day}: invalid regime frame — "
                              + "; ".join(errors))
 
+        # constancy is measured for EVERY column, never inferred from names
         for col in df.columns:
-            if schema.column_family(col) in ("gbx_hist", "rth_hist"):
-                constant = df[col].nunique(dropna=False) == 1
-                self._hist_constant[col] = \
-                    self._hist_constant.get(col, True) and bool(constant)
+            constant = bool(df[col].nunique(dropna=False) == 1)
+            self._col_state[col] = _merge_constancy(
+                self._col_state.get(col), constant)
 
         self.output_folder.mkdir(parents=True, exist_ok=True)
         out = self.out_path(day)
@@ -324,6 +363,18 @@ class RegimeContext:
         return out
 
     # ── meta.json ────────────────────────────────────────────────────────────
+    def _constancy_warnings(self) -> list[str]:
+        """Declared-vs-measured mismatches. A warning, never a failure — the
+        declaration is the script author's expectation, the measurement is
+        the fact. Declared columns never observed are skipped (param-named
+        columns like vol_har_5 may legitimately not exist for this run)."""
+        return [
+            f"column '{col}' was declared constant-within-day but measured "
+            f"'{self._col_state[col]}'"
+            for col in self._constant_columns
+            if col in self._col_state and self._col_state[col] != "all"
+        ]
+
     def write_meta(self) -> None:
         """Rewrite meta.json (tiny — rewritten after every day, so a crash or
         cancellation always leaves counts matching the files on disk)."""
@@ -339,8 +390,21 @@ class RegimeContext:
                            "last": self._dates[-1] if self._dates else None},
             "counts": dict(self._counts),
             "contracts": list(self._contracts),
-            "hist_constant_within_day": dict(self._hist_constant),
+            "schema": {
+                "tiers": {t: list(cols) for t, cols in self._tiers.items()},
+                "columns": {
+                    col: {
+                        "scope": schema.parse_column(col)[0],
+                        "is_hist": schema.parse_column(col)[1],
+                        "constant_within_day": state,
+                    }
+                    for col, state in sorted(self._col_state.items())
+                },
+            },
+            "warnings": self._constancy_warnings(),
             "run_duration_s": round(time.time() - self._t0, 1),
-            "meta_version": 1,
+            "meta_version": 2,
         }
+        if self.meta_extra:
+            meta["script_extras"] = dict(self.meta_extra)
         rio.write_meta(self.output_folder, meta)

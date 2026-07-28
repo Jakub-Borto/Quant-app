@@ -199,22 +199,67 @@ def test_lookback_never_stale_across_skip_gaps(tmp_path):
     assert (out / f"{day_151}.parquet").exists()
 
 
-# ── 3. gbx_hist_ constancy ───────────────────────────────────────────────────
+# ── 3. constancy is MEASURED per column and recorded in meta ─────────────────
 
-def test_gbx_hist_columns_constant_within_file(tmp_path, scaffold):
+def test_constancy_measured_for_every_column(tmp_path, scaffold):
     src, out = tmp_path / "in", tmp_path / "out"
     for i, d in enumerate(["2026-01-05", "2026-01-06", "2026-01-07"]):
-        make_day(src, d, session_close=5000.0 + (i - 1) * 10)
+        make_day(src, d, session_close=5000.0 + (i + 1) * 10)   # never flat
     run_scaffold(scaffold, src, out)
 
+    # the scaffold's completed-days column really is constant per file
+    # (its yardstick is daily-level, not matched-window)
     for f in sorted(out.glob("*.parquet")):
         df = pd.read_parquet(f)
-        for col in df.columns:
-            if col.startswith("gbx_hist_"):
-                assert df[col].nunique(dropna=False) == 1, \
-                    f"{f.name}: {col} varies within the day — future leaked"
+        assert df["gbx_hist_up_ratio"].nunique(dropna=False) == 1
+
     meta = rio.read_meta(out)
-    assert meta["hist_constant_within_day"]["gbx_hist_up_ratio"] is True
+    cols = meta["schema"]["columns"]
+    assert cols["gbx_hist_up_ratio"] == {
+        "scope": "gbx", "is_hist": True, "constant_within_day": "all"}
+    # measured for EVERY column, including the always-present ones
+    assert cols["price"]["constant_within_day"] == "none"
+    assert cols["contract"]["constant_within_day"] == "all"
+    assert cols["is_final"]["constant_within_day"] == "none"
+    assert cols["gbx_ret_pct"]["scope"] == "gbx"
+    assert cols["gbx_ret_pct"]["is_hist"] is False
+    # declared expectation matched the measurement -> no warnings
+    assert meta["warnings"] == []
+
+
+def test_declared_constant_mismatch_warns_without_failing(tmp_path):
+    """A declared-constant column that varies produces a meta warning and the
+    run still completes (declaration is expectation, measurement is fact)."""
+    src, out = tmp_path / "in", tmp_path / "out"
+    make_day(src, "2026-01-06")
+    make_day(src, "2026-01-07")
+
+    messages = []
+    ctx = RegimeContext(src, out, params=dict(SHARED_PARAMS),
+                        script_name="probe", script_version="1",
+                        states={}, tiers={},
+                        skip_existing=False,
+                        on_progress=lambda c, t, m: messages.append(m),
+                        constant_columns=["gbx_wobbly", "foo_bar",
+                                          "never_emitted"])
+    for day in ctx.days():
+        times = ctx.snapshot_times(day)
+        # gbx_wobbly varies within the day; foo_bar (unrecognised prefix)
+        # is constant and must be accepted like any other column
+        ctx.write(day, [{"ts": ts, "gbx_wobbly": float(i), "foo_bar": 1.0}
+                        for i, ts in enumerate(times)])
+
+    meta = rio.read_meta(out)
+    assert meta["counts"]["processed"] == 2          # run completed
+    assert any("gbx_wobbly" in w for w in meta["warnings"])
+    assert not any("foo_bar" in w for w in meta["warnings"])
+    assert not any("never_emitted" in w for w in meta["warnings"])
+    assert any(m.startswith("WARNING") and "gbx_wobbly" in m
+               for m in messages)
+    cols = meta["schema"]["columns"]
+    assert cols["gbx_wobbly"]["constant_within_day"] == "none"
+    assert cols["foo_bar"] == {"scope": "foo", "is_hist": False,
+                               "constant_within_day": "all"}
 
 
 # ── 4. is_final, including half days ─────────────────────────────────────────
@@ -250,19 +295,21 @@ def test_meta_accumulates_through_run(tmp_path, scaffold):
     assert meta["contracts"] == ["ESH6", "ESM6"]
     assert meta["date_range"] == {"first": "2026-01-06", "last": "2026-01-07"}
     assert meta["globex_session"] == {"start": "18:00", "end": "17:00"}
-    assert meta["schema"]["regime"] == ["gbx_ret_sign"]
+    assert meta["schema"]["tiers"]["regime"] == ["gbx_ret_sign"]
     assert meta["states"]["gbx_ret_sign"]["states"] == \
         ["positive", "flat", "negative"]
-    assert meta["meta_version"] == 1
+    assert meta["meta_version"] == 2
 
     # resume: everything already on disk -> only skip counts move, and the
-    # dataset-level facts (contracts, session) survive the rewrite
+    # dataset-level facts (contracts, session, measured constancy) survive
     run_scaffold(scaffold, src, out, lookback_days=5)
     meta2 = rio.read_meta(out)
     assert meta2["counts"]["skipped"] == 2
     assert meta2["counts"]["processed"] == 0
     assert meta2["contracts"] == ["ESH6", "ESM6"]
     assert meta2["globex_session"] == {"start": "18:00", "end": "17:00"}
+    assert meta2["schema"]["columns"]["gbx_hist_up_ratio"][
+        "constant_within_day"] == "all"
 
 
 # ── 7. cancellation ──────────────────────────────────────────────────────────

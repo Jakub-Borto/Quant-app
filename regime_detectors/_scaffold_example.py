@@ -29,6 +29,10 @@ COLUMN_TIERS = {
     "diagnostic": ["gbx_hist_up_ratio"],
 }
 
+# Expectation, not fact — the runner MEASURES constancy per file and warns
+# (never fails) if a declared column turns out to vary within a day.
+CONSTANT_COLUMNS = ["gbx_hist_up_ratio"]
+
 
 def _summarize(bars):
     """One completed day boiled down for the lookback window."""
@@ -46,7 +50,8 @@ def run_all(input_folder, output_folder, skip_existing, on_progress, params):
                         script_file=__file__,
                         states=REGIME_STATES, tiers=COLUMN_TIERS,
                         summarize=_summarize, skip_existing=skip_existing,
-                        on_progress=on_progress)
+                        on_progress=on_progress,
+                        constant_columns=CONSTANT_COLUMNS)
     for day in ctx.days():
         window = ctx.lookback(day)
         if ctx.should_skip(day):

@@ -13,15 +13,27 @@ from modules.regime_detector.backend import schema
 NY = "America/New_York"
 
 
-# ── column families ──────────────────────────────────────────────────────────
+# ── column parsing (open scope set — documentation, not constraint) ─────────
 
-def test_column_family_hist_prefix_wins():
-    assert schema.column_family("gbx_hist_up_ratio") == "gbx_hist"
-    assert schema.column_family("rth_hist_vol") == "rth_hist"
-    assert schema.column_family("gbx_ret_sign") == "gbx"
-    assert schema.column_family("rth_range") == "rth"
-    assert schema.column_family("price") is None
-    assert schema.column_family("is_final") is None
+def test_parse_column_scopes_and_hist():
+    assert schema.parse_column("gbx_hist_up_ratio") == ("gbx", True, "up_ratio")
+    assert schema.parse_column("rth_hist_daily_vol_center") == \
+        ("rth", True, "daily_vol_center")
+    assert schema.parse_column("on_vol") == ("on", False, "vol")
+    assert schema.parse_column("gbx_ret_sign") == ("gbx", False, "ret_sign")
+
+
+def test_parse_column_unknown_prefix_is_accepted():
+    # never an error — unknown scopes parse and group under "other"
+    assert schema.parse_column("foo_bar") == ("foo", False, "bar")
+    assert schema.display_group("foo_bar") == "other"
+    assert schema.display_group("rth_vol") == "rth"
+
+
+def test_parse_column_unprefixed_and_always_columns():
+    assert schema.parse_column("price") == (None, False, "price")
+    assert schema.parse_column("is_final") == (None, False, "is_final")
+    assert schema.parse_column("wibble") == (None, False, "wibble")
 
 
 # ── detector-module validation ───────────────────────────────────────────────
