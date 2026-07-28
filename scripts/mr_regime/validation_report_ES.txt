@@ -1,0 +1,310 @@
+run: D:\market_data\regimes\ES\ES_mr_multi
+days loaded: 4138
+primary column: mr_state  (q_label used: 10)
+
+==============================================================================
+1. DISTRIBUTION of every z (effective scope, known rows)
+==============================================================================
+column                           n    mean     med    std  |z|<=1  |z|<=2        deciles 10/50/90
+mr_adf_z_ema                185905  -0.082  +0.004  1.265   66.9%   93.4%   -1.46  +0.00  +1.22
+mr_adf_z_open                61774  -0.035  +0.001  1.133   66.4%   92.7%   -1.42  +0.00  +1.31
+mr_adf_z_rmean              185767  -0.087  +0.003  2.052   66.9%   93.0%   -1.49  +0.00  +1.21
+mr_adf_z_vwap_gbx           189926  -0.045  +0.001  1.281   66.5%   92.5%   -1.44  +0.00  +1.30
+mr_adf_z_vwap_rth            61902  -0.022  -0.003  1.124   66.4%   92.6%   -1.41  -0.00  +1.32
+mr_er_z_ema                 185941  -0.220  +0.003  1.403   67.3%   90.8%   -1.83  +0.00  +1.06
+mr_er_z_open                 61818  -0.298  +0.000  1.607   67.5%   91.4%   -1.81  +0.00  +1.05  <-- skewed (median ok; states will lean one way)
+mr_er_z_rmean               185769  -0.252  +0.004  1.413   67.2%   91.0%   -1.83  +0.00  +1.06  <-- skewed (median ok; states will lean one way)
+mr_er_z_vwap_gbx            189745  -0.261  +0.002  1.284   67.9%   90.8%   -1.88  +0.00  +1.02  <-- skewed (median ok; states will lean one way)
+mr_er_z_vwap_rth             61902  -0.256  +0.002  1.279   68.0%   90.9%   -1.87  +0.00  +1.02  <-- skewed (median ok; states will lean one way)
+mr_hurst_rs_z               187752  -0.013  +0.006  1.074   67.1%   94.8%   -1.34  +0.01  +1.29
+mr_hurst_z                  187752  -0.024  +0.010  1.088   66.3%   93.9%   -1.39  +0.01  +1.30
+mr_vr_z_q10                 185629  -0.016  +0.010  1.080   66.3%   94.0%   -1.38  +0.01  +1.31
+mr_vr_z_q2                  187752  -0.036  +0.011  1.111   66.1%   93.6%   -1.42  +0.01  +1.29
+mr_vr_z_q5                  187752  -0.035  +0.005  1.090   66.5%   93.9%   -1.39  +0.01  +1.27
+
+a z that is not centred near zero means the transform or the yardstick is off for that measure - not that the market changed.
+
+==============================================================================
+2. U-SHAPE - mean z by snapshot clock time (must be ~0 everywhere)
+==============================================================================
+base   mr_adf_z_ema  mr_adf_z_open  mr_adf_z_rmean  mr_adf_z_vwap_gbx  mr_adf_z_vwap_rth  mr_er_z_ema  mr_er_z_open  mr_er_z_rmean
+clock                                                                                                                             
+17:00         -0.10          -0.04           -0.07              -0.05              -0.02        -0.21         -0.30          -0.25
+18:30           NaN            NaN             NaN              -0.08                NaN          NaN           NaN            NaN
+19:00         -0.08            NaN           -0.10              -0.07                NaN        -0.19           NaN          -0.22
+19:30         -0.08            NaN           -0.13              -0.07                NaN        -0.22           NaN          -0.26
+20:00         -0.10            NaN           -0.12              -0.06                NaN        -0.24           NaN          -0.25
+20:30         -0.09            NaN           -0.10              -0.03                NaN        -0.25           NaN          -0.26
+21:00         -0.07            NaN           -0.10              -0.05                NaN        -0.23           NaN          -0.24
+21:30         -0.05            NaN           -0.08              -0.04                NaN        -0.22           NaN          -0.23
+22:00         -0.06            NaN           -0.07              -0.06                NaN        -0.24           NaN          -0.27
+22:30         -0.07            NaN           -0.09              -0.06                NaN        -0.20           NaN          -0.23
+23:00         -0.07            NaN           -0.08              -0.06                NaN        -0.19           NaN          -0.23
+23:30         -0.08            NaN           -0.09              -0.07                NaN        -0.22           NaN          -0.26
+00:00         -0.08            NaN           -0.08              -0.08                NaN        -0.20           NaN          -0.23
+00:30         -0.09            NaN           -0.09              -0.06                NaN        -0.23           NaN          -0.28
+01:00         -0.08            NaN           -0.10              -0.06                NaN        -0.23           NaN          -0.30
+01:30         -0.09            NaN           -0.08              -0.06                NaN        -0.24           NaN          -0.25
+02:00         -0.10            NaN           -0.11              -0.07                NaN        -0.21           NaN          -0.25
+02:30         -0.09            NaN           -0.09              -0.06                NaN        -0.22           NaN          -0.24
+03:00         -0.07            NaN           -0.08              -0.04                NaN        -0.22           NaN          -0.26
+03:30         -0.05            NaN           -0.05              -0.01                NaN        -0.23           NaN          -0.26
+04:00         -0.06            NaN           -0.06               0.01                NaN        -0.25           NaN          -0.27
+04:30         -0.06            NaN           -0.05              -0.03                NaN        -0.23           NaN          -0.26
+05:00         -0.05            NaN           -0.05               0.00                NaN        -0.23           NaN          -0.23
+05:30         -0.06            NaN           -0.07              -0.02                NaN        -0.22           NaN          -0.23
+06:00         -0.07            NaN           -0.09              -0.01                NaN        -0.25           NaN          -0.27
+06:30         -0.06            NaN           -0.08              -0.00                NaN        -0.22           NaN          -0.29
+07:00         -0.07            NaN           -0.11              -0.03                NaN        -0.25           NaN          -0.23
+07:30         -0.11            NaN           -0.08              -0.04                NaN        -0.24           NaN          -0.24
+08:00         -0.06            NaN           -0.07              -0.05                NaN        -0.22           NaN          -0.25
+08:30         -0.06            NaN           -0.06              -0.03                NaN        -0.25           NaN          -0.26
+09:00         -0.08            NaN           -0.06              -0.06                NaN        -0.24           NaN          -0.27
+09:30         -0.06            NaN           -0.06              -0.07                NaN        -0.25           NaN          -0.27
+10:00         -0.09          -0.02           -0.07              -0.04              -0.03        -0.17         -0.30          -0.21
+10:30         -0.11          -0.05           -0.11              -0.01              -0.02        -0.21         -0.31          -0.24
+11:00         -0.12          -0.02           -0.11              -0.02              -0.01        -0.19         -0.35          -0.24
+11:30         -0.11          -0.02           -0.09              -0.03              -0.00        -0.25         -0.31          -0.29
+12:00         -0.09          -0.03           -0.09              -0.03              -0.02        -0.22         -0.30          -0.27
+12:30         -0.09          -0.04           -0.09              -0.05              -0.05        -0.18         -0.31          -0.25
+13:00         -0.11          -0.05           -0.09              -0.05              -0.04        -0.21         -0.27          -0.26
+13:30         -0.11          -0.05           -0.10              -0.10              -0.03        -0.23         -0.30          -0.27
+14:00         -0.13          -0.06           -0.10              -0.07              -0.04        -0.19         -0.28          -0.21
+14:30         -0.10          -0.05           -0.08              -0.05              -0.04        -0.21         -0.30          -0.24
+15:00         -0.09          -0.04           -0.28              -0.04              -0.03        -0.22         -0.26          -0.28
+15:30         -0.09          -0.03           -0.07              -0.03              -0.01        -0.21         -0.28          -0.26
+16:00         -0.07          -0.00           -0.04              -0.03               0.00        -0.22         -0.30          -0.26
+16:30         -0.10          -0.02           -0.07              -0.04               0.00        -0.17         -0.30          -0.22
+
+worst |mean z| per column:
+  mr_adf_z_ema                0.13  OK
+  mr_adf_z_open               0.06  OK
+  mr_adf_z_rmean              0.28  OK
+  mr_adf_z_vwap_gbx           0.10  OK
+  mr_adf_z_vwap_rth           0.05  OK
+  mr_er_z_ema                 0.25  OK
+  mr_er_z_open                0.35  OK
+  mr_er_z_rmean               0.30  OK
+  mr_er_z_vwap_gbx            0.31  OK
+  mr_er_z_vwap_rth            0.27  OK
+  mr_hurst_rs_z               0.05  OK
+  mr_hurst_z                  0.08  OK
+  mr_vr_z_q10                 0.07  OK
+  mr_vr_z_q2                  0.11  OK
+  mr_vr_z_q5                  0.09  OK
+
+==============================================================================
+3. AGREEMENT MATRIX - do the measures agree with each other?
+==============================================================================
+(rs_thresholded = hurst_rs z thresholded at +/-0.90, no hysteresis - the detector emits no state for R/S)
+snapshots where every listed measure has an answer: 60,905 of 190,348
+
+pairwise agreement %  (chance with 3 states is ~33%, but the states are unbalanced so compare to the marginal-match baseline)
+                               primary      _hurst   _adf_open    _er_open _adf_vwap_r _er_vwap_rt    _adf_ema     _er_ema rs_threshol
+mr_state                             -       85.9%       41.3%       36.3%       46.1%       38.1%       58.7%       35.7%       57.3%
+mr_state_hurst                   85.9%           -       40.8%       36.5%       44.7%       38.3%       55.1%       35.8%       55.3%
+mr_state_adf_open                41.3%       40.8%           -       36.0%       69.8%       53.0%       45.2%       38.0%       43.5%
+mr_state_er_open                 36.3%       36.5%       36.0%           -       35.6%       55.7%       36.7%       38.9%       40.4%
+mr_state_adf_vwap_rth            46.1%       44.7%       69.8%       35.6%           -       46.7%       54.5%       38.6%       48.5%
+mr_state_er_vwap_rth             38.1%       38.3%       53.0%       55.7%       46.7%           -       38.8%       41.4%       41.4%
+mr_state_adf_ema                 58.7%       55.1%       45.2%       36.7%       54.5%       38.8%           -       37.3%       59.3%
+mr_state_er_ema                  35.7%       35.8%       38.0%       38.9%       38.6%       41.4%       37.3%           -       41.2%
+rs_thresholded                   57.3%       55.3%       43.5%       40.4%       48.5%       41.4%       59.3%       41.2%           -
+
+independence baseline (sum p_a(s)*p_b(s)) and lift over it:
+  mr_state                 vs mr_state_hurst            85.9% vs  35.9% baseline  (lift +0.501)
+  mr_state                 vs mr_state_adf_open         41.3% vs  36.2% baseline  (lift +0.051)
+  mr_state                 vs mr_state_er_open          36.3% vs  36.0% baseline  (lift +0.002)
+  mr_state                 vs mr_state_adf_vwap_rth     46.1% vs  36.1% baseline  (lift +0.100)
+  mr_state                 vs mr_state_er_vwap_rth      38.1% vs  36.4% baseline  (lift +0.018)
+  mr_state                 vs mr_state_adf_ema          58.7% vs  36.0% baseline  (lift +0.228)
+  mr_state                 vs mr_state_er_ema           35.7% vs  36.7% baseline  (lift -0.010)
+  mr_state                 vs rs_thresholded            57.3% vs  38.9% baseline  (lift +0.184)
+  mr_state_hurst           vs mr_state_adf_open         40.8% vs  36.2% baseline  (lift +0.046)
+  mr_state_hurst           vs mr_state_er_open          36.5% vs  36.1% baseline  (lift +0.004)
+  mr_state_hurst           vs mr_state_adf_vwap_rth     44.7% vs  36.1% baseline  (lift +0.086)
+  mr_state_hurst           vs mr_state_er_vwap_rth      38.3% vs  36.4% baseline  (lift +0.018)
+  mr_state_hurst           vs mr_state_adf_ema          55.1% vs  36.0% baseline  (lift +0.191)
+  mr_state_hurst           vs mr_state_er_ema           35.8% vs  36.8% baseline  (lift -0.010)
+  mr_state_hurst           vs rs_thresholded            55.3% vs  39.0% baseline  (lift +0.163)
+  mr_state_adf_open        vs mr_state_er_open          36.0% vs  36.2% baseline  (lift -0.002)
+  mr_state_adf_open        vs mr_state_adf_vwap_rth     69.8% vs  36.5% baseline  (lift +0.333)
+  mr_state_adf_open        vs mr_state_er_vwap_rth      53.0% vs  36.6% baseline  (lift +0.164)
+  mr_state_adf_open        vs mr_state_adf_ema          45.2% vs  36.3% baseline  (lift +0.089)
+  mr_state_adf_open        vs mr_state_er_ema           38.0% vs  37.0% baseline  (lift +0.010)
+  mr_state_adf_open        vs rs_thresholded            43.5% vs  39.6% baseline  (lift +0.040)
+  mr_state_er_open         vs mr_state_adf_vwap_rth     35.6% vs  36.1% baseline  (lift -0.005)
+  mr_state_er_open         vs mr_state_er_vwap_rth      55.7% vs  37.3% baseline  (lift +0.184)
+  mr_state_er_open         vs mr_state_adf_ema          36.7% vs  36.1% baseline  (lift +0.006)
+  mr_state_er_open         vs mr_state_er_ema           38.9% vs  37.7% baseline  (lift +0.013)
+  mr_state_er_open         vs rs_thresholded            40.4% vs  39.6% baseline  (lift +0.007)
+  mr_state_adf_vwap_rth    vs mr_state_er_vwap_rth      46.7% vs  36.5% baseline  (lift +0.102)
+  mr_state_adf_vwap_rth    vs mr_state_adf_ema          54.5% vs  36.2% baseline  (lift +0.182)
+  mr_state_adf_vwap_rth    vs mr_state_er_ema           38.6% vs  36.9% baseline  (lift +0.017)
+  mr_state_adf_vwap_rth    vs rs_thresholded            48.5% vs  39.4% baseline  (lift +0.090)
+  mr_state_er_vwap_rth     vs mr_state_adf_ema          38.8% vs  36.5% baseline  (lift +0.023)
+  mr_state_er_vwap_rth     vs mr_state_er_ema           41.4% vs  38.2% baseline  (lift +0.032)
+  mr_state_er_vwap_rth     vs rs_thresholded            41.4% vs  40.4% baseline  (lift +0.010)
+  mr_state_adf_ema         vs mr_state_er_ema           37.3% vs  36.8% baseline  (lift +0.004)
+  mr_state_adf_ema         vs rs_thresholded            59.3% vs  39.2% baseline  (lift +0.201)
+  mr_state_er_ema          vs rs_thresholded            41.2% vs  41.2% baseline  (lift +0.000)
+
+full 3x3 cross-tab, primary vs each other measure:
+
+  primary (rows) vs mr_state_hurst (cols)
+  mr_state_hurst  reverting  neutral  trending
+  mr_state                                    
+  reverting            22.4      3.5       0.0
+  neutral               4.0     39.3       3.0
+  trending              0.0      3.6      24.3
+
+  primary (rows) vs mr_state_adf_open (cols)
+  mr_state_adf_open  reverting  neutral  trending
+  mr_state                                       
+  reverting                8.0     12.5       5.4
+  neutral                 10.8     22.8      12.7
+  trending                 4.9     12.5      10.5
+
+  primary (rows) vs mr_state_er_open (cols)
+  mr_state_er_open  reverting  neutral  trending
+  mr_state                                      
+  reverting               8.4     12.9       4.6
+  neutral                13.9     21.6      10.7
+  trending                8.4     13.2       6.2
+
+  primary (rows) vs mr_state_adf_vwap_rth (cols)
+  mr_state_adf_vwap_rth  reverting  neutral  trending
+  mr_state                                           
+  reverting                   10.1     11.5       4.3
+  neutral                     10.4     23.6      12.3
+  trending                     3.1     12.4      12.4
+
+  primary (rows) vs mr_state_er_vwap_rth (cols)
+  mr_state_er_vwap_rth  reverting  neutral  trending
+  mr_state                                          
+  reverting                   8.4     13.2       4.3
+  neutral                    14.0     23.0       9.2
+  trending                    7.9     13.3       6.7
+
+  primary (rows) vs mr_state_adf_ema (cols)
+  mr_state_adf_ema  reverting  neutral  trending
+  mr_state                                      
+  reverting              15.4      9.3       1.1
+  neutral                 9.2     26.9      10.1
+  trending                0.9     10.5      16.5
+
+  primary (rows) vs mr_state_er_ema (cols)
+  mr_state_er_ema  reverting  neutral  trending
+  mr_state                                     
+  reverting              7.1     12.7       6.0
+  neutral               13.7     23.8       8.8
+  trending               8.4     14.7       4.8
+
+  primary (rows) vs rs_thresholded (cols)
+  rs_thresholded  reverting  neutral  trending
+  mr_state                                    
+  reverting            11.6     13.7       0.6
+  neutral               6.8     33.7       5.7
+  trending              1.0     14.9      12.0
+
+==============================================================================
+4. STABILITY - primary label change rate by time of day
+==============================================================================
+  17:00    0.9%  (n= 4069) 
+  19:30   17.6%  (n= 3987) ########
+  20:00   12.5%  (n= 4063) ######
+  20:30   14.9%  (n= 4067) #######
+  21:00    9.3%  (n= 4068) ####
+  21:30    8.2%  (n= 4068) ####
+  22:00    7.6%  (n= 4069) ###
+  22:30    4.1%  (n= 4069) ##
+  23:00    3.1%  (n= 4069) #
+  23:30    2.3%  (n= 4070) #
+  00:00    2.5%  (n= 4070) #
+  00:30    1.9%  (n= 4070) 
+  01:00    1.4%  (n= 4070) 
+  01:30    2.5%  (n= 4070) #
+  02:00    2.5%  (n= 4070) #
+  02:30    4.7%  (n= 4070) ##
+  03:00    3.0%  (n= 4070) #
+  03:30    8.1%  (n= 4070) ####
+  04:00    6.4%  (n= 4070) ###
+  04:30    5.3%  (n= 4070) ##
+  05:00    3.8%  (n= 4070) #
+  05:30    2.8%  (n= 4070) #
+  06:00    2.7%  (n= 4070) #
+  06:30    2.5%  (n= 4070) #
+  07:00    2.1%  (n= 4075) #
+  07:30    2.1%  (n= 4076) #
+  08:00    1.8%  (n= 4076) 
+  08:30    3.1%  (n= 4077) #
+  09:00    7.0%  (n= 4077) ###
+  09:30    2.9%  (n= 4077) #
+  10:00   49.1%  (n= 4011) ########################
+  10:30   28.5%  (n= 4011) ##############
+  11:00   16.8%  (n= 4069) ########
+  11:30   10.8%  (n= 4069) #####
+  12:00    7.2%  (n= 4069) ###
+  12:30    5.7%  (n= 4069) ##
+  13:00    5.0%  (n= 4069) ##
+  13:30    4.3%  (n= 4069) ##
+  14:00    3.7%  (n= 4069) #
+  14:30    4.9%  (n= 4069) ##
+  15:00    3.8%  (n= 4069) #
+  15:30    3.4%  (n= 4069) #
+  16:00    5.1%  (n= 4069) ##
+  16:30    4.1%  (n= 4069) ##
+
+early RTH change rate 26.0% vs late 4.1%
+CAVEAT: the first post-open snapshot is the scope HANDOFF - the primary label switches from the overnight (gbx) window to a 30-bar RTH window there, so a high change rate at that one snapshot is structural, not noise. Read the SECOND and third RTH rows for how noisy the label genuinely is.
+  -> the label is materially noisier early. IVB reads 10:00; it cannot use this axis as early as it uses vol.
+
+==============================================================================
+5. PERSISTENCE - day-to-day transition matrix (final row)
+==============================================================================
+to         reverting  neutral  trending
+from                                   
+reverting        354      467       271
+neutral          469      813       538
+trending         269      542       337
+
+to         reverting  neutral  trending
+from                                   
+reverting       32.4     42.8      24.8
+neutral         25.8     44.7      29.6
+trending        23.4     47.2      29.4
+
+state      P(stay)   unconditional   lift
+  reverting   32.4%       26.9%       +0.055
+  neutral     44.7%       44.9%       -0.002
+  trending    29.4%       28.2%       +0.011
+
+verdict: mean lift over unconditional +0.021 - NO day-ahead information - this axis DESCRIBES, it does not filter. Use it retrospectively only.
+
+==============================================================================
+6. PREDICTIVENESS - 10:00 label vs the afternoon's actual VR
+==============================================================================
+days evaluated: 3885   (afternoon = 12:00-16:00, VR at q=10)
+
+by 10:00 LABEL:
+  reverting  n= 942  mean afternoon z=-0.113  median=-0.097  share above 0: 47%
+  neutral    n=1963  mean afternoon z=-0.010  median=-0.002  share above 0: 50%
+  trending   n= 980  mean afternoon z=+0.094  median=+0.177  share above 0: 58%
+
+by 10:00 z BUCKET (continuous, ignores the hysteresis):
+  z > +1     n= 620  mean afternoon z=+0.092  median=+0.156
+  |z| <= 1   n=2653  mean afternoon z=-0.028  median=+0.011
+  z < -1     n= 612  mean afternoon z=-0.028  median=-0.011
+
+rank correlation (10:00 z vs afternoon z): +0.047
+median afternoon z, trending minus reverting: +0.274
+(rank-correlation standard error at n=3885 is ~0.016)
+verdict: the morning label carries some forward information - weak, but the sign is right and the label ordering is monotone. Size any use accordingly; this is not a filter-grade edge.
+
+==============================================================================
+7. BALANCE - share of days per state
+==============================================================================
+  final row   reverting: 1093 (26.4%)  neutral: 1825 (44.1%)  trending: 1151 (27.8%)  unknown: 69 (1.7%)
+  at 10:00    reverting: 975 (23.6%)  neutral: 2025 (48.9%)  trending: 1011 (24.4%)  unknown: 127 (3.1%)
+
+note: three states over one tradable year is ~80 days each at best. Enough to see a large effect, nowhere near enough for per-regime parameter tuning. Do not use these labels to search.
