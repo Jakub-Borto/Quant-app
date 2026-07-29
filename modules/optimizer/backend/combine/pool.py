@@ -35,6 +35,19 @@ class Variant:
     n_oos: int = 0
     is_daily: pd.Series = None    # in-sample per-day pnl (traded days only)
 
+    @property
+    def entry_key(self) -> str:
+        """
+        Which ENTRY this variant is a parameterization of — the grouping the
+        one-pick-per-entry rule (select.greedy_select) deduplicates on. The
+        trade_type IS the entry name here (strategies label every trade with
+        the entry that fired it), so two runs sweeping the same entry share a
+        key. Strategies that emit no trade_type fall back to the run name,
+        otherwise every such variant would collapse into one "unknown" entry.
+        """
+        return self.trade_type if self.trade_type and self.trade_type != "unknown" \
+            else f"run:{self.run}"
+
 
 def list_containers(root: Path = RUNS_ROOT) -> list:
     """Folders under data/optimizations that hold at least one entry run."""

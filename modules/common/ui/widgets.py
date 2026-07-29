@@ -7,6 +7,8 @@ system (their looks live in theme.py, keyed by objectName):
   MetricTile          the st.metric analog — caption over a big value
   SectionHeader       accent-barred section title (st.subheader analog)
   Caption             muted small-print label (st.caption)
+  InfoLabel           control label carrying a muted ⓘ badge; the plain-English
+                      explanation shows as its tooltip
   Banner              inline colored info/success/warning/error strip
   CollapsibleSection  the st.expander analog (header + card-styled body)
   ProgressLogPanel    progress bar + rolling log (the transforms/optimizer
@@ -87,6 +89,20 @@ class Caption(QLabel):
         super().__init__(text, parent)
         self.setWordWrap(True)
         self.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 12px;")
+
+
+class InfoLabel(QLabel):
+    """
+    Control label with a muted ⓘ badge; `info` is the hover tooltip. One plain
+    QLabel (rich text, no child layout) so it never changes a form's row
+    heights — the layout-jitter trap of composite label widgets.
+    """
+
+    def __init__(self, text: str, info: str, parent=None):
+        super().__init__(parent)
+        self.setTextFormat(Qt.RichText)
+        self.setText(f'{text} <span style="color: {theme.TEXT_MUTED};">ⓘ</span>')
+        self.setToolTip(info)
 
 
 class Banner(QLabel):

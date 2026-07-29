@@ -20,6 +20,12 @@ Multi-seed (n_seeds > 1): re-run the forward pass forcing the first pick to
 each of the top-N standalone-IS variants and keep the best-final-IS path —
 mitigates first-pick lock-in.
 
+One pick per entry (unique_entries=True): a HARD cap of one variant per
+`Variant.entry_key` (the trade_type = the entry that fired the trade), applied
+in both the forward and the swap step. λ only prices redundancy in ticks; this
+forbids it outright, so a set can never hold two parameterizations of the same
+entry — not even from two different pooled runs.
+
 The in-sample daily-P&L correlation matrix is computed once and cached in
 the returned context. Variants sharing no active days correlate ≈ 0 on the
 zero-filled shared date index.
@@ -47,11 +53,17 @@ def correlation_matrix(variants: list) -> np.ndarray:
     return np.nan_to_num(corr, nan=0.0)
 
 
-def _forward_path(variants, corr, lam, max_k, first_pick=None, log=None):
-    """One forward pass. Returns the path (member indices per set size)."""
+def _forward_path(variants, corr, lam, max_k, first_pick=None, log=None,
+                  keys=None):
+    """
+    One forward pass. Returns the path (member indices per set size). With
+    `keys` (one entry key per variant) an entry already represented in the set
+    is skipped — the one-pick-per-entry rule.
+    """
     n = len(variants)
     remaining = set(range(n))
     selected: list = []
+    used_keys: set = set()
     raw_union: list = []          # sorted union of selected members' tuples
     current_total = 0.0
     path = []
@@ -63,6 +75,8 @@ def _forward_path(variants, corr, lam, max_k, first_pick=None, log=None):
         else:
             candidates = remaining
         for i in candidates:
+            if keys is not None and keys[i] in used_keys:
+                continue
             v = variants[i]
             total = merged_total(merge_streams(raw_union, v.is_tuples)) \
                 if raw_union else merged_total(iter(v.is_tuples))
@@ -79,6 +93,8 @@ def _forward_path(variants, corr, lam, max_k, first_pick=None, log=None):
         _, gain, _, idx = best
         selected.append(idx)
         remaining.discard(idx)
+        if keys is not None:
+            used_keys.add(keys[idx])
         raw_union = list(merge_streams(raw_union, variants[idx].is_tuples))
         current_total += gain
         path.append({"k": len(selected), "stage": "forward",
@@ -100,8 +116,12 @@ def _set_objective(variants, indices, corr, lam) -> float:
     return total
 
 
-def _swap_improve(variants, selected, corr, lam, max_swaps, log=None):
-    """Best-improvement swaps until none helps (or max_swaps applied)."""
+def _swap_improve(variants, selected, corr, lam, max_swaps, log=None, keys=None):
+    """
+    Best-improvement swaps until none helps (or max_swaps applied). With
+    `keys`, a swap may never introduce an entry the rest of the set already
+    holds.
+    """
     selected = list(selected)
     if not selected:
         return selected, 0
@@ -112,8 +132,12 @@ def _swap_improve(variants, selected, corr, lam, max_swaps, log=None):
         best = None               # (objective, pos, candidate)
         in_set = set(selected)
         for pos in range(len(selected)):
+            others = {keys[m] for i, m in enumerate(selected) if i != pos} \
+                if keys is not None else None
             for c in range(n):
                 if c in in_set:
+                    continue
+                if others is not None and keys[c] in others:
                     continue
                 trial = selected[:pos] + [c] + selected[pos + 1:]
                 obj = _set_objective(variants, trial, corr, lam)
@@ -130,17 +154,21 @@ def _swap_improve(variants, selected, corr, lam, max_swaps, log=None):
 
 
 def greedy_select(variants: list, lam: float = 0.0, max_k: int = 30,
-                  n_seeds: int = 1, max_swaps: int = 50, log=None) -> dict:
+                  n_seeds: int = 1, max_swaps: int = 50, log=None,
+                  unique_entries: bool = False) -> dict:
     """
     Full selection: (multi-seed) forward path + swap step on the final set.
     Returns {"path": [...], "corr": matrix}; path rows carry member INDICES
     into `variants` (stage "forward" rows are nested prefixes; an extra
     "swap" row is appended when the swap step improved the final set).
+
+    unique_entries=True caps the set at one variant per `Variant.entry_key`.
     """
     if not variants:
         return {"path": [], "corr": np.zeros((0, 0))}
 
     corr = correlation_matrix(variants)
+    keys = [v.entry_key for v in variants] if unique_entries else None
 
     seeds = [None]
     if n_seeds > 1:
@@ -157,7 +185,7 @@ def greedy_select(variants: list, lam: float = 0.0, max_k: int = 30,
             log(f"[seed {s_i + 1}/{len(seeds)}] first pick forced: "
                 f"{variants[seed].vid}")
         path = _forward_path(variants, corr, lam, max_k, first_pick=seed,
-                             log=log)
+                             log=log, keys=keys)
         final = path[-1]["is_ticks"] if path else -float("inf")
         if final > best_final:
             best_path, best_final = path, final
@@ -166,7 +194,7 @@ def greedy_select(variants: list, lam: float = 0.0, max_k: int = 30,
     if path:
         selected = path[-1]["members"]
         swapped, applied = _swap_improve(variants, selected, corr, lam,
-                                         max_swaps, log)
+                                         max_swaps, log, keys=keys)
         if applied and set(swapped) != set(selected):
             streams = [variants[i].is_tuples for i in swapped]
             path.append({

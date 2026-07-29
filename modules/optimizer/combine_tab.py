@@ -6,16 +6,17 @@ The PySide6 port of render_combine / _render_combine_results /
 _render_path_chart: container + entry-run pickers with the load cache and the
 compatibility gate, day-bucket checkboxes, per-trade-type min-trades floors,
 selection settings (IS/OOS split, redundancy penalty λ, max set size, greedy
-seeds — same defaults and tooltips), Run on a worker with the throttled log,
+seeds, one-pick-per-entry — each label carries a plain-English ⓘ tooltip),
+Run on a worker with the throttled log,
 save + the saved-combine-run viewer (path chart, rounded table, member
 inspector). Nothing is ever re-backtested.
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QPushButton, QSpinBox,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QPushButton,
+                               QSpinBox, QVBoxLayout, QWidget)
 
 import pandas as pd
 
@@ -24,8 +25,9 @@ from modules.common.ui.charts.path_chart import CombinePathChart
 from modules.common.ui.dataframe_model import make_table_view, update_table_view
 from modules.common.ui.trade_report.filters import CheckboxFilterRow
 from modules.common.ui.widgets import (Banner, Caption, CollapsibleSection,
-                                       ProgressLogPanel, SectionHeader,
-                                       hline, pin_minimum_height, wrap_card)
+                                       InfoLabel, ProgressLogPanel,
+                                       SectionHeader, hline,
+                                       pin_minimum_height, wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.optimizer.backend.buckets import BUCKET_ORDER
 from modules.optimizer.backend.combine import io as cmb_io
@@ -48,7 +50,25 @@ stops when no candidate adds positive score.
 Greedy seeds: insurance against first-pick lock-in — the forward pass re-runs
 N times, forcing the first pick to each of the top-N standalone in-sample
 variants; the best-ending path wins. 1 = plain greedy; 3–5 is a cheap
-robustness check (runtime × N)."""
+robustness check (runtime × N).
+
+One pick per entry: a hard cap of one variant per entry (the trade type), where
+λ is only a price. With it on, two parameterizations of the same entry can never
+both land in a set — not even from two different pooled runs."""
+
+# plain-English one-liners shown as the ⓘ tooltip next to each control's label
+_INFO = {
+    "split": "Train on the oldest X% of trading days. The rest stays hidden and "
+             "is only used afterwards to check whether the result holds up.",
+    "lam":   "How hard to push back on picking entries that make their money on "
+             "the same days. 0 = off; 20–40 discourages near-duplicates.",
+    "max_k": "Never put more than this many entries in one result. A ceiling, "
+             "not a target — selection usually stops earlier on its own.",
+    "seeds": "Try this many different starting picks and keep the best result. "
+             "Safer against a bad first pick, but N times slower.",
+    "unique": "Each entry (trade type) can appear at most once in a result — no "
+              "two settings of the same entry, even from different runs.",
+}
 
 
 class CombineTab(QWidget):
@@ -110,32 +130,30 @@ class CombineTab(QWidget):
         self._split = QComboBox()
         self._split.addItems(["50/50", "60/40", "70/30", "80/20"])
         self._split.setCurrentIndex(2)
-        self._split.setToolTip("chronological: train = earliest X% of trading dates")
+        self._split.setToolTip(_INFO["split"])
         self._lam = QDoubleSpinBox()
         self._lam.setRange(0.0, 1e9)
         self._lam.setSingleStep(5.0)
         self._lam.setValue(0.0)
-        self._lam.setToolTip("ticks subtracted per unit of daily-P&L correlation "
-                             "with the closest selected member; 0 = off, ~20-40 "
-                             "suppresses near-duplicate param nudges")
+        self._lam.setToolTip(_INFO["lam"])
         self._max_k = QSpinBox()
         self._max_k.setRange(1, 200)
         self._max_k.setSingleStep(5)
         self._max_k.setValue(30)
-        self._max_k.setToolTip("ceiling on the greedy path, not a target — "
-                               "greedy stops on its own when nothing adds "
-                               "positive score")
+        self._max_k.setToolTip(_INFO["max_k"])
         self._seeds = QSpinBox()
         self._seeds.setRange(1, 10)
         self._seeds.setValue(1)
-        self._seeds.setToolTip("re-run forward selection forcing the first pick "
-                               "to each of the top-N standalone variants; best "
-                               "path wins (runtime × N)")
-        for c, (label, w) in enumerate([("IS/OOS split", self._split),
-                                        ("Redundancy penalty λ", self._lam),
-                                        ("Max set size", self._max_k),
-                                        ("Greedy seeds", self._seeds)]):
-            srow.addWidget(QLabel(label), 0, c)
+        self._seeds.setToolTip(_INFO["seeds"])
+        self._unique = QCheckBox("Use each entry only once")
+        self._unique.setToolTip(_INFO["unique"])
+        for c, (label, key, w) in enumerate(
+                [("IS/OOS split", "split", self._split),
+                 ("Redundancy penalty λ", "lam", self._lam),
+                 ("Max set size", "max_k", self._max_k),
+                 ("Greedy seeds", "seeds", self._seeds),
+                 ("One pick per entry", "unique", self._unique)]):
+            srow.addWidget(InfoLabel(label, _INFO[key]), 0, c)
             srow.addWidget(w, 1, c)
         lay.addWidget(wrap_card(srow))
 
@@ -207,6 +225,7 @@ class CombineTab(QWidget):
         self._runs_list.itemChanged.connect(self._on_runs_changed)
         self._split.currentIndexChanged.connect(self._sync_default_name)
         self._lam.valueChanged.connect(self._sync_default_name)
+        self._unique.toggled.connect(self._sync_default_name)
         self._result_select.currentIndexChanged.connect(self._show_selected_result)
         self._inspect.currentIndexChanged.connect(self._show_members)
         self.rescan()
@@ -325,8 +344,10 @@ class CombineTab(QWidget):
     def _sync_default_name(self, _=None) -> None:
         if not self._name_edited:
             split_label = self._split.currentText()
+            suffix = "_1each" if self._unique.isChecked() else ""
             self._name.setText(
-                f"combine_{split_label.replace('/', '-')}_lam{self._lam.value():g}")
+                f"combine_{split_label.replace('/', '-')}"
+                f"_lam{self._lam.value():g}{suffix}")
 
     # ══ run ═══════════════════════════════════════════════════════════════════
     def _on_run(self) -> None:
@@ -343,6 +364,7 @@ class CombineTab(QWidget):
             return
         floors = {tt: int(spin.value()) for tt, spin in self._floor_spins.items()}
         is_fraction = int(self._split.currentText().split("/")[0]) / 100
+        unique_entries = self._unique.isChecked()
         root = self._runs_root()
 
         self._progress.reset()
@@ -358,7 +380,8 @@ class CombineTab(QWidget):
                 container, selected, enabled_buckets=enabled_buckets,
                 floors=floors, is_fraction=is_fraction,
                 lam=float(self._lam.value()), max_k=int(self._max_k.value()),
-                n_seeds=int(self._seeds.value()), log=log, root=root)
+                n_seeds=int(self._seeds.value()),
+                unique_entries=unique_entries, log=log, root=root)
 
         worker = FunctionWorker(job, needs_progress=True)
         worker.signals.progress.connect(self._progress.on_progress)
@@ -419,7 +442,9 @@ class CombineTab(QWidget):
             + (", ".join(f"{k}={v}" for k, v in floors_used.items())
                if floors_used else "none")
             + "\n\n**Day types included:** "
-            + ", ".join(meta.get("enabled_day_buckets", [])))
+            + ", ".join(meta.get("enabled_day_buckets", []))
+            + "\n\n**One pick per entry:** "
+            + ("yes" if meta.get("unique_entries") else "no"))
 
         self._path_chart.set_path(path_df)
         peak_k = path_df.loc[path_df["is_oos_peak"], "k"]

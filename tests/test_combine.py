@@ -20,7 +20,9 @@ from modules.optimizer.backend.combine.pool import (apply_min_trades, build_pool
                                        load_entry_runs, split_date_boundary,
                                        split_pool)
 from modules.optimizer.backend.combine.runner import run_combine
-from modules.optimizer.backend.combine.select import correlation_matrix, greedy_select
+from modules.optimizer.backend.combine.select import (_swap_improve,
+                                                      correlation_matrix,
+                                                      greedy_select)
 
 TZ = "America/New_York"
 
@@ -266,6 +268,64 @@ def test_determinism(container):
     p2 = greedy_select(pool2, lam=0.5, max_k=10, n_seeds=3)["path"]
     assert [(x["k"], x["is_ticks"], x["members"]) for x in p1] \
         == [(x["k"], x["is_ticks"], x["members"]) for x in p2]
+
+
+# ── one pick per entry ────────────────────────────────────────────────────────
+
+def test_unique_entries_caps_one_per_trade_type(container):
+    """Free greedy takes two 'alpha' variants (C and B); the rule allows one."""
+    pool = _prepared_pool(container, buckets={"normal"})
+    free = greedy_select(pool, lam=0.0, max_k=10)["path"][-1]["members"]
+    assert sum(pool[i].trade_type == "alpha" for i in free) >= 2
+
+    capped = greedy_select(pool, lam=0.0, max_k=10,
+                           unique_entries=True)["path"][-1]["members"]
+    keys = [pool[i].entry_key for i in capped]
+    assert len(keys) == len(set(keys)) == 2       # one alpha + one beta
+    assert any("p=1" in pool[i].vid for i in capped)   # still the best alpha
+
+
+def test_unique_entries_holds_on_every_path_row(container):
+    pool = _prepared_pool(container)
+    result = greedy_select(pool, lam=0.5, max_k=10, n_seeds=3,
+                           unique_entries=True)
+    for point in result["path"]:
+        keys = [pool[i].entry_key for i in point["members"]]
+        assert len(keys) == len(set(keys)), point["stage"]
+
+
+def test_unique_entries_blocks_an_improving_swap(container):
+    """Swapping D (beta, +2/day) for B (alpha, +5/day) improves the set but
+    would give it two alphas — the rule must veto it."""
+    pool = _prepared_pool(container, buckets={"normal"})
+    corr = correlation_matrix(pool)
+    c_idx = next(i for i, v in enumerate(pool) if v.params.get("p") == 1)
+    d_idx = next(i for i, v in enumerate(pool) if v.params.get("q") == 1)
+    start = [c_idx, d_idx]
+
+    free, applied = _swap_improve(pool, start, corr, 0.0, 5)
+    assert applied == 1 and any(pool[i].params.get("p") == 3 for i in free)
+
+    keys = [v.entry_key for v in pool]
+    capped, applied = _swap_improve(pool, start, corr, 0.0, 5, keys=keys)
+    assert applied == 0 and capped == start
+
+
+def test_unique_entries_roundtrips_through_meta(container):
+    result = run_combine(
+        "cont", ["run_a", "run_b"], enabled_buckets={"normal", "cpi"},
+        floors={}, is_fraction=0.7, lam=0.0, max_k=10, unique_entries=True,
+        root=container,
+    )
+    assert result["meta"]["unique_entries"] is True
+    members = result["members_df"]
+    for _, group in members.groupby(["k", "stage"]):
+        assert group["trade_type"].is_unique
+
+    run_dir = save_combine_run("cont", "uniq", result["path_df"], members,
+                               result["meta"], root=container)
+    _p, _m, meta = load_combine_run("cont", run_dir.name, root=container)
+    assert meta["unique_entries"] is True
 
 
 def test_correlation_matrix_shape(container):

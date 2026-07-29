@@ -3,8 +3,9 @@ The combine pipeline in the strict §6.1 order:
 
   load runs -> compatibility gate -> pool (variants, day filter, shared
   window) -> chronological IS/OOS split -> per-entry min-trades (IS only) ->
-  greedy + swap on the IS merged stream -> OOS evaluation of the whole path
-  -> path/members tables ready to persist.
+  greedy + swap on the IS merged stream (optionally capped at one variant per
+  entry) -> OOS evaluation of the whole path -> path/members tables ready to
+  persist.
 
 Selection touches ONLY the in-sample slice; every path row's out-of-sample
 number is computed afterwards, in one sealed pass.
@@ -25,7 +26,7 @@ from .select import greedy_select
 def run_combine(container: str, run_names: list, *, enabled_buckets: set,
                 floors: dict, is_fraction: float, lam: float = 0.0,
                 max_k: int = 30, n_seeds: int = 1, max_swaps: int = 50,
-                log=None, root=RUNS_ROOT) -> dict:
+                unique_entries: bool = False, log=None, root=RUNS_ROOT) -> dict:
     """
     Execute the full pipeline. Returns {path_df, members_df, meta, variants,
     boundary} — the caller persists via combine.io. Raises ValueError with a
@@ -63,9 +64,13 @@ def run_combine(container: str, run_names: list, *, enabled_buckets: set,
         raise ValueError("empty pool — every variant fell below its "
                          "min-trades floor on the in-sample slice")
     _log(f"[floor] {len(variants)} variants meet their min-trades floor")
+    if unique_entries:
+        _log(f"[unique] one pick per entry — "
+             f"{len({v.entry_key for v in variants})} distinct entries in the pool")
 
     result = greedy_select(variants, lam=lam, max_k=max_k, n_seeds=n_seeds,
-                           max_swaps=max_swaps, log=log)
+                           max_swaps=max_swaps, log=log,
+                           unique_entries=unique_entries)
     path = result["path"]
     if not path:
         raise ValueError("greedy selected nothing — no variant has a "
@@ -124,6 +129,7 @@ def run_combine(container: str, run_names: list, *, enabled_buckets: set,
         "max_k": max_k,
         "n_seeds": n_seeds,
         "max_swaps": max_swaps,
+        "unique_entries": bool(unique_entries),
         "pool_size": len(variants),
         "created_at": pd.Timestamp.now().isoformat(),
     }
