@@ -4,10 +4,12 @@ Monte Carlo window — stress-test saved trades with resampling simulations.
 The PySide6 port of legacy_streamlit/views/monte_carlo.py. Same flow:
 trades file -> position sizing (account size, sizer, numeric-only sizer
 params) -> simulation method (drop-in scripts from modules/monte_carlo/
-methods/). Methods flagged PROP_FIRM get the dedicated PropFirmPanel;
-everything else gets the generic flow: ruin definition, simulation params,
-costs, Run (worker), then the fan chart (with the cap-at-3x-account toggle)
-and the metrics table.
+methods/). A method needing more than a params form declares a panel flag and
+the whole generic branch is swapped for its own widget — PROP_FIRM for
+PropFirmPanel, REGIME_PANEL for RegimeSwitchingPanel — while the trades and
+position-sizing sections above stay shared. Everything else gets the generic
+flow: ruin definition, simulation params, costs, Run (worker), then the fan
+chart (with the cap-at-3x-account toggle) and the metrics table.
 
 The sizer-params dict is assembled verbatim: {**PARAMS, **numeric-widget
 overrides, "account_size": ...}; dollars_per_tick is injected at run time
@@ -38,6 +40,7 @@ from modules.monte_carlo.backend.stats import (_compute_metrics,
                                                _select_featured_paths,
                                                metrics_table_rows)
 from modules.monte_carlo.prop_firm_panel import PropFirmPanel
+from modules.monte_carlo.regime_panel import RegimeSwitchingPanel
 
 # MC methods are internal drop-in scripts (not a settings category) — drop a
 # .py file into modules/monte_carlo/methods/ and it appears in the picker.
@@ -187,17 +190,24 @@ class MonteCarloWindow(ModuleWindowBase):
 
         self.content.addWidget(self._generic)
 
-        # prop-firm branch container (swapped in per method)
-        self._prop_holder = QVBoxLayout()
-        self.content.addLayout(self._prop_holder)
-        self._prop_panel: PropFirmPanel | None = None
+        # dedicated-panel container (swapped in per method's panel flag)
+        self._panel_holder = QVBoxLayout()
+        self.content.addLayout(self._panel_holder)
+        self._method_panel: QWidget | None = None
 
         self.content.addStretch()
 
         # ── wiring ────────────────────────────────────────────────────────────
         self._sizer.currentIndexChanged.connect(self._on_sizer_changed)
         self._method.currentIndexChanged.connect(self._on_method_changed)
+        self._file.currentIndexChanged.connect(self._on_file_changed)
         self._rescan()
+
+    def _on_file_changed(self) -> None:
+        """A different trades file can mean a different asset, and the regime
+        panel filters its runs by the asset derived from the filename."""
+        if self._method_panel is not None and hasattr(self._method_panel, "rescan"):
+            self._method_panel.rescan()
 
     # ── scanning ──────────────────────────────────────────────────────────────
     def _rescan(self) -> None:
@@ -272,21 +282,32 @@ class MonteCarloWindow(ModuleWindowBase):
         return {**raw, **specific, "account_size": float(self._account.value())}
 
     def _on_method_changed(self) -> None:
-        # tear down the prop panel if any
-        if self._prop_panel is not None:
-            self._prop_panel.deleteLater()
-            self._prop_panel = None
+        # tear down whichever dedicated panel is up
+        if self._method_panel is not None:
+            self._method_panel.deleteLater()
+            self._method_panel = None
         ref: PluginRef | None = self._method.currentData()
         if ref is None:
             return
         self._mc_module = load_module(ref)
 
+        # Methods needing more than a params form declare a panel flag and get
+        # the whole generic branch swapped out (trades + sizing stay above).
         if getattr(self._mc_module, "PROP_FIRM", False):
             self._generic.setVisible(False)
-            self._prop_panel = PropFirmPanel(self._mc_module,
-                                             self._prop_context,
+            self._method_panel = PropFirmPanel(self._mc_module,
+                                             self._panel_context,
                                              self.track_worker)
-            self._prop_holder.addWidget(self._prop_panel)
+            self._panel_holder.addWidget(self._method_panel)
+            return
+
+        if getattr(self._mc_module, "REGIME_PANEL", False):
+            self._generic.setVisible(False)
+            self._method_panel = RegimeSwitchingPanel(self._mc_module,
+                                                    self._panel_context,
+                                                    self.track_worker,
+                                                    self.settings)
+            self._panel_holder.addWidget(self._method_panel)
             return
 
         self._generic.setVisible(True)
@@ -305,7 +326,7 @@ class MonteCarloWindow(ModuleWindowBase):
         else:
             self._mc_section.setVisible(False)
 
-    def _prop_context(self) -> dict | None:
+    def _panel_context(self) -> dict | None:
         ref: TradesRef | None = self._file.currentData()
         if ref is None or self._sizer_module is None:
             return None

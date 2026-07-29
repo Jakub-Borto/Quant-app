@@ -46,7 +46,7 @@ the Optimizer) is the docstring of `modules/common/ui/params_form.py`.
 | `data_transforms/` | Data Formatter | `run_all(input_folder, output_folder, skip_existing, on_progress[, params]) -> None` (a transform MAY declare `PARAMS` like a strategy — the UI renders widgets from it and passes the values as `params`; transforms without `PARAMS` get the plain 4-arg call) |
 | `strategies/` | Backtester, Optimizer | `run(folder_path, start_date, end_date, params) -> pd.DataFrame` (+ `PARAMS`, optional `PARAMS_OPTIONS`; the Optimizer sweeps int/float params over min/max/step, str params over a value list, bool params over [False, True], dropdown params over a subset of their choices, bit-flag params over a bitstring list) |
 | `position_sizing/` | Analytics, Monte Carlo | `apply(trades, params) -> pd.DataFrame` (+ `PARAMS`) |
-| `modules/monte_carlo/methods/` | Monte Carlo | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`; `PROP_FIRM = True` opts into the dedicated prop-firm UI) |
+| `modules/monte_carlo/methods/` | Monte Carlo | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`; a method needing more than a params form sets a panel flag — `PROP_FIRM = True` → prop-firm UI, `REGIME_PANEL = True` → regime-switching UI — and the window swaps the whole generic branch for it) |
 | `scripts/` | Scripts | no Python contract — any quick one-off script. A `# app: streamlit` comment (or `STREAMLIT = True`) in the first 30 lines → launched as `streamlit run` on a free port + opened in the dedicated scripts browser (Chrome/Edge with a private `--user-data-dir` profile — first run opens its window, later runs add tabs there; Opera ignores the flags, so it's never a candidate); otherwise run as `python -u` with output in the module's console. cwd is the script's own folder (NOT repo root — root `inspect.py` shadowing); repo imports via the sys.path.append idiom in `scripts/example_hello.py` |
 | `regime_detectors/` | Regime Detector | `run_all(input_folder, output_folder, skip_existing, on_progress, params) -> None` + required `PARAMS` (must include `rth_start`, `rth_end`, `snapshot_minutes`, `lookback_days`), `REGIME_STATES`, `COLUMN_TIERS`, `SCRIPT_VERSION` (optional `PARAMS_OPTIONS`). Import the helper as `from modules.regime_detector.backend.runner import RegimeContext, SHARED_PARAMS` — NEVER `from base import ...`: several plugin folders own a `base.py` and the first one loaded wins `sys.modules['base']` (details in `regime_detectors/base.py`) |
 
@@ -110,8 +110,16 @@ modules/
   backtester/              backend/{run,day_types}.py + window.py
   analytics/               backend/{io,sizing,costs,metrics}.py +
                            instance_editor/results_view/window.py
-  monte_carlo/             methods/ (plugin dir) + backend/{stats,cost_ctx}.py
-                           + prop_firm_panel/window.py
+  monte_carlo/             methods/ (plugin dir; has an __init__.py ONLY so
+                           backend code can import methods/base.py absolutely —
+                           discovery still excludes __init__/base) +
+                           backend/{stats,cost_ctx,regime_switching}.py +
+                           {prop_firm_panel,regime_panel,window}.py.
+                           regime_switching.py is the Markov regime-switching
+                           engine (NOT MCMC): the matrix comes from ALL days,
+                           trade-probability + pools from TRADE days, and its
+                           equity matrix is indexed by TRADING DAY, not by
+                           trade — flat no-trade days still advance the chain.
   optimizer/               backend/ = the former optimization/ package
                            (engine, param_space, metrics, buckets, io, loader,
                            combine/, + heatmap_model, run_setup) — pure,
