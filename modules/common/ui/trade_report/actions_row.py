@@ -29,7 +29,7 @@ _SPAWNED_WINDOWS: list = []
 # join) rather than the strategy producing them. They are stripped before a
 # save so they never masquerade as strategy output in a trades file — and so
 # re-running the same strategy keeps producing byte-comparable files.
-DERIVED_COLUMNS = ("day_type", "regime")
+DERIVED_COLUMNS = ("day_type", "regime", "regime_filter")
 
 
 def _forget_spawned(window) -> None:

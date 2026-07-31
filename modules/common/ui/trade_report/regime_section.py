@@ -31,7 +31,7 @@ import pandas as pd
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
                                QGridLayout, QHBoxLayout, QLabel, QPushButton,
-                               QVBoxLayout)
+                               QVBoxLayout, QWidget)
 
 from modules.common.backend.asset_info import ASSET_INFO
 from modules.common.backend.data_roots import RegimeRunRef, list_regime_runs
@@ -48,6 +48,10 @@ from .sections import ReportSection
 
 _DEFAULT_SESSION_START = "18:00"
 _GB = 1024 ** 3
+
+# The column the report is FILTERED by, kept separate from the displayed
+# `regime` column so the two timings can differ (see RegimeSection.annotate).
+FILTER_COLUMN = "regime_filter"
 
 
 def _fmt_size(gb: float) -> str:
@@ -96,7 +100,7 @@ class RegimeSection(ReportSection):
         grid.addWidget(self._all_assets, 0, 2)
         grid.addWidget(QLabel("Regime column"), 1, 0)
         grid.addWidget(self._column, 1, 1)
-        grid.addWidget(QLabel("Compare at"), 2, 0)
+        grid.addWidget(QLabel("Table labels at"), 2, 0)
         grid.addWidget(self._mode, 2, 1)
         grid.addWidget(self._at, 2, 2)
         grid.setColumnStretch(1, 1)
@@ -141,10 +145,24 @@ class RegimeSection(ReportSection):
         self._table = make_table_view(pd.DataFrame(), height=200)
         lay.addWidget(self._table)
 
-        # ── state filter ──────────────────────────────────────────────────────
-        self._filter_caption = Caption("Filter by regime state")
-        self._filter_caption.setVisible(False)
-        lay.addWidget(self._filter_caption)
+        # ── state filter, with its OWN timing ─────────────────────────────────
+        lay.addWidget(hline())
+        filter_row = QHBoxLayout()
+        self._filter_caption = Caption("Filter the whole report by regime, "
+                                       "labelled at:")
+        filter_row.addWidget(self._filter_caption)
+        self._filter_mode = QComboBox()
+        for mode in (MODE_ASOF, MODE_EXACT, MODE_FINAL):
+            self._filter_mode.addItem(MODE_LABELS[mode], mode)
+        self._filter_at = QComboBox()
+        self._filter_at.setEnabled(False)
+        filter_row.addWidget(self._filter_mode)
+        filter_row.addWidget(self._filter_at)
+        filter_row.addStretch()
+        self._filter_row_holder = QWidget()
+        self._filter_row_holder.setLayout(filter_row)
+        self._filter_row_holder.setVisible(False)
+        lay.addWidget(self._filter_row_holder)
         self._filter_holder = QVBoxLayout()
         lay.addLayout(self._filter_holder)
 
@@ -153,6 +171,8 @@ class RegimeSection(ReportSection):
         self._column.currentIndexChanged.connect(self._emit_source)
         self._mode.currentIndexChanged.connect(self._on_mode_changed)
         self._at.currentIndexChanged.connect(self._emit_source)
+        self._filter_mode.currentIndexChanged.connect(self._on_mode_changed)
+        self._filter_at.currentIndexChanged.connect(self._emit_source)
         self.rescan()
 
     # ── context ───────────────────────────────────────────────────────────────
@@ -224,12 +244,14 @@ class RegimeSection(ReportSection):
         start = session.get("start") or _DEFAULT_SESSION_START
         end = session.get("end") or "17:00"
         minutes = int(self._meta.get("snapshot_minutes", 30))
-        self._at.blockSignals(True)
-        self._at.clear()
-        self._at.addItems(rio.snapshot_grid_labels(start, end, minutes))
-        default = self._at.findText("10:00")
-        self._at.setCurrentIndex(default if default >= 0 else 0)
-        self._at.blockSignals(False)
+        labels = rio.snapshot_grid_labels(start, end, minutes)
+        for combo in (self._at, self._filter_at):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(labels)
+            default = combo.findText("10:00")
+            combo.setCurrentIndex(default if default >= 0 else 0)
+            combo.blockSignals(False)
 
         self._refresh_estimate()
         self._refresh_banner()
@@ -237,12 +259,19 @@ class RegimeSection(ReportSection):
 
     def _on_mode_changed(self) -> None:
         self._at.setEnabled(self.mode() == MODE_EXACT)
+        self._filter_at.setEnabled(self.filter_mode() == MODE_EXACT)
         self._refresh_banner()
         self._emit_source()
 
     def _refresh_banner(self) -> None:
         messages = []
-        if self.mode() == MODE_FINAL:
+        if self.filter_mode() == MODE_FINAL:
+            messages.append(
+                "FILTERING by ‘Final’ selects trades using a label that already "
+                "knows how the day ended — the resulting equity curve is not "
+                "tradeable. Fine for measuring how much of the edge is "
+                "hindsight; never a result to believe.")
+        elif self.mode() == MODE_FINAL:
             messages.append(
                 "‘Final’ uses each day's LAST snapshot, which already knows how "
                 "the day ended — useful for measuring hindsight, not for "
@@ -342,7 +371,7 @@ class RegimeSection(ReportSection):
             self._filter.deleteLater()
             self._filter = None
         has_states = bool(states)
-        self._filter_caption.setVisible(has_states)
+        self._filter_row_holder.setVisible(has_states)
         if not has_states:
             return
         self._filter = make_regime_filter(states)
@@ -358,21 +387,51 @@ class RegimeSection(ReportSection):
 
     # ── the join ──────────────────────────────────────────────────────────────
     def mode(self) -> str:
+        """Timing behind the performance TABLE's labels."""
         return self._mode.currentData()
+
+    def filter_mode(self) -> str:
+        """Timing behind the FILTER — independent of the table's."""
+        return self._filter_mode.currentData()
+
+    def timings_differ(self) -> bool:
+        table = (self.mode(), self._at.currentText())
+        return table != (self.filter_mode(), self._filter_at.currentText())
 
     def active(self) -> bool:
         return bool(self._frames and self._column.currentText())
 
     def annotate(self, trades: pd.DataFrame) -> pd.DataFrame:
-        """Trades + a `regime` column. Unchanged when no run is loaded."""
+        """
+        Trades + TWO label columns, because the table and the filter can be
+        read at different moments:
+
+          regime         — the table's timing, shown in the trades table
+          FILTER_COLUMN  — the filter's timing, what the report is sliced by
+
+        Filtering by the final label while reading performance as of entry is
+        a legitimate question ("how did the days that ENDED high behave in the
+        morning?"), so the two are deliberately allowed to disagree. When both
+        timings match, the second column is a copy rather than a second join.
+        Unchanged when no run is loaded.
+        """
         if not self.active():
             return trades
         session = self._meta.get("globex_session") or {}
-        return attach_regime(
-            trades, self._frames, self._column.currentText(), self.mode(),
-            at=self._at.currentText() or None,
-            session_start=session.get("start") or _DEFAULT_SESSION_START,
-            snapshot_minutes=int(self._meta.get("snapshot_minutes", 30)))
+        common = {
+            "session_start": session.get("start") or _DEFAULT_SESSION_START,
+            "snapshot_minutes": int(self._meta.get("snapshot_minutes", 30)),
+        }
+        column = self._column.currentText()
+        out = attach_regime(trades, self._frames, column, self.mode(),
+                            at=self._at.currentText() or None, **common)
+        if self.timings_differ():
+            out = attach_regime(out, self._frames, column, self.filter_mode(),
+                                at=self._filter_at.currentText() or None,
+                                out_col=FILTER_COLUMN, **common)
+        else:
+            out[FILTER_COLUMN] = out["regime"]
+        return out
 
     def _emit_source(self) -> None:
         self.sourceChanged.emit()

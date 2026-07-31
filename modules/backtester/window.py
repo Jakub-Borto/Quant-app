@@ -45,7 +45,8 @@ from modules.common.ui.trade_report.layout_dialog import ReportLayoutDialog
 from modules.common.ui.trade_report.entry_section import EntryBreakdownSection
 from modules.common.ui.trade_report.news_section import NewsBreakdownTable
 from modules.common.ui.trade_report.panel import TradeReportPanel
-from modules.common.ui.trade_report.regime_section import RegimeSection
+from modules.common.ui.trade_report.regime_section import (FILTER_COLUMN,
+                                                           RegimeSection)
 from modules.common.ui.widgets import (Banner, Caption, SectionHeader,
                                        gear_button, wrap_card)
 from modules.common.ui.workers import FunctionWorker
@@ -457,15 +458,15 @@ class BacktesterWindow(ModuleWindowBase):
         # ── regime filter ─────────────────────────────────────────────────────
         regime_filtered = False
         selected_regimes = self._regime.selected()
-        if selected_regimes is not None and "regime" in trades.columns:
+        if selected_regimes is not None and FILTER_COLUMN in trades.columns:
             if not selected_regimes:
                 self._filter_banner.show_message("warning",
                                                  "No regime states selected.")
                 self._set_report_visible(False)
                 return
-            trades = trades[trades["regime"].isin(selected_regimes)].copy()
+            trades = trades[trades[FILTER_COLUMN].isin(selected_regimes)].copy()
             trades["cumulative_ticks"] = trades["ticks"].cumsum()
-            all_entries = _entry_frame(all_entries, "regime", selected_regimes)
+            all_entries = _entry_frame(all_entries, FILTER_COLUMN, selected_regimes)
             if trades.empty:
                 self._filter_banner.show_message(
                     "warning", "No trades match the selected regime states.")
@@ -490,6 +491,9 @@ class BacktesterWindow(ModuleWindowBase):
         for optional in ("trade_type", "day_type", "regime"):
             if optional in trades.columns:
                 display_cols.append(optional)
+        # only worth a column of its own when it can disagree with `regime`
+        if self._regime.timings_differ() and FILTER_COLUMN in trades.columns:
+            display_cols.append(FILTER_COLUMN)
         update_table_view(self._table, trades[display_cols])
 
     def _set_report_visible(self, visible: bool) -> None:

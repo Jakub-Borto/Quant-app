@@ -26,7 +26,8 @@ from modules.common.ui.trade_report.actions_row import TradeActionsRow
 from modules.common.ui.trade_report.entry_section import EntryBreakdownSection
 from modules.common.ui.trade_report.news_section import NewsBreakdownTable
 from modules.common.ui.trade_report.panel import TradeReportPanel
-from modules.common.ui.trade_report.regime_section import RegimeSection
+from modules.common.ui.trade_report.regime_section import (FILTER_COLUMN,
+                                                           RegimeSection)
 from modules.common.ui.widgets import (Banner, Caption, SectionHeader, hline,
                                        pin_minimum_height)
 from modules.optimizer.backend.heatmap_model import _fmt_axis_value
@@ -256,13 +257,13 @@ class CellDetailPanel(QWidget):
 
         regime_filtered = False
         selected_regimes = self._regime.selected()
-        if selected_regimes is not None and "regime" in df.columns:
+        if selected_regimes is not None and FILTER_COLUMN in df.columns:
             if not selected_regimes:
                 self._banner.show_message("warning", "No regime states selected.")
                 self._set_report_visible(False)
                 return
-            df = df[df["regime"].isin(selected_regimes)].copy()
-            all_entries = _entry_frame(all_entries, "regime", selected_regimes)
+            df = df[df[FILTER_COLUMN].isin(selected_regimes)].copy()
+            all_entries = _entry_frame(all_entries, FILTER_COLUMN, selected_regimes)
             if df.empty:
                 self._banner.show_message(
                     "info", "No trades match the selected regime states.")

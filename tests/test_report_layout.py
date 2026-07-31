@@ -652,6 +652,76 @@ def test_equity_selection_marks_deselects_and_survives_replot(qtbot, tmp_path):
     assert eq.selected() is None and highlighted() == []
 
 
+def test_regime_filter_has_its_own_timing(qtbot, tmp_path):
+    """The performance table and the filter read labels at INDEPENDENT
+    moments, so you can measure as-of-entry while slicing the equity path by
+    the final label. annotate() therefore emits two columns, and both must be
+    stripped before a save."""
+    import numpy as np
+    import pandas as pd
+
+    from modules.common.backend.regime_join import (MODE_ASOF, MODE_EXACT,
+                                                    MODE_FINAL)
+    from modules.common.ui.trade_report.actions_row import DERIVED_COLUMNS
+    from modules.common.ui.trade_report.regime_section import (FILTER_COLUMN,
+                                                               RegimeSection)
+
+    assert "regime" in DERIVED_COLUMNS and FILTER_COLUMN in DERIVED_COLUMNS
+
+    ny = "America/New_York"
+    # RTH date 2026-01-06: the file spans the prior evening 18:30 -> 17:00,
+    # and the label flips from 'low' to 'high' at 12:30
+    idx = pd.date_range(pd.Timestamp("2026-01-05 18:30", tz=ny),
+                        periods=46, freq="30min")
+    states = ["low"] * 36 + ["high"] * 10
+    frames = {"2026-01-06": pd.DataFrame({"vol_state": states,
+                                          "price": np.arange(46.0)}, index=idx)}
+
+    section = RegimeSection(Settings({}, [str(tmp_path)]), lambda w: None)
+    qtbot.addWidget(section)
+    section._frames = frames
+    section._meta = {"globex_session": {"start": "18:00", "end": "17:00"},
+                     "snapshot_minutes": 30,
+                     "states": {"vol_state": {"states": ["low", "high"],
+                                              "colors": ["#1", "#2"]}}}
+    section._column.addItem("vol_state")
+
+    trades = pd.DataFrame({
+        "date": [pd.Timestamp("2026-01-06")] * 2,
+        "entry_time": [pd.Timestamp("2026-01-06 10:00", tz=ny),
+                       pd.Timestamp("2026-01-06 15:00", tz=ny)],
+        "ticks": [5.0, -5.0],
+    })
+
+    # same timing on both -> the filter column is a copy, no second join
+    section._mode.setCurrentIndex(section._mode.findData(MODE_ASOF))
+    section._filter_mode.setCurrentIndex(section._filter_mode.findData(MODE_ASOF))
+    out = section.annotate(trades)
+    assert not section.timings_differ()
+    assert list(out["regime"]) == ["low", "high"]
+    assert list(out[FILTER_COLUMN]) == ["low", "high"]
+
+    # table as-of-entry, filter on the FINAL label -> the morning trade keeps
+    # its honest 'low' while the filter sees the day's verdict, 'high'
+    section._filter_mode.setCurrentIndex(section._filter_mode.findData(MODE_FINAL))
+    out = section.annotate(trades)
+    assert section.timings_differ()
+    assert list(out["regime"]) == ["low", "high"]
+    assert list(out[FILTER_COLUMN]) == ["high", "high"]
+
+    # filtering by 'final' is lookahead — say so loudly
+    assert "not tradeable" in section._banner.text().lower()
+
+    # exact mode enables only the filter's own HH:MM box
+    section._filter_mode.setCurrentIndex(section._filter_mode.findData(MODE_EXACT))
+    assert section._filter_at.isEnabled() and not section._at.isEnabled()
+
+    # no run loaded -> untouched frame, and no filtering
+    section._frames = {}
+    assert section.annotate(trades) is trades
+    assert section.selected() is None
+
+
 def test_tables_sort_numerically_and_do_not_stretch(qtbot):
     """Breakdown tables hold DISPLAY strings ("62.5%", "1.41", "N/A", "∞").
     Sorting them as text puts 100% before 62.5%, so the model parses them back
