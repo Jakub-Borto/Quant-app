@@ -231,6 +231,59 @@ def news_holiday_rows(trades: pd.DataFrame) -> list[dict] | None:
     return _bucket_rows(trades, "day_type", DAY_TYPE_ORDER, "Day Type")
 
 
+def entry_breakdown_rows(trades: pd.DataFrame,
+                         column: str = "trade_type") -> list[dict] | None:
+    """
+    Full per-entry-type performance table: one row per trade_type, plus an
+    "All entries" row for comparison.
+
+    Every figure comes from compute_metrics() on that type's subset, so the
+    definitions match the Performance tiles exactly (both Sharpes annualized
+    ×√252, profit factor ∞ when there are no losers). cumulative_ticks is
+    recomputed per subset — each entry type is its own equity curve, so the
+    parent frame's running total would be meaningless here.
+
+    None when trades carry no trade_type column (many strategies emit one
+    entry type and never set it).
+    """
+    if column not in trades.columns:
+        return None
+
+    def row(label: str, subset: pd.DataFrame) -> dict:
+        if subset.empty:
+            return {"Entry": label, "Trades": 0, "Wins": 0, "Losses": 0,
+                    "Win Rate": "N/A", "BE Rate": "N/A", "Loss Rate": "N/A",
+                    "Total Ticks": 0, "Avg Ticks": "N/A", "Avg Win": "N/A",
+                    "Avg Loss": "N/A", "Profit Factor": "N/A",
+                    "Sharpe (daily)": "N/A", "Sharpe (traded days)": "N/A"}
+        subset = subset.copy()
+        subset["cumulative_ticks"] = subset["ticks"].cumsum()
+        m = compute_metrics(subset)
+        pf = m["profit_factor"]
+        return {
+            "Entry":                label,
+            "Trades":               m["total_trades"],
+            "Wins":                 int((subset["ticks"] > 0).sum()),
+            "Losses":               int((subset["ticks"] < 0).sum()),
+            "Win Rate":             f"{m['win_rate']:.1%}",
+            "BE Rate":              f"{m['breakeven_rate']:.1%}",
+            "Loss Rate":            f"{m['loss_rate']:.1%}",
+            "Total Ticks":          int(round(m["total_ticks"])),
+            "Avg Ticks":            f"{m['avg_trade']:.2f}",
+            "Avg Win":              f"{m['avg_win']:.1f}",
+            "Avg Loss":             f"{m['avg_loss']:.1f}",
+            "Profit Factor":        "∞" if pf == float("inf") else f"{pf:.2f}",
+            "Sharpe (daily)":       f"{m['sharpe_daily']:.2f}",
+            "Sharpe (traded days)": f"{m['sharpe_trade']:.2f}",
+        }
+
+    types = sorted(trades[column].dropna().unique().tolist())
+    rows = [row(str(t), trades[trades[column] == t]) for t in types]
+    if len(types) > 1:
+        rows.append(row("All entries", trades))
+    return rows
+
+
 def regime_performance_rows(trades: pd.DataFrame, column: str = "regime",
                             states: list[str] | None = None) -> list[dict] | None:
     """

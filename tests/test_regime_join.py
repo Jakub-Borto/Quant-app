@@ -243,6 +243,61 @@ def test_regime_rows_without_declared_states():
     assert [r["Regime"] for r in rows] == ["a", "b", "unknown"]
 
 
+def test_entry_breakdown_rows():
+    from modules.common.backend.trade_stats import (compute_metrics,
+                                                    entry_breakdown_rows)
+
+    n = 24
+    dates = pd.date_range("2026-01-05", periods=n, freq="D")
+    trades = pd.DataFrame({
+        "date": dates,
+        "direction": ["long", "short"] * (n // 2),
+        "trade_type": (["breakout"] * 12) + (["fade"] * 12),
+        "ticks": ([10.0, -5.0, 0.0] * 4) + ([20.0, -4.0] * 6),
+    })
+    trades["cumulative_ticks"] = trades["ticks"].cumsum()
+
+    rows = entry_breakdown_rows(trades)
+    assert [r["Entry"] for r in rows] == ["breakout", "fade", "All entries"]
+
+    # every figure must match compute_metrics on that subset, with
+    # cumulative_ticks recomputed per entry (each type is its own curve)
+    sub = trades[trades["trade_type"] == "breakout"].copy()
+    sub["cumulative_ticks"] = sub["ticks"].cumsum()
+    m = compute_metrics(sub)
+    row = rows[0]
+    assert row["Trades"] == m["total_trades"] == 12
+    assert row["Wins"] == 4 and row["Losses"] == 4
+    assert row["BE Rate"] == f"{m['breakeven_rate']:.1%}"    # the 0.0 ticks
+    assert row["Profit Factor"] == f"{m['profit_factor']:.2f}"
+    assert row["Sharpe (daily)"] == f"{m['sharpe_daily']:.2f}"
+    assert row["Sharpe (traded days)"] == f"{m['sharpe_trade']:.2f}"
+    assert row["Total Ticks"] == int(round(m["total_ticks"]))
+
+    # a single entry type needs no "All entries" comparison row
+    one = trades[trades["trade_type"] == "fade"]
+    assert [r["Entry"] for r in entry_breakdown_rows(one)] == ["fade"]
+
+    # no trade_type column at all -> the section hides
+    assert entry_breakdown_rows(trades.drop(columns=["trade_type"])) is None
+
+
+def test_entry_breakdown_handles_an_all_breakeven_entry():
+    """compute_metrics divides by len(trades); an entry whose every trade is
+    flat must not blow up or report a bogus profit factor."""
+    from modules.common.backend.trade_stats import entry_breakdown_rows
+
+    trades = pd.DataFrame({
+        "date": pd.date_range("2026-01-05", periods=4, freq="D"),
+        "direction": "long", "trade_type": ["flat"] * 4,
+        "ticks": [0.0, 0.0, 0.0, 0.0],
+    })
+    trades["cumulative_ticks"] = trades["ticks"].cumsum()
+    row = entry_breakdown_rows(trades)[0]
+    assert row["Trades"] == 4 and row["BE Rate"] == "100.0%"
+    assert row["Profit Factor"] == "0.00"
+
+
 def test_regime_rows_none_without_column():
     assert regime_performance_rows(pd.DataFrame({"ticks": [1.0]})) is None
 

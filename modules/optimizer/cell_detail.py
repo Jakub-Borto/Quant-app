@@ -23,12 +23,21 @@ from modules.common.ui.dataframe_model import make_table_view, update_table_view
 from modules.common.ui.trade_report.filters import (make_day_type_filter,
                                                     make_trade_type_filter)
 from modules.common.ui.trade_report.actions_row import TradeActionsRow
+from modules.common.ui.trade_report.entry_section import EntryBreakdownSection
 from modules.common.ui.trade_report.news_section import NewsBreakdownTable
 from modules.common.ui.trade_report.panel import TradeReportPanel
 from modules.common.ui.trade_report.regime_section import RegimeSection
 from modules.common.ui.widgets import (Banner, Caption, SectionHeader, hline,
                                        pin_minimum_height)
 from modules.optimizer.backend.heatmap_model import _fmt_axis_value
+
+
+def _entry_frame(frame, column: str, selected):
+    """One filter applied to the entry-breakdown frame — everything the report
+    shows EXCEPT the trade-type filter, so entry types stay comparable."""
+    if selected is None or column not in frame.columns:
+        return frame
+    return frame[frame[column].isin(selected)]
 
 
 class CellDetailPanel(QWidget):
@@ -79,6 +88,7 @@ class CellDetailPanel(QWidget):
         self._dt_filter = None
 
         self._news = NewsBreakdownTable()
+        self._entry = EntryBreakdownSection()
         self._regime = RegimeSection(settings, self._track_worker)
         self._regime.sourceChanged.connect(self._on_regime_source_changed)
         self._regime.selectionChanged.connect(self._apply_filters)
@@ -96,6 +106,7 @@ class CellDetailPanel(QWidget):
         for key, widget in (("trade_type_filter", self._tt_container),
                             ("day_type_filter", self._dt_container),
                             ("news", self._news),
+                            ("entry_breakdown", self._entry),
                             ("regime", self._regime),
                             ("trades_table", self._table),
                             ("actions", actions_holder)):
@@ -207,6 +218,7 @@ class CellDetailPanel(QWidget):
         if df is None or len(df) != len(self._cell_df):
             df = self._cell_df
         self._banner.clear_message()
+        all_entries = df          # every entry type; see _entry_frame
 
         self._selected_trade_types_meta = "all"
         trade_type_filtered = False
@@ -231,6 +243,7 @@ class CellDetailPanel(QWidget):
             self._set_report_visible(False)
             return
         df = df[df["day_type"].isin(selected_day_types)].copy()
+        all_entries = _entry_frame(all_entries, "day_type", selected_day_types)
         if df.empty:
             self._banner.show_message("info", "No trades match the selected filters.")
             self._set_report_visible(False)
@@ -249,6 +262,7 @@ class CellDetailPanel(QWidget):
                 self._set_report_visible(False)
                 return
             df = df[df["regime"].isin(selected_regimes)].copy()
+            all_entries = _entry_frame(all_entries, "regime", selected_regimes)
             if df.empty:
                 self._banner.show_message(
                     "info", "No trades match the selected regime states.")
@@ -261,6 +275,9 @@ class CellDetailPanel(QWidget):
                           or len(selected_day_types) < len(DAY_TYPE_ORDER))
         self._selected_day_types = selected_day_types
         self._filtered_trades = df
+
+        self._panel.set_section_visible(
+            "entry_breakdown", self._entry.set_trades(all_entries))
 
         self._set_report_visible(True)
         self._panel.set_trades(df)

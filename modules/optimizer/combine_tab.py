@@ -71,6 +71,12 @@ _INFO = {
 }
 
 
+# Dead space under the page: scrolled to the bottom, toggling a section
+# changes the scroll range and the view lurches. A tall run-out makes the
+# last sections behave like the ones above them.
+BOTTOM_PADDING = 900
+
+
 class CombineTab(QWidget):
     def __init__(self, settings, track_worker, parent=None):
         super().__init__(parent)
@@ -217,6 +223,7 @@ class CombineTab(QWidget):
         self._members_table = make_table_view(pd.DataFrame(), height=260)
         rlay.addWidget(self._members_table)
         lay.addWidget(self._results_box)
+        lay.addSpacing(BOTTOM_PADDING)
         lay.addStretch()
 
         # ── wiring ────────────────────────────────────────────────────────────

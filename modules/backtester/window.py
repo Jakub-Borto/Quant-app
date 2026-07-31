@@ -42,12 +42,28 @@ from modules.common.ui.trade_report.filters import (make_day_type_filter,
                                                     make_trade_type_filter)
 from modules.common.ui.trade_report.actions_row import TradeActionsRow
 from modules.common.ui.trade_report.layout_dialog import ReportLayoutDialog
+from modules.common.ui.trade_report.entry_section import EntryBreakdownSection
 from modules.common.ui.trade_report.news_section import NewsBreakdownTable
 from modules.common.ui.trade_report.panel import TradeReportPanel
 from modules.common.ui.trade_report.regime_section import RegimeSection
 from modules.common.ui.widgets import (Banner, Caption, SectionHeader,
                                        gear_button, wrap_card)
 from modules.common.ui.workers import FunctionWorker
+
+
+# Dead space under the report. Scrolled to the very bottom, expanding or
+# collapsing a section changes the scroll range and the view lurches; a tall
+# run-out means the last sections behave like the ones above them.
+BOTTOM_PADDING = 900
+
+
+def _entry_frame(frame, column: str, selected) -> "pd.DataFrame":
+    """Apply one filter to the entry-breakdown frame, which is everything the
+    report is showing EXCEPT the trade-type filter (entry types have to stay
+    comparable, so filtering to one of them would defeat the table)."""
+    if selected is None or column not in frame.columns:
+        return frame
+    return frame[frame[column].isin(selected)]
 
 
 class BacktesterWindow(ModuleWindowBase):
@@ -169,6 +185,7 @@ class BacktesterWindow(ModuleWindowBase):
         dt_lay.addWidget(self._dt_filter)
 
         self._news = NewsBreakdownTable()
+        self._entry = EntryBreakdownSection()
         self._regime = RegimeSection(self.settings, self.track_worker)
         self._regime.sourceChanged.connect(self._on_regime_source_changed)
         self._regime.selectionChanged.connect(self._apply_filters)
@@ -190,6 +207,7 @@ class BacktesterWindow(ModuleWindowBase):
         for key, widget in (("trade_type_filter", self._tt_container),
                             ("day_type_filter", self._dt_container),
                             ("news", self._news),
+                            ("entry_breakdown", self._entry),
                             ("regime", self._regime),
                             ("trades_table", self._table),
                             ("actions", actions_holder)):
@@ -198,6 +216,7 @@ class BacktesterWindow(ModuleWindowBase):
         lay.addWidget(self._panel)
 
         self.content.addWidget(self._results)
+        self.content.addSpacing(BOTTOM_PADDING)
         self.content.addStretch()
 
     # ══ scanning / cascading pickers ═══════════════════════════════════════════
@@ -389,6 +408,10 @@ class BacktesterWindow(ModuleWindowBase):
             trades = self._tagged
         self._filter_banner.clear_message()
 
+        # every entry type, before the trade-type filter narrows them (the
+        # day-type/regime filters ARE applied further down — see _entry_frame)
+        all_entries = trades
+
         # ── trade-type filter ─────────────────────────────────────────────────
         self._selected_trade_types_meta = "all"
         trade_type_filtered = False
@@ -417,6 +440,7 @@ class BacktesterWindow(ModuleWindowBase):
             return
         trades = trades[trades["day_type"].isin(selected_day_types)].copy()
         trades["cumulative_ticks"] = trades["ticks"].cumsum()
+        all_entries = _entry_frame(all_entries, "day_type", selected_day_types)
         if trades.empty:
             self._filter_banner.show_message("warning",
                                              "No trades match the selected filters.")
@@ -441,6 +465,7 @@ class BacktesterWindow(ModuleWindowBase):
                 return
             trades = trades[trades["regime"].isin(selected_regimes)].copy()
             trades["cumulative_ticks"] = trades["ticks"].cumsum()
+            all_entries = _entry_frame(all_entries, "regime", selected_regimes)
             if trades.empty:
                 self._filter_banner.show_message(
                     "warning", "No trades match the selected regime states.")
@@ -452,6 +477,10 @@ class BacktesterWindow(ModuleWindowBase):
                           or regime_filtered)
         self._selected_day_types = selected_day_types
         self._filtered_trades = trades
+
+        # entry breakdown: every entry type, under the day/regime slice
+        self._panel.set_section_visible(
+            "entry_breakdown", self._entry.set_trades(all_entries))
 
         self._set_report_visible(True)
         self._panel.set_trades(trades)

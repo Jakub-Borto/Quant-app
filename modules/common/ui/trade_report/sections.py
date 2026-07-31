@@ -71,6 +71,7 @@ DEFAULT_SECTIONS = (
     SectionSpec("trade_detail", "Trade Detail", MODE_VISIBLE,
                 owns_header=True),
     SectionSpec("regime", "Strategy Performance by Regime", MODE_COLLAPSED),
+    SectionSpec("entry_breakdown", "Entry Breakdown", MODE_COLLAPSED),
     SectionSpec("news", "News & Holiday Exposure", MODE_COLLAPSED),
     SectionSpec("exposure", "Market Exposure (α/β regression)", MODE_COLLAPSED),
     SectionSpec("exit_breakdown", "Exit Breakdown", MODE_COLLAPSED),

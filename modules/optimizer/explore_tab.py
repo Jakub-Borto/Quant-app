@@ -42,6 +42,12 @@ NEW_FOLDER    = "── New folder ──"
 NO_FOLDER     = "(no folder)"
 
 
+# Dead space under the page: scrolled to the bottom, toggling a section
+# changes the scroll range and the view lurches. A tall run-out makes the
+# last sections behave like the ones above them.
+BOTTOM_PADDING = 900
+
+
 class ExploreTab(QWidget):
     """Run state (trades/meta/unsaved/loaded_run/run_root) lives on the
     OptimizerWindow (`state`) — New Run hands off through it."""
@@ -211,6 +217,7 @@ class ExploreTab(QWidget):
         lay.addWidget(self.cell_detail)
         # un-clicking the selected square closes its drill-down report
         self._heatmap.cellDeselected.connect(self.cell_detail.hide_detail)
+        lay.addSpacing(BOTTOM_PADDING)
         lay.addStretch()
 
         # ── wiring ────────────────────────────────────────────────────────────
