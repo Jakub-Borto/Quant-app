@@ -652,6 +652,72 @@ def test_equity_selection_marks_deselects_and_survives_replot(qtbot, tmp_path):
     assert eq.selected() is None and highlighted() == []
 
 
+def test_tables_sort_numerically_and_do_not_stretch(qtbot):
+    """Breakdown tables hold DISPLAY strings ("62.5%", "1.41", "N/A", "∞").
+    Sorting them as text puts 100% before 62.5%, so the model parses them back
+    to numbers. And the last column must not stretch: it inflated a narrow
+    "Avg Ticks" to hundreds of pixels with its value marooned on the left.
+    """
+    import pandas as pd
+    from PySide6.QtCore import Qt
+
+    from modules.common.ui.dataframe_model import (make_table_view,
+                                                   update_table_view)
+
+    df = pd.DataFrame({
+        "Entry": ["beta", "alpha", "gamma", "delta"],
+        "Win Rate": ["62.5%", "100.0%", "9.0%", "N/A"],
+        "Profit Factor": ["1.41", "∞", "0.43", "N/A"],
+        "Total Ticks": [414, -8, 1662, 0],
+    })
+    view = make_table_view(df, height=200)
+    qtbot.addWidget(view)
+    header = view.horizontalHeader()
+
+    assert view.isSortingEnabled()
+    assert not header.stretchLastSection()
+    # nothing is sorted until the user asks: row order can carry meaning
+    assert header.sortIndicatorSection() < 0
+    model = view.model()
+
+    def column(name):
+        c = [i for i in range(model.columnCount())
+             if model.headerData(i, Qt.Horizontal) == name][0]
+        return [model.data(model.index(r, c)) for r in range(model.rowCount())]
+
+    assert column("Entry") == ["beta", "alpha", "gamma", "delta"]
+
+    def sort(name, order=Qt.AscendingOrder):
+        c = [i for i in range(model.columnCount())
+             if model.headerData(i, Qt.Horizontal) == name][0]
+        view.sortByColumn(c, order)
+        qtbot.wait(10)
+        return c
+
+    sort("Win Rate", Qt.DescendingOrder)
+    assert column("Win Rate") == ["100.0%", "62.5%", "9.0%", "N/A"], \
+        "percentages sorted as text"
+
+    sort("Profit Factor", Qt.DescendingOrder)
+    assert column("Profit Factor")[:3] == ["∞", "1.41", "0.43"]
+    assert column("Profit Factor")[-1] == "N/A"      # blanks always last
+
+    sort("Total Ticks", Qt.AscendingOrder)
+    assert [int(v) for v in column("Total Ticks")] == [-8, 0, 414, 1662]
+
+    sort("Entry", Qt.AscendingOrder)
+    assert column("Entry") == ["alpha", "beta", "delta", "gamma"]
+
+    # a data refresh keeps the user's chosen sort
+    ticks_col = sort("Total Ticks", Qt.DescendingOrder)
+    refreshed = df.copy()
+    refreshed["Total Ticks"] = [10, 900, -50, 3]
+    update_table_view(view, refreshed)
+    qtbot.wait(10)
+    assert header.sortIndicatorSection() == ticks_col
+    assert [int(v) for v in column("Total Ticks")] == [900, 10, 3, -50]
+
+
 def test_hover_tooltip_only_updates_when_the_point_changes(qtbot):
     """QToolTip.showText re-anchors the popup to the cursor every call, so
     calling it on every mouse move makes the box chase the mouse and flicker.
