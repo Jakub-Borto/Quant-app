@@ -32,6 +32,10 @@ DAY_TYPE_ORDER = [
 # in a breakdown (mirrors regime_join.UNKNOWN / schema.UNKNOWN_STATE).
 UNKNOWN_REGIME = "unknown"
 
+# The whole-strategy row in the entry breakdown: the benchmark each entry type
+# is read against, so the table pins it to the top through any sort.
+ALL_ENTRIES = "All entries"
+
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
@@ -280,7 +284,9 @@ def entry_breakdown_rows(trades: pd.DataFrame,
     types = sorted(trades[column].dropna().unique().tolist())
     rows = [row(str(t), trades[trades[column] == t]) for t in types]
     if len(types) > 1:
-        rows.append(row("All entries", trades))
+        # first, as the benchmark every other row is read against (the table
+        # keeps it pinned there through sorting too — see ALL_ENTRIES)
+        rows.insert(0, row(ALL_ENTRIES, trades))
     return rows
 
 

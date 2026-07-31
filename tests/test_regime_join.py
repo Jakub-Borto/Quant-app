@@ -258,14 +258,15 @@ def test_entry_breakdown_rows():
     trades["cumulative_ticks"] = trades["ticks"].cumsum()
 
     rows = entry_breakdown_rows(trades)
-    assert [r["Entry"] for r in rows] == ["breakout", "fade", "All entries"]
+    # the whole-strategy benchmark comes FIRST — the table pins it there
+    assert [r["Entry"] for r in rows] == ["All entries", "breakout", "fade"]
 
     # every figure must match compute_metrics on that subset, with
     # cumulative_ticks recomputed per entry (each type is its own curve)
     sub = trades[trades["trade_type"] == "breakout"].copy()
     sub["cumulative_ticks"] = sub["ticks"].cumsum()
     m = compute_metrics(sub)
-    row = rows[0]
+    row = next(r for r in rows if r["Entry"] == "breakout")
     assert row["Trades"] == m["total_trades"] == 12
     assert row["Wins"] == 4 and row["Losses"] == 4
     assert row["BE Rate"] == f"{m['breakeven_rate']:.1%}"    # the 0.0 ticks

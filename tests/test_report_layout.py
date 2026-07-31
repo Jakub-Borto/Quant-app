@@ -708,6 +708,25 @@ def test_tables_sort_numerically_and_do_not_stretch(qtbot):
     sort("Entry", Qt.AscendingOrder)
     assert column("Entry") == ["alpha", "beta", "delta", "gamma"]
 
+    # a pinned benchmark row stays on top through ANY sort
+    pinned = make_table_view(df.rename(columns={"Entry": "Entry"}),
+                             pinned_labels={"gamma"})
+    qtbot.addWidget(pinned)
+    pm = pinned.model()
+
+    def pinned_first_col():
+        return [pm.data(pm.index(r, 0)) for r in range(pm.rowCount())]
+
+    for c in range(pm.columnCount()):
+        for order in (Qt.AscendingOrder, Qt.DescendingOrder):
+            pinned.sortByColumn(c, order)
+            qtbot.wait(5)
+            assert pinned_first_col()[0] == "gamma", (c, order)
+    # the unpinned rows are still genuinely sorted beneath it
+    pinned.sortByColumn(3, Qt.AscendingOrder)          # Total Ticks
+    rest = [pm.data(pm.index(r, 3)) for r in range(1, pm.rowCount())]
+    assert [int(v) for v in rest] == sorted(int(v) for v in rest)
+
     # a data refresh keeps the user's chosen sort
     ticks_col = sort("Total Ticks", Qt.DescendingOrder)
     refreshed = df.copy()

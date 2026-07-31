@@ -13,7 +13,7 @@ Hidden when the strategy emits no trade_type column.
 import pandas as pd
 from PySide6.QtWidgets import QVBoxLayout
 
-from modules.common.backend.trade_stats import entry_breakdown_rows
+from modules.common.backend.trade_stats import ALL_ENTRIES, entry_breakdown_rows
 from ..dataframe_model import make_table_view, update_table_view
 from ..widgets import Caption
 from .sections import ReportSection
@@ -28,9 +28,12 @@ class EntryBreakdownSection(ReportSection):
         self._caption = Caption(
             "Every entry type under the current day-type and regime filters — "
             "the trade-type filter is deliberately NOT applied here, so the "
-            "types stay comparable. Both Sharpes are annualized ×√252.")
+            "types stay comparable. “All entries” is the whole-strategy "
+            "benchmark and stays pinned to the top when you sort. Both Sharpes "
+            "are annualized ×√252.")
         lay.addWidget(self._caption)
-        self._table = make_table_view(pd.DataFrame(), height=230)
+        self._table = make_table_view(pd.DataFrame(), height=230,
+                                      pinned_labels={ALL_ENTRIES})
         lay.addWidget(self._table)
 
     def set_trades(self, trades: pd.DataFrame) -> bool:

@@ -70,14 +70,24 @@ def _fmt(value) -> str:
 
 
 class DataFrameModel(QAbstractTableModel):
-    def __init__(self, df: pd.DataFrame, parent=None):
+    def __init__(self, df: pd.DataFrame, parent=None, pinned_labels=None):
         super().__init__(parent)
         self._df = df
+        # first-column values that always stay at the top, whatever the sort —
+        # e.g. the entry breakdown's "All entries" benchmark row, which is only
+        # useful if it stays put to read the other rows against
+        self._pinned = set(pinned_labels or ())
 
     def set_frame(self, df: pd.DataFrame) -> None:
         self.beginResetModel()
         self._df = df
         self.endResetModel()
+
+    def _pinned_mask(self) -> np.ndarray:
+        if not self._pinned or self._df.empty:
+            return np.zeros(len(self._df), dtype=bool)
+        first = self._df.iloc[:, 0].astype(str)
+        return first.isin(self._pinned).to_numpy()
 
     # ── QAbstractTableModel ───────────────────────────────────────────────────
     def rowCount(self, parent=QModelIndex()):
@@ -111,17 +121,22 @@ class DataFrameModel(QAbstractTableModel):
             blank = np.isnan(values[positions])
             positions = np.concatenate([positions[~blank], positions[blank]])
 
+        pinned = self._pinned_mask()[positions]
+        positions = np.concatenate([positions[pinned], positions[~pinned]])
+
         self.beginResetModel()
         self._df = self._df.iloc[positions]
         self.endResetModel()
 
 
 def make_table_view(df: pd.DataFrame, height: int | None = None,
-                    hide_index: bool = True, sortable: bool = True) -> QTableView:
+                    hide_index: bool = True, sortable: bool = True,
+                    pinned_labels=None) -> QTableView:
     """A configured read-only QTableView over `df`. Headers are clickable to
-    sort unless `sortable=False`."""
+    sort unless `sortable=False`; `pinned_labels` are first-column values that
+    stay at the top through any sort (a benchmark row)."""
     view = QTableView()
-    view.setModel(DataFrameModel(df))
+    view.setModel(DataFrameModel(df, pinned_labels=pinned_labels))
     view.setAlternatingRowColors(True)
     view.setEditTriggers(QAbstractItemView.NoEditTriggers)
     view.setSelectionBehavior(QAbstractItemView.SelectRows)
