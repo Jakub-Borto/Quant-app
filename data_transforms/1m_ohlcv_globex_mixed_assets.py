@@ -27,8 +27,14 @@ Month boundaries: the last session of each month (RTH lands in the next file) is
           splicing that trade_date's rows from the current and next files. Each file is loaded
           and prepared exactly once.
 Last file: fully processed from its own data (its final incomplete day is skipped for lack of RTH).
-Skip existing: coarse month-level skip — if the reference asset (ES) already has this month's
-          recent days *and* the month's boundary day, the whole month is skipped without decoding.
+Skip existing: coarse month-level skip on a highwater mark — `newest` is the latest
+          YYYY-MM-DD.parquet across *all* asset folders of this dataset, and a monthly file is
+          skipped without decoding when its boundary day (d_end + 1) falls strictly before it.
+          The boundary day is part of the test because that session is this file's to produce;
+          the strict `<` re-runs the month owning `newest`, whose already-written days are then
+          dropped by the per-day existence check below. Note this only appends: pasting an
+          *older* missing month leaves it behind the highwater, so it is skipped — re-run with
+          skip_existing off to backfill it.
           Individual day-files that already exist are also skipped before writing.
 Timing  : every processing block is timed (accumulated per run) and a full breakdown table
           (seconds + % of wall) is emitted to the log at the end of each run.
@@ -51,6 +57,7 @@ Performance notes (why the decode/write paths look unusual):
   transitions happen Sun 02:00 NY, when Globex is closed).
 """
 
+import os
 import re
 import datetime
 import gc
@@ -66,7 +73,6 @@ import pyarrow.parquet as pq
 
 NY        = "America/New_York"
 GRID_BARS = 1380          # 18:00 → 17:00 NY, one minute each
-REF_ASSET = "ES"          # reference asset used for the coarse skip check
 
 _NS_MIN = 60_000_000_000
 _NS_DAY = 86_400_000_000_000
@@ -642,37 +648,39 @@ def _write_prepared(prep: pd.DataFrame, base: Path, typed_name: str,
 
 
 # ---------------------------------------------------------------------------
-# Coarse skip
+# Coarse skip — highwater mark over the output filenames
 # ---------------------------------------------------------------------------
 
-def _reference_complete(base: Path, typed_name: str,
-                        d_start: pd.Timestamp, d_end: pd.Timestamp,
-                        is_last: bool) -> bool:
+def _newest_output_day(base: Path, typed_name: str) -> datetime.date | None:
     """
-    Best-effort month-level skip: True only if the reference asset (ES) shows this month
-    was already processed AND its boundary day (1st of next month) was already produced —
-    so nothing this file would emit is missing. Holidays make this a safe false-negative
-    (it simply re-processes rather than wrongly skipping).
+    Latest YYYY-MM-DD.parquet day across *every* asset folder of this dataset, or None
+    when nothing has been produced yet. Filenames only — no file is opened.
+
+    The union (rather than one reference asset) is what makes this robust: per-asset day
+    sets genuinely differ (grains have no file on days ES trades a shortened session, and
+    a handful of days exist for the energies/rates but not for ES), so any single asset is
+    a misleading yardstick — and an asset folder that does not exist at all would pin the
+    check to "never skip".
     """
-    ref_dir = base / REF_ASSET / _folder_for(typed_name, REF_ASSET)
-    if not ref_dir.exists():
-        return False
-
-    # (a) month processed — some ES day exists in the last 5 calendar days of the range
-    processed = any(
-        (ref_dir / f"{(d_end.date() - datetime.timedelta(days=k)).isoformat()}.parquet").exists()
-        for k in range(5)
-    )
-    if not processed:
-        return False
-
-    # (b) boundary day (1st of next month) produced, or N/A
-    if is_last:
-        return True
-    bday = d_end.date() + datetime.timedelta(days=1)
-    if bday.weekday() >= 5:          # Sat/Sun — no trading, nothing to produce
-        return True
-    return (ref_dir / f"{bday.isoformat()}.parquet").exists()
+    newest: datetime.date | None = None
+    for asset in ASSETS.values():
+        out_dir = base / asset / _folder_for(typed_name, asset)
+        try:
+            entries = os.scandir(out_dir)
+        except OSError:                      # folder absent for this asset — nothing to add
+            continue
+        with entries:
+            for e in entries:
+                name = e.name
+                if not name.endswith(".parquet") or not name[:1].isdigit():
+                    continue                 # sidecars / non-day files
+                try:
+                    day = datetime.date.fromisoformat(name[:-8])
+                except ValueError:
+                    continue
+                if newest is None or day > newest:
+                    newest = day
+    return newest
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +717,14 @@ def run_all(
         if on_progress:
             on_progress(min(cur + 1, n), n, msg)
 
+    # Highwater mark, snapshotted once before any write. Not refreshed as days are
+    # written: files are visited in ascending order, so every later month is at or
+    # beyond this day anyway and a fresher value could never skip more.
+    with _t("run.scan_existing"):
+        newest = _newest_output_day(base, typed_name) if skip_existing else None
+    if skip_existing:
+        log(-1, f"Newest day on disk: {newest or '(none — nothing to skip)'}")
+
     cur_prep = None      # prepared frame for files[cur_idx]
     cur_idx  = -1
 
@@ -724,11 +740,12 @@ def run_all(
             gc.collect()
             continue
 
-        # ── coarse skip ───────────────────────────────────────────────────────
-        with _t("run.coarse_skip"):
-            skip_month = skip_existing and _reference_complete(base, typed_name, d_start, d_end, is_last)
+        # ── coarse skip: whole month + its boundary day behind the highwater ──
+        with _t("run.month_skip"):
+            boundary_day = d_end.date() + datetime.timedelta(days=1)
+            skip_month   = newest is not None and boundary_day < newest
         if skip_month:
-            log(i, f"↷ {d_start.strftime('%Y-%m')} — already complete (ES), skipped")
+            log(i, f"↷ {d_start.strftime('%Y-%m')} — behind {newest}, skipped")
             if cur_idx == i:
                 cur_prep, cur_idx = None, -1
             with _t("run.gc"):
