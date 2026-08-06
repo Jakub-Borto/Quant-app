@@ -25,13 +25,38 @@ member lists == full sort of the concatenation.
 
 from heapq import merge as _heap_merge
 
+# datetime64 columns do NOT all store nanoseconds: a parquet round-trip hands
+# back [us] on pandas 3, so a raw .astype("int64") yields microseconds. That is
+# invisible to the ordering (every field scales together) but NOT to anyone
+# turning a `date` field back into a Timestamp — meta["split_boundary"] read
+# 1970-01-01 until this normalization landed.
+_UNIT_TO_NS = {"s": 1_000_000_000, "ms": 1_000_000, "us": 1_000, "ns": 1}
+
+
+def _dtype_unit(dtype) -> str:
+    """'us' out of numpy's dtype('<M8[us]') AND pandas' datetime64[us, tz]."""
+    unit = getattr(dtype, "unit", None)          # pandas DatetimeTZDtype
+    if unit:
+        return unit
+    text = str(dtype)                            # numpy: 'datetime64[us]'
+    if "[" not in text:
+        return "ns"
+    return text.split("[", 1)[1].split(",")[0].rstrip("]").strip()
+
+
+def _epoch_ns(column) -> list:
+    """A datetime64 column as int64 epoch-NANOseconds, whatever its unit."""
+    factor = _UNIT_TO_NS.get(_dtype_unit(column.dtype), 1)
+    values = column.astype("int64")
+    return (values * factor if factor != 1 else values).to_list()
+
 
 def trades_to_tuples(trades, vid: str) -> list:
     """One variant's DataFrame -> sorted trade tuples (see module doc)."""
-    entry = trades["entry_time"].astype("int64").to_list()
-    exit_ = trades["exit_time"].astype("int64").to_list()
+    entry = _epoch_ns(trades["entry_time"])
+    exit_ = _epoch_ns(trades["exit_time"])
     pnl   = trades["pnl_ticks"].astype(float).to_list()
-    date  = trades["date"].astype("int64").to_list()
+    date  = _epoch_ns(trades["date"])
     rows  = [(e, x, vid, i, p, d)
              for i, (e, x, p, d) in enumerate(zip(entry, exit_, pnl, date))]
     rows.sort()

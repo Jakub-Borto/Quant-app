@@ -124,7 +124,10 @@ modules/
                            (engine, param_space, metrics, buckets, io, loader,
                            combine/, + heatmap_model, run_setup) — pure,
                            tested; UI: sweep_panel, new_run_tab, explore_tab,
-                           cell_detail, combine_tab, window.py
+                           report_host (the shared drill-down: sections +
+                           the backtester-shaped filter chain), its two
+                           subclasses cell_detail + combine_detail,
+                           combine_tab, window.py
   scripts/                 quick-script launcher: backend/{ports,scan,browser}.py
                            (pure) + process_manager.py (QProcess per script
                            instance) + log_panel.py + window.py

@@ -9,14 +9,22 @@ selection settings (IS/OOS split, redundancy penalty λ, max set size, greedy
 seeds, one-pick-per-entry — each label carries a plain-English ⓘ tooltip),
 Run on a worker with the throttled log,
 save + the saved-combine-run viewer (path chart, rounded table, member
-inspector). Nothing is ever re-backtested.
+inspector).
+
+The viewer also drills down: pick a path point, pick a data scope (100% /
+in-sample / out-of-sample), and the chosen set's merged trades are rebuilt
+from the pooled entry runs and shown in the shared trade report inline.
+Nothing is ever re-backtested — see backend/combine/materialize.py.
 """
 
+import json
+
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
-                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QPushButton,
-                               QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox,
+                               QDoubleSpinBox, QGridLayout, QHBoxLayout,
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QPushButton, QRadioButton, QSpinBox,
+                               QVBoxLayout, QWidget)
 
 import pandas as pd
 
@@ -31,11 +39,13 @@ from modules.common.ui.widgets import (Banner, Caption, CollapsibleSection,
 from modules.common.ui.workers import FunctionWorker
 from modules.optimizer.backend.buckets import BUCKET_ORDER
 from modules.optimizer.backend.combine import io as cmb_io
+from modules.optimizer.backend.combine import materialize as cmb_mat
 from modules.optimizer.backend.combine.compat import check_compatibility
 from modules.optimizer.backend.combine.pool import (discover_entry_runs,
                                                     list_containers,
                                                     load_entry_runs)
 from modules.optimizer.backend.combine.runner import run_combine
+from modules.optimizer.combine_detail import CombineDetailPanel
 
 _SELECTION_TOOLTIP = """\
 Redundancy penalty λ (ticks per unit correlation): greedy scores each
@@ -70,6 +80,17 @@ _INFO = {
               "two settings of the same entry, even from different runs.",
 }
 
+_SCOPE_TOOLTIP = """\
+Which slice of the combined stream the report below covers.
+
+1st split = the in-sample days selection was allowed to see; 2nd split = the
+sealed out-of-sample days it never saw. Their totals match the is_ticks /
+oos_ticks columns in the table above, trade for trade.
+
+100% is those two stitched together, NOT one continuous merge: selection
+sealed the split, so each half was merged on its own. If a member held a
+position across the boundary day, that one pair can overlap at the seam."""
+
 
 # Dead space under the page: scrolled to the bottom, toggling a section
 # changes the scroll range and the view lurches. A tall run-out makes the
@@ -85,6 +106,11 @@ class CombineTab(QWidget):
         self._loaded: dict | None = None          # opt_cmb_loaded
         self._cache_key = None                    # opt_cmb_cache_key
         self._name_edited = False
+        # the viewed saved run + its rebuilt variant cells (see _ensure_cells)
+        self._result_meta: dict | None = None
+        self._cells: dict | None = None
+        self._cells_runs: dict | None = None
+        self._cells_key = None
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
@@ -187,6 +213,9 @@ class CombineTab(QWidget):
         # ── saved combine runs viewer ─────────────────────────────────────────
         self._results_box = QWidget()
         self._results_box.setVisible(False)
+        # the report nests page -> CombineTab -> _results_box -> panel -> stack;
+        # every link needs pinning or the section stack squeezes
+        pin_minimum_height(self._results_box)
         rlay = QVBoxLayout(self._results_box)
         rlay.setContentsMargins(0, 0, 0, 0)
         rlay.setSpacing(10)
@@ -222,6 +251,41 @@ class CombineTab(QWidget):
         rlay.addLayout(inspect_row)
         self._members_table = make_table_view(pd.DataFrame(), height=260)
         rlay.addWidget(self._members_table)
+
+        # the scope selector belongs to the report, not to the member table —
+        # it sits on the button's own row so what it governs is unambiguous
+        report_row = QHBoxLayout()
+        report_row.addStretch()
+        report_row.addWidget(InfoLabel("Data scope", _SCOPE_TOOLTIP))
+        self._scope_group = QButtonGroup(self)
+        self._scope_buttons: dict[str, QRadioButton] = {}
+        for scope in cmb_mat.SCOPES:
+            button = QRadioButton(cmb_mat.SCOPE_LABELS[scope])
+            button.setChecked(scope == "all")
+            button.setToolTip(_SCOPE_TOOLTIP)
+            self._scope_group.addButton(button)
+            self._scope_buttons[scope] = button
+            report_row.addWidget(button)
+        report_row.addSpacing(24)
+        self._report_btn = QPushButton("Show combined trade report")
+        self._report_btn.setCheckable(True)
+        self._report_btn.setProperty("primary", True)
+        self._report_btn.setMinimumWidth(260)
+        self._report_btn.setToolTip(
+            "Rebuilds this set's merged trades from the pooled entry runs and "
+            "shows the full trade report. Nothing is re-backtested.")
+        report_row.addWidget(self._report_btn)
+        report_row.addStretch()
+        rlay.addLayout(report_row)
+        rlay.addWidget(Caption(
+            "1st/2nd split match the is_ticks / oos_ticks columns above, trade "
+            "for trade. 100% is those two stitched together — selection sealed "
+            "the split, so each half was merged on its own and a position held "
+            "across the boundary day can overlap at the seam."))
+        self._report_banner = Banner()
+        rlay.addWidget(self._report_banner)
+        self._combine_detail = CombineDetailPanel(self.settings, track_worker)
+        rlay.addWidget(self._combine_detail)
         lay.addWidget(self._results_box)
         lay.addSpacing(BOTTOM_PADDING)
         lay.addStretch()
@@ -235,6 +299,10 @@ class CombineTab(QWidget):
         self._unique.toggled.connect(self._sync_default_name)
         self._result_select.currentIndexChanged.connect(self._show_selected_result)
         self._inspect.currentIndexChanged.connect(self._show_members)
+        self._report_btn.toggled.connect(self._on_report_toggled)
+        for scope, button in self._scope_buttons.items():
+            button.toggled.connect(
+                lambda on, s=scope: self._on_scope_changed(s) if on else None)
         self.rescan()
 
     # ══ scanning ═══════════════════════════════════════════════════════════════
@@ -252,8 +320,14 @@ class CombineTab(QWidget):
             else self.settings.data_roots[0]
         return optimizations_root(root)
 
+    def _invalidate_cells(self) -> None:
+        """Drop the rebuilt variant cells — a different root/container means a
+        different pool."""
+        self._cells = self._cells_runs = self._cells_key = None
+
     def _refresh_containers(self) -> None:
         containers = list_containers(root=self._runs_root())
+        self._invalidate_cells()
         self._info.clear_message()
         self._container.blockSignals(True)
         self._container.clear()
@@ -270,6 +344,7 @@ class CombineTab(QWidget):
 
     def _on_container_changed(self) -> None:
         container = self._container.currentText()
+        self._invalidate_cells()
         if not container:
             return
         entry_runs = discover_entry_runs(container, root=self._runs_root())
@@ -431,9 +506,16 @@ class CombineTab(QWidget):
         name = self._result_select.currentText()
         if not container or not name:
             return
+        # a different saved run is a different ticker/window/pool — close the
+        # report rather than refreshing it into an unrelated set
+        self._report_btn.setChecked(False)
+        self._combine_detail.hide_detail()
+        self._report_banner.clear_message()
+
         path_df, members_df, meta = cmb_io.load_combine_run(
             container, name, root=self._runs_root())
-        self._path_df, self._members_df = path_df, members_df
+        self._path_df, self._members_df, self._result_meta = \
+            path_df, members_df, meta
 
         self._result_caption.setText(
             f"{meta.get('ticker')} · {len(meta.get('runs', []))} entry runs · "
@@ -494,3 +576,103 @@ class CombineTab(QWidget):
                                    & (self._members_df["stage"] == row["stage"])]
         update_table_view(self._members_table,
                           members[["trade_type", "params", "run", "n_is", "n_oos"]])
+        # follow the k selector rather than closing: rebuilding is cache-hot,
+        # and stepping through path points is exactly how sets get compared
+        if self._report_btn.isChecked():
+            self._open_report()
+
+    # ══ combined trade report ═══════════════════════════════════════════════════
+    def _selected_scope(self) -> str:
+        for scope, button in self._scope_buttons.items():
+            if button.isChecked():
+                return scope
+        return "all"
+
+    def _ensure_cells(self) -> tuple:
+        """
+        (cells, runs) for the VIEWED saved run — keyed off its own meta["runs"],
+        which may differ from the currently ticked entry runs, so self._loaded
+        cannot be reused. Cached because the parquet reads and the groupby are
+        the whole cost; the merge itself is microseconds.
+        """
+        meta = self._result_meta or {}
+        container = self._container.currentText()
+        key = (str(self._runs_root()), container,
+               tuple(meta.get("runs", [])),
+               tuple(meta.get("enabled_day_buckets", [])),
+               meta.get("shared_start"), meta.get("shared_end"))
+        if self._cells_key != key or self._cells is None:
+            self._cells, self._cells_runs = cmb_mat.load_cells(
+                container, meta, root=self._runs_root())
+            self._cells_key = key
+        return self._cells, self._cells_runs
+
+    def _member_vids(self, row) -> list:
+        """The set's members. path_df carries them directly; runs saved before
+        member_vids existed fall back to members.parquet — matched on BOTH k
+        and stage, which differ at the same k."""
+        if "member_vids" in self._path_df.columns:
+            return json.loads(row["member_vids"])
+        members = self._members_df[(self._members_df["k"] == row["k"])
+                                   & (self._members_df["stage"] == row["stage"])]
+        return members["vid"].tolist()
+
+    def _on_report_toggled(self, checked: bool) -> None:
+        self._report_btn.setText("Hide combined trade report" if checked
+                                 else "Show combined trade report")
+        if checked:
+            self._open_report()
+        else:
+            self._combine_detail.hide_detail()
+            self._report_banner.clear_message()
+
+    def _on_scope_changed(self, scope: str) -> None:
+        if self._report_btn.isChecked():
+            self._combine_detail.set_scope(scope)
+
+    def _open_report(self) -> None:
+        self._report_banner.clear_message()
+        if self._inspect.currentIndex() < 0 or self._result_meta is None:
+            return
+        meta = self._result_meta
+        row = self._path_df.iloc[self._inspect.currentIndex()]
+        try:
+            cells, runs = self._ensure_cells()
+            vids = self._member_vids(row)
+            context = cmb_mat.report_context(runs, meta)
+            notes = context["notes"] + cmb_mat.verify_cells(cells,
+                                                            self._members_df)
+            boundary = cmb_mat.split_boundary_ns(cells, meta)
+
+            def resolve(scope, _cells=cells, _meta=meta, _vids=vids,
+                        _boundary=boundary):
+                return cmb_mat.combined_trades(_cells, _meta, _vids,
+                                               scope=scope, boundary=_boundary)
+
+            self._combine_detail.show_set(
+                resolve=resolve, scope=self._selected_scope(),
+                header_stem=f"Combined trade report — "
+                            f"{self._result_select.currentText()} · "
+                            f"k={int(row['k'])} ({row['stage']})",
+                save_stem=[context["ticker"],
+                           meta.get("combine_run_name")
+                           or self._result_select.currentText(),
+                           f"k{int(row['k'])}"],
+                ticker=context["ticker"], tick_size=context["tick_size"],
+                ticks_per_point=context["ticks_per_point"],
+                dataset=meta.get("dataset", ""),
+                root=self._root.currentData(),
+                regime_start=meta.get("shared_start"),
+                regime_end=meta.get("shared_end"),
+                day_bucket_defaults=set(meta.get("enabled_day_buckets", [])))
+        except (OSError, ValueError, KeyError) as exc:
+            self._invalidate_cells()
+            self._combine_detail.hide_detail()
+            self._report_btn.setChecked(False)
+            self._report_banner.show_message(
+                "error", f"Could not rebuild this set's trades: {exc}")
+            return
+        if notes:
+            self._report_banner.show_message(
+                "warning", "The pooled entry runs changed since this combine "
+                           "run was saved:\n" + "\n".join(f"- {n}" for n in notes))

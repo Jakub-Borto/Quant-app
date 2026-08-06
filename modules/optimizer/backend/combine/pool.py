@@ -103,17 +103,18 @@ def assert_shared_timezone(runs: dict) -> str:
     return next(iter(tzs), "")
 
 
-def build_pool(runs: dict, enabled_buckets: set,
-               shared_start=None, shared_end=None) -> list:
+def iter_variant_cells(runs: dict, enabled_buckets: set,
+                       shared_start=None, shared_end=None):
     """
-    Group every run's trades by (trade_type, swept-param columns) -> variants.
-    Rows outside the enabled day_buckets or the shared date window are dropped
-    HERE, before the split — freed slots re-merge later by construction.
-    Variants are returned with raw per-variant trades attached (split happens
-    in split_pool).
+    Yield (vid, run_name, trade_type, params, cell) for every variant, where
+    `cell` is that variant's FULL-COLUMN trades frame re-indexed 0..n-1 — the
+    row order `trades_to_tuples`' `seq` field indexes into.
+
+    The single home of variant identity: build_pool (the combiner) and
+    combine.materialize (the trade report) MUST group identically, or a saved
+    run's member vids stop resolving against the entry runs on disk.
     """
     assert_shared_timezone(runs)
-    variants = []
     for run_name, (meta, trades) in sorted(runs.items()):
         param_cols = [c for c in _param_columns(meta) if c in trades.columns]
 
@@ -138,16 +139,42 @@ def build_pool(runs: dict, enabled_buckets: set,
             key = key if isinstance(key, tuple) else (key,)
             named = dict(zip(group_cols, key))
             trade_type = str(named.pop("trade_type", "unknown"))
-            params = named
             vid = f"{run_name} · {trade_type}"
-            if params:
-                vid += f" · {_format_params(params)}"
-            variants.append(Variant(
-                vid=vid, run=run_name, trade_type=trade_type, params=params,
+            if named:
+                vid += f" · {_format_params(named)}"
+            yield vid, run_name, trade_type, named, cell.reset_index(drop=True)
+
+
+def build_pool(runs: dict, enabled_buckets: set,
+               shared_start=None, shared_end=None) -> list:
+    """
+    Group every run's trades by (trade_type, swept-param columns) -> variants.
+    Rows outside the enabled day_buckets or the shared date window are dropped
+    HERE, before the split — freed slots re-merge later by construction.
+    Variants are returned with raw per-variant trades attached (split happens
+    in split_pool).
+    """
+    return [
+        Variant(vid=vid, run=run_name, trade_type=trade_type, params=params,
                 is_tuples=trades_to_tuples(
-                    cell[[c for c in _POOL_COLUMNS if c in cell.columns]], vid),
-            ))
-    return variants
+                    cell[[c for c in _POOL_COLUMNS if c in cell.columns]], vid))
+        for vid, run_name, trade_type, params, cell
+        in iter_variant_cells(runs, enabled_buckets, shared_start, shared_end)
+    ]
+
+
+def boundary_from_dates(date_values, is_fraction: float):
+    """
+    The cut itself, over any iterable of epoch-ns trade dates — shared so the
+    combiner and combine.materialize can never disagree about where a saved
+    run's in-sample slice ends.
+    """
+    dates = sorted(set(date_values))
+    if len(dates) < 2:
+        return None
+    cut = int(len(dates) * is_fraction)
+    cut = min(max(cut, 1), len(dates) - 1)
+    return dates[cut - 1]           # last IS date (as int64 ns)
 
 
 def split_date_boundary(variants: list, is_fraction: float):
@@ -156,12 +183,8 @@ def split_date_boundary(variants: list, is_fraction: float):
     unique trade dates so no day straddles the boundary. None if the pool
     is empty. The cut is clamped so both slices hold at least one date.
     """
-    dates = sorted({t[5] for v in variants for t in v.is_tuples})
-    if len(dates) < 2:
-        return None
-    cut = int(len(dates) * is_fraction)
-    cut = min(max(cut, 1), len(dates) - 1)
-    return dates[cut - 1]           # last IS date (as int64 ns)
+    return boundary_from_dates(
+        (t[5] for v in variants for t in v.is_tuples), is_fraction)
 
 
 def split_pool(variants: list, boundary_ns: int) -> None:
