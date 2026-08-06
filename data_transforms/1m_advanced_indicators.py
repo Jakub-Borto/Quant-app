@@ -1,16 +1,22 @@
 """
 transforms/indicators_1m.py
 
-Reads enriched 1-minute candle Parquet files (one per day).
-Writes one indicators Parquet per day with 29 columns.
+Reads 1-minute candle Parquet files (one per day).
+Writes one indicators Parquet per day with up to 29 columns.
 
 Output columns:
-    vwap_bar_globex,  _std1/2/3_up/dn          (7)
-    vwap_bar_rth,     _std1/2/3_up/dn          (7)
-    vwap_tick_globex, _std1/2/3_up/dn          (7)
-    vwap_tick_rth,    _std1/2/3_up/dn          (7)
-    cumulative_delta                            (1)
+    vwap_bar_globex,  _std1/2/3_up/dn          (7)   always
+    vwap_bar_rth,     _std1/2/3_up/dn          (7)   always
+    vwap_tick_globex, _std1/2/3_up/dn          (7)   needs tick_volume
+    vwap_tick_rth,    _std1/2/3_up/dn          (7)   needs tick_volume
+    cumulative_delta                            (1)   needs buy_volume + sell_volume
                                           total: 29
+
+Blocks whose input columns are absent are OMITTED from the output, not
+emitted as NaN — the enriched columns (tick_volume, buy/sell volume) exist
+only for ES/NQ, and a plain-OHLCV asset still gets both bar VWAPs. Consumers
+that need an optional column must check for it (the ivb_model core already
+does for cumulative_delta). VWAP values are raw — no tick-grid rounding.
 """
 
 import json
@@ -27,90 +33,6 @@ PARAMS = {
     "rth_start": "09:30",
     "rth_end":   "16:00",
 }
-
-ASSET_INFO = {
-    # Equity Index
-    "ES":  {"tick_size": 0.25},
-    "NQ":  {"tick_size": 0.25},
-    "RTY": {"tick_size": 0.10},
-    "YM":  {"tick_size": 1.00},
-    "MES": {"tick_size": 0.25},
-    "MNQ": {"tick_size": 0.25},
-    "M2K": {"tick_size": 0.10},
-    "MYM": {"tick_size": 1.00},
-    # Rates
-    "ZN":  {"tick_size": 0.015625},
-    "ZB":  {"tick_size": 0.03125},
-    "ZF":  {"tick_size": 0.0078125},
-    "ZT":  {"tick_size": 0.00390625},
-    "SR3": {"tick_size": 0.0025},
-    # Energy
-    "CL":  {"tick_size": 0.01},
-    "QM":  {"tick_size": 0.025},
-    "NG":  {"tick_size": 0.001},
-    "RB":  {"tick_size": 0.0001},
-    "HO":  {"tick_size": 0.0001},
-    # Metals
-    "GC":  {"tick_size": 0.10},
-    "MGC": {"tick_size": 0.10},
-    "SI":  {"tick_size": 0.005},
-    "HG":  {"tick_size": 0.0005},
-    # Grains
-    "ZC":  {"tick_size": 0.25},
-    "ZS":  {"tick_size": 0.25},
-    "ZW":  {"tick_size": 0.25},
-    # FX
-    "6E":  {"tick_size": 0.00005},
-    "6J":  {"tick_size": 0.0000005},
-    "6B":  {"tick_size": 0.0001},
-    "6C":  {"tick_size": 0.00005},
-    # Crypto
-    "BTC": {"tick_size": 5.00},
-}
-
-
-def _asset_from_path(path) -> str | None:
-    """
-    Derive the asset symbol from a data path such as
-    `data/parquet/ASSET_SYMBOL/input_dataset` by matching any path
-    component (case-insensitive) against ASSET_INFO keys.
-    Returns the ticker, or None if no component matches.
-    """
-    for part in Path(path).parts:
-        key = part.upper()
-        if key in ASSET_INFO:
-            return key
-    return None
-
-
-def _round_vwap_to_tick(indicators: pd.DataFrame, tick_size: float) -> pd.DataFrame:
-    """
-    Snap the VWAP columns to the instrument's tick grid, in place.
-
-      - the VWAP line itself -> nearest tick (normal rounding)
-      - upper std bands (*_up) -> round DOWN to nearest tick
-      - lower std bands (*_dn) -> round UP to nearest tick
-
-    Rounding the bands inward keeps them on tradable price levels while
-    never overstating the band width. Non-VWAP columns are left untouched.
-    NaNs pass through unchanged.
-    """
-    for col in indicators.columns:
-        if not col.startswith("vwap_"):
-            continue
-
-        vals = indicators[col].to_numpy(dtype=float) / tick_size
-        if col.endswith("_up"):
-            snapped = np.floor(vals)
-        elif col.endswith("_dn"):
-            snapped = np.ceil(vals)
-        else:
-            snapped = np.round(vals)
-
-        # Multiply back and clean binary float noise (e.g. 32.30000000004).
-        indicators[col] = np.round(snapped * tick_size, 10)
-
-    return indicators
 
 # ---------------------------------------------------------------------------
 # BAR VWAP
@@ -363,92 +285,6 @@ def _compute_cumulative_delta(candles: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# ABSORPTION
-# ---------------------------------------------------------------------------
-
-def _compute_absorption(candles: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compute rolling OFI-beta residual absorption score.
-
-    Columns output:
-        beta              — rolling impact coefficient (returns per unit delta)
-        residual          — actual return minus expected return (ticks)
-        absorption_score  — normalized sign-adjusted residual
-                            positive = absorption detected (either side)
-                            NaN outside valid signal window (10:35 - 15:50)
-
-    Only computed on RTH bars (09:30-16:00).
-    Signal valid only after 60-bar warmup (from 10:35).
-    ETH bars are always NaN.
-    """
-
-    WINDOW          = 60
-    TICK_SIZE       = 0.25
-    SIGNAL_START    = time(10, 35)
-    SIGNAL_END      = time(15, 49)
-
-    out = pd.DataFrame(index=candles.index)
-
-    # --- isolate RTH bars only ----------------------------------------------
-    rth_mask = (
-        (candles.index.time >= time(9, 30)) &
-        (candles.index.time <  time(16, 0))
-    )
-    rth = candles[rth_mask].copy()
-
-    if len(rth) < WINDOW:
-        out["beta"]             = np.nan
-        out["residual"]         = np.nan
-        out["absorption_score"] = np.nan
-        return out
-
-    # --- returns in ticks (close to close) ----------------------------------
-    returns = rth["close"].diff() / TICK_SIZE
-
-    # --- delta --------------------------------------------------------------
-    delta = rth["volume_delta"].astype(float)
-
-    # --- rolling beta = cov(returns, delta) / var(delta) -------------------
-    # min_periods=WINDOW ensures we get NaN during warmup, not noisy estimates
-    roll_cov = returns.rolling(WINDOW, min_periods=WINDOW).cov(delta)
-    roll_var = delta.rolling(WINDOW,   min_periods=WINDOW).var()
-
-    with np.errstate(divide='ignore', invalid='ignore'):
-        beta = np.where(roll_var > 0, roll_cov / roll_var, np.nan)
-    beta = pd.Series(beta, index=rth.index)
-
-    # --- expected move and residual -----------------------------------------
-    expected  = beta * delta
-    residual  = returns - expected
-
-    # --- normalize residual -------------------------------------------------
-    sigma_u = residual.rolling(WINDOW, min_periods=WINDOW).std()
-
-    with np.errstate(divide='ignore', invalid='ignore'):
-        score_raw = np.where(
-            sigma_u > 0,
-            -np.sign(delta) * residual / sigma_u,
-            np.nan
-        )
-    score = pd.Series(score_raw, index=rth.index)
-
-    # --- enforce valid signal window ----------------------------------------
-    valid_mask = (
-        (rth.index.time >= SIGNAL_START) &
-        (rth.index.time <= SIGNAL_END)
-    )
-    score    = score.where(valid_mask,    other=np.nan)
-    beta     = beta.where(valid_mask,     other=np.nan)
-    residual = residual.where(valid_mask, other=np.nan)
-
-    # --- align back to full session index (ETH bars get NaN) ----------------
-    out["beta"]             = beta
-    out["residual"]         = residual
-    out["absorption_score"] = score
-
-    return out
-
-# ---------------------------------------------------------------------------
 # SINGLE-FILE PROCESSOR
 # ---------------------------------------------------------------------------
 
@@ -457,13 +293,17 @@ def _process_file(
     output_path: Path,
     skip_existing: bool = True,
     on_log: callable = None,
-    tick_size: float = None,
     rth_start: time = time(9, 30),
     rth_end:   time = time(16, 0),
 ) -> None:
     """
-    Read one candle Parquet, compute all 29 indicator columns,
-    write indicators-only Parquet to output_path.
+    Read one candle Parquet, compute every indicator block whose input
+    columns are present, write indicators-only Parquet to output_path.
+
+    The bar VWAPs need only OHLCV and are always computed; the tick-VWAP and
+    CVD blocks are skipped (columns omitted, not NaN) when their enriched
+    input columns are absent, so a plain-OHLCV asset still gets a file
+    instead of a per-day error.
 
     on_log(msg) — same pattern as build_candles in candles_1m.py.
     """
@@ -489,21 +329,25 @@ def _process_file(
     if candles.empty:
         raise ValueError("Empty candle file")
 
-    bar_vwap  = _compute_bar_vwap(candles, rth_start, rth_end)   # 14 columns
-    tick_vwap = _compute_tick_vwap(candles, rth_start, rth_end)  # 14 columns
-    cvd       = _compute_cumulative_delta(candles) #  1 column
-    absorption = _compute_absorption(candles)       # 3 columns
+    parts = [_compute_bar_vwap(candles, rth_start, rth_end)]     # 14 columns
+    skipped = []
 
-    indicators = pd.concat([bar_vwap, tick_vwap, cvd, absorption], axis=1)
-
-    if tick_size is not None:
-        indicators = _round_vwap_to_tick(indicators, tick_size)
+    if "tick_volume" in candles.columns:
+        parts.append(_compute_tick_vwap(candles, rth_start, rth_end))  # 14
     else:
-        log(f"⚠ {date_label} — unknown asset, VWAP left unrounded")
+        skipped.append("no tick_volume — tick VWAP skipped")
+
+    if {"buy_volume", "sell_volume"} <= set(candles.columns):
+        parts.append(_compute_cumulative_delta(candles))         # 1 column
+    else:
+        skipped.append("no buy/sell volume — cumulative delta skipped")
+
+    indicators = pd.concat(parts, axis=1)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     indicators.to_parquet(output_path)
-    log(f"✓ Saved {date_label}")
+    note = f"  ({'; '.join(skipped)})" if skipped else ""
+    log(f"✓ Saved {date_label}{note}")
 
 
 # ---------------------------------------------------------------------------
@@ -533,11 +377,6 @@ def run_all(
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Asset (hence tick size) is derived from the input path, e.g.
-    # data/parquet/ASSET_SYMBOL/input_dataset
-    asset     = _asset_from_path(input_path)
-    tick_size = ASSET_INFO[asset]["tick_size"] if asset else None
-
     files = sorted(input_path.glob("*.parquet"))
     total = len(files)
 
@@ -560,7 +399,6 @@ def run_all(
                 output_path   = out_file,
                 skip_existing = skip_existing,
                 on_log        = on_log,
-                tick_size     = tick_size,
                 rth_start     = rth_start,
                 rth_end       = rth_end,
             )
