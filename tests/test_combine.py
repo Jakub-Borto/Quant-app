@@ -13,12 +13,17 @@ from modules.optimizer.backend.combine.compat import check_compatibility
 from modules.optimizer.backend.combine.evaluate import evaluate_set
 from modules.optimizer.backend.combine.io import (list_combine_runs, load_combine_run,
                                      save_combine_run)
+from modules.optimizer.backend.combine.materialize import (VID_COLUMN, build_cells,
+                                                           combined_trades,
+                                                           load_cells,
+                                                           report_context,
+                                                           verify_cells)
 from modules.optimizer.backend.combine.merge import (merge_streams, merged_total,
                                         no_overlap_walk, trades_to_tuples)
 from modules.optimizer.backend.combine.pool import (apply_min_trades, build_pool,
-                                       discover_entry_runs, list_containers,
-                                       load_entry_runs, split_date_boundary,
-                                       split_pool)
+                                       discover_entry_runs, iter_variant_cells,
+                                       list_containers, load_entry_runs,
+                                       split_date_boundary, split_pool)
 from modules.optimizer.backend.combine.runner import run_combine
 from modules.optimizer.backend.combine.select import (_swap_improve,
                                                       correlation_matrix,
@@ -389,6 +394,20 @@ def test_runner_end_to_end_and_roundtrip(container):
     assert discover_entry_runs("cont", container) == ["run_a", "run_b"]
 
 
+def test_split_boundary_survives_the_parquet_epoch_unit(container):
+    """
+    A parquet round-trip hands datetime64 back as [us], so the raw asi8 is
+    microseconds — the saved boundary read 1970-01-21 until trades_to_tuples
+    normalized to ns.
+    """
+    result = run_combine("cont", ["run_a", "run_b"],
+                         enabled_buckets={"normal", "cpi"}, floors={},
+                         is_fraction=0.7, root=container)
+    assert result["meta"]["split_boundary"].startswith("2026-01-")
+    assert pd.Timestamp(result["boundary"]) == \
+        pd.Timestamp(result["meta"]["split_boundary"])
+
+
 def test_runner_empty_pool_message(container):
     with pytest.raises(ValueError, match="min-trades"):
         run_combine("cont", ["run_a"], enabled_buckets={"normal"},
@@ -401,3 +420,113 @@ def test_single_variant_pool(container):
     pool = [v for v in pool if v.n_is > 0]
     result = greedy_select(pool, max_k=10)
     assert len(result["path"]) == 1
+
+
+# ── materialize: rebuilding a chosen set's trades ─────────────────────────────
+
+def _saved_combine(container, name="mat", buckets=None):
+    """Run + persist a combine, then load it back the way the UI does."""
+    result = run_combine(
+        "cont", ["run_a", "run_b"],
+        enabled_buckets=buckets or {"normal", "cpi"}, floors={},
+        is_fraction=0.7, lam=0.0, max_k=10, root=container,
+    )
+    run_dir = save_combine_run("cont", name, result["path_df"],
+                               result["members_df"], result["meta"],
+                               root=container)
+    return load_combine_run("cont", run_dir.name, root=container)
+
+
+def test_iter_variant_cells_matches_build_pool(container):
+    """The one grouping both the combiner and the report must agree on."""
+    loaded = load_entry_runs("cont", ["run_a", "run_b"], root=container)
+    pool = build_pool(loaded, {"normal", "cpi"})
+    cells = dict((vid, cell) for vid, _r, _t, _p, cell
+                 in iter_variant_cells(loaded, {"normal", "cpi"}))
+    assert set(cells) == {v.vid for v in pool}
+    for v in pool:
+        assert len(cells[v.vid]) == len(v.is_tuples)
+        assert list(cells[v.vid].index) == list(range(len(cells[v.vid])))
+
+
+def test_materialized_trades_reproduce_the_path_table(container):
+    path_df, members_df, meta = _saved_combine(container)
+    cells, runs = load_cells("cont", meta, root=container)
+    assert verify_cells(cells, members_df) == []
+
+    for _, row in path_df.iterrows():
+        vids = json.loads(row["member_vids"])
+        is_df  = combined_trades(cells, meta, vids, scope="is")
+        oos_df = combined_trades(cells, meta, vids, scope="oos")
+        all_df = combined_trades(cells, meta, vids, scope="all")
+
+        assert is_df["pnl_ticks"].sum()  == pytest.approx(row["is_ticks"])
+        assert oos_df["pnl_ticks"].sum() == pytest.approx(row["oos_ticks"])
+        assert len(is_df)  == row["n_trades_is"]
+        assert len(oos_df) == row["n_trades_oos"]
+        assert len(all_df) == len(is_df) + len(oos_df)
+        assert all_df["pnl_ticks"].sum() == pytest.approx(
+            row["is_ticks"] + row["oos_ticks"])
+        assert all_df["entry_time"].is_monotonic_increasing
+        assert set(all_df[VID_COLUMN]) <= set(vids)
+
+
+def test_scope_slices_are_disjoint_and_exhaustive(container):
+    path_df, _members, meta = _saved_combine(container, name="scopes")
+    vids = json.loads(path_df.iloc[-1]["member_vids"])
+    boundary = pd.Timestamp(meta["split_boundary"])
+    is_df  = combined_trades(cells := build_cells(
+        load_entry_runs("cont", meta["runs"], root=container), meta),
+        meta, vids, scope="is")
+    oos_df = combined_trades(cells, meta, vids, scope="oos")
+    assert (pd.to_datetime(is_df["date"]) <= boundary).all()
+    assert (pd.to_datetime(oos_df["date"]) > boundary).all()
+
+
+def test_materialized_trades_keep_full_columns(container):
+    path_df, _members, meta = _saved_combine(container, name="cols")
+    cells, _runs = load_cells("cont", meta, root=container)
+    df = combined_trades(cells, meta, json.loads(path_df.iloc[-1]["member_vids"]))
+    # every column the entry run wrote, plus the provenance column
+    assert {"date", "entry_time", "exit_time", "pnl_ticks", "pnl_points",
+            "trade_type", "day_bucket", VID_COLUMN} <= set(df.columns)
+
+
+def test_materialize_honours_saved_day_buckets(container):
+    path_df, _members, meta = _saved_combine(container, name="normal_only",
+                                             buckets={"normal"})
+    cells, _runs = load_cells("cont", meta, root=container)
+    df = combined_trades(cells, meta, json.loads(path_df.iloc[-1]["member_vids"]))
+    assert set(df["day_bucket"]) == {"normal"}
+
+
+def test_materialize_rejects_unknown_vid(container):
+    _path, _members, meta = _saved_combine(container, name="unknown")
+    cells, _runs = load_cells("cont", meta, root=container)
+    with pytest.raises(ValueError, match="no longer resolve"):
+        combined_trades(cells, meta, ["run_a · alpha · p=99"])
+
+
+def test_verify_cells_flags_changed_entry_runs(container):
+    _path, members_df, meta = _saved_combine(container, name="drifted")
+    # re-optimizing a pooled run in place: one trade fewer than when saved
+    trades = pd.read_parquet(container / "cont" / "run_a" / "trades.parquet")
+    trades.iloc[1:].to_parquet(container / "cont" / "run_a" / "trades.parquet")
+    cells, _runs = load_cells("cont", meta, root=container)
+    notes = verify_cells(cells, members_df)
+    assert notes and any("trades on disk" in n for n in notes)
+
+
+def test_report_context_pulls_tick_size_from_entry_runs(container):
+    for name in ("run_a", "run_b"):
+        path = container / "cont" / name / "meta.json"
+        meta = json.loads(path.read_text())
+        meta["tick_size"] = 0.25
+        meta["strategy"] = "ivb_model"
+        path.write_text(json.dumps(meta))
+    _path, _members, combine_meta = _saved_combine(container, name="ctx")
+    runs = load_entry_runs("cont", combine_meta["runs"], root=container)
+    ctx = report_context(runs, combine_meta)
+    assert ctx["ticker"] == "ES" and ctx["tick_size"] == 0.25
+    assert ctx["ticks_per_point"] == 4 and ctx["strategy"] == "ivb_model"
+    assert ctx["notes"] == []

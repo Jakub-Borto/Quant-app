@@ -120,6 +120,65 @@ def test_optimizer_cell_detail_constructs(qtbot, settings):
 
 
 @needs_data
+def test_optimizer_combine_detail_constructs(qtbot, settings):
+    """Same drill-down host as the cell detail, fed a combined set instead."""
+    from modules.common.ui.trade_report.sections import DEFAULT_ORDER
+    from modules.optimizer.combine_detail import CombineDetailPanel
+    panel = CombineDetailPanel(settings, track_worker=lambda w: None)
+    qtbot.addWidget(panel)
+    assert sorted(panel._panel.sections.keys()) == sorted(DEFAULT_ORDER)
+    panel.set_scope("is")           # no set loaded yet -> no-op, never raises
+
+
+def test_combine_report_scope_switch_keeps_reappearing_trade_types(qtbot, tmp_path):
+    """
+    A member with no trades in one scope must not come back silently filtered
+    out: the scope switch carries over what the USER decided, and a type the
+    previous slice never offered arrives checked.
+    """
+    import pandas as pd
+
+    from modules.common.backend.settings import Settings
+    from modules.optimizer.combine_detail import CombineDetailPanel
+
+    def frame(trade_types):
+        rows = []
+        for n, ttype in enumerate(trade_types):
+            day = f"2026-01-{5 + n:02d}"
+            rows.append({
+                "date": pd.Timestamp(day),
+                "entry_time": pd.Timestamp(f"{day} 09:00", tz="America/New_York"),
+                "exit_time": pd.Timestamp(f"{day} 10:00", tz="America/New_York"),
+                "pnl_ticks": 10.0, "direction": "long",
+                "entry_price": 5000.0, "exit_price": 5002.5,
+                "exit_reason": "target", "trade_type": ttype,
+                "day_bucket": "normal",
+            })
+        return pd.DataFrame(rows)
+
+    slices = {"all": frame(["alpha", "beta"]), "is": frame(["alpha", "beta"]),
+              "oos": frame(["alpha"])}          # beta has no out-of-sample trades
+    panel = CombineDetailPanel(Settings({}, [str(tmp_path)]), lambda w: None)
+    qtbot.addWidget(panel)
+    panel.show_set(resolve=lambda s: slices[s], scope="all",
+                   header_stem="combined", save_stem=["ES", "run", "k2"],
+                   ticker="ES", tick_size=0.25, ticks_per_point=4.0,
+                   dataset="", root=tmp_path, regime_start="2026-01-05",
+                   regime_end="2026-01-06", day_bucket_defaults={"normal"})
+    assert set(panel._tt_filter.selected()) == {"alpha", "beta"}
+
+    panel.set_scope("oos")
+    assert set(panel._tt_filter.selected()) == {"alpha"}
+    panel.set_scope("all")
+    assert set(panel._tt_filter.selected()) == {"alpha", "beta"}
+
+    # a deliberate uncheck DOES survive the switch
+    panel._tt_filter._boxes["beta"].setChecked(False)
+    panel.set_scope("is")
+    assert set(panel._tt_filter.selected()) == {"alpha"}
+
+
+@needs_data
 def test_analytics_window(qtbot, settings):
     from modules.analytics.window import AnalyticsWindow
     win = AnalyticsWindow(settings)
