@@ -1,16 +1,15 @@
 """
 Download DBN v3 ES options DEFINITION files, one .dbn.zst per day.
 
-Range   : 2025-06-28 -> 2026-07-19 (inclusive)
 Output  : D:/market_data/raw_dbn/Options_on_futures/ES/ES_2025_06_28-2026-07-19_DEF_V3
 Naming  : glbx-mdp3-YYYYMMDD.definition.dbn.zst
 
 Notes
 -----
 * Uses the hist-preview gateway (required for DBN v3 definitions with leg data).
-* timeseries.get_range tolerates roots that don't resolve on a given day, so all
-  27 parent roots are always requested; days where a root isn't listed simply
-  return nothing for it.
+* All 27 parent roots are requested per day. On a resolve-422 (some weekly roots
+  are dormant on that date), the offending roots are stripped from the message
+  and the request is retried once with the survivors.
 * Files are written to a .part file first and renamed only after the record
   count is confirmed > 0, so weekend/holiday files never land on disk and a
   killed run can be safely resumed.
@@ -23,13 +22,19 @@ from pathlib import Path
 import databento as db
 
 # --------------------------------------------------------------------------
-API_KEY = "db-hkBqGX7sEWEgptWEhjV8ma7CHRHFt"
+API_KEY = ""
 
 OUT_DIR = Path(
-    r"D:/market_data/raw_dbn/Options_on_futures/ES/ES_2025_06_28-2026-07-19_DEF_V3"
+    r"D:/market_data/raw_dbn/Options_on_futures/ES/ES_2025_06_28-2026-07-28_DEF_V3"
 )
-START = date(2026, 6, 16)
-END   = date(2026, 6, 19)          # inclusive
+
+# START is INCLUSIVE  -> this day IS downloaded.
+# END   is INCLUSIVE  -> this day IS downloaded.
+# (Each per-day request internally uses an exclusive [day, day+1) window, which
+#  is what Databento's get_range expects -- but the loop bounds you set here are
+#  BOTH inclusive.)
+START = date(2026, 7, 19)          # inclusive
+END   = date(2026, 7, 30)          # inclusive
 
 GATEWAY = "hist-preview.databento.com"
 
@@ -45,11 +50,60 @@ SYMBOLS = [f"{r}.OPT" for r in ES_OPTION_ROOTS]
 # --------------------------------------------------------------------------
 
 
+def _request(client, symbols, day, tmp):
+    """One get_range call for a single day into tmp."""
+    client.timeseries.get_range(
+        dataset="GLBX.MDP3",
+        symbols=symbols,
+        stype_in="parent",
+        schema="definition",
+        start=day.isoformat(),
+        end=(day + timedelta(days=1)).isoformat(),   # exclusive window (per request)
+        path=str(tmp),
+    )
+
+
+def fetch_with_fallback(client, symbols, day, tmp):
+    """
+    Try all symbols. If the API returns a resolve-422 because some roots are
+    dormant that day, drop exactly those roots and retry once with the rest.
+    Returns the list of symbols actually requested (for logging).
+    """
+    try:
+        _request(client, symbols, day, tmp)
+        return symbols
+    except Exception as e:                                       # noqa: BLE001
+        msg = str(e)
+        if "symbology_invalid_request" in msg and "Could not resolve" in msg:
+            # message looks like:
+            #   "...Could not resolve smart symbols: E1A.OPT,E1B.OPT,..."
+            try:
+                tail = msg.split("smart symbols:")[1]
+                bad = {
+                    tok.strip()
+                    for tok in tail.replace("\n", ",").split(",")
+                    if tok.strip().endswith(".OPT")
+                }
+            except IndexError:
+                raise
+            survivors = [s for s in symbols if s not in bad]
+            print(f"    (dropping {len(bad)} dormant root(s), retrying with "
+                  f"{len(survivors)})")
+            if not survivors:
+                raise
+            if tmp.exists():
+                tmp.unlink()
+            _request(client, survivors, day, tmp)
+            return survivors
+        raise
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     total_days = (END - START).days + 1
-    print(f"Range      : {START} -> {END}  ({total_days} calendar days)")
+    print(f"Range      : {START} -> {END}  ({total_days} calendar days, "
+          f"both inclusive)")
     print(f"Symbols    : {len(SYMBOLS)} parent roots")
     print(f"Gateway    : {GATEWAY}")
     print(f"Output dir : {OUT_DIR}")
@@ -60,7 +114,7 @@ def main() -> None:
     t_start = time.time()
     n_done = n_ok = n_skip = n_empty = n_fail = 0
     bytes_tot = 0
-    failures: list[tuple[str, str]] = []
+    failures: list = []
 
     day = START
     while day <= END:
@@ -92,15 +146,7 @@ def main() -> None:
 
         try:
             t0 = time.time()
-            client.timeseries.get_range(
-                dataset="GLBX.MDP3",
-                symbols=SYMBOLS,
-                stype_in="parent",
-                schema="definition",
-                start=day.isoformat(),
-                end=(day + timedelta(days=1)).isoformat(),   # exclusive
-                path=str(tmp),
-            )
+            used = fetch_with_fallback(client, SYMBOLS, day, tmp)
             took = time.time() - t0
 
             # count records: a weekend/holiday file has only a metadata header
@@ -111,8 +157,9 @@ def main() -> None:
                 tmp.rename(out)
                 n_ok += 1
                 bytes_tot += size
+                note = "" if len(used) == len(SYMBOLS) else f" [{len(used)}/27 roots]"
                 print(f"{prefix}  OK     {n_rec:>6} recs  {size/1e6:6.2f} MB  "
-                      f"{took:4.1f}s | tot {bytes_tot/1e6:7.1f} MB | ETA {eta_s}")
+                      f"{took:4.1f}s | tot {bytes_tot/1e6:7.1f} MB{note} | ETA {eta_s}")
             else:
                 tmp.unlink()
                 n_empty += 1
@@ -123,8 +170,14 @@ def main() -> None:
             if tmp.exists():
                 tmp.unlink()
             n_fail += 1
-            failures.append((ymd, str(e)))
-            print(f"{prefix}  FAIL   {type(e).__name__}: {str(e)[:70]}")
+            raw = str(e)
+            failures.append((ymd, raw))
+            # print the FULL raw error, not a truncated version
+            print(f"{prefix}  FAIL   {type(e).__name__}")
+            print("        raw error ---------------------------------------------")
+            for line in (raw.splitlines() or [raw]):
+                print(f"        | {line}")
+            print("        -------------------------------------------------------")
 
         day += timedelta(days=1)
         time.sleep(0.2)
@@ -139,9 +192,11 @@ def main() -> None:
     print(f"  total size : {bytes_tot/1e6:.1f} MB")
 
     if failures:
-        print("\nFailed days (just re-run this script to retry them):")
+        print("\nFailed days (full raw errors):")
         for ymd, err in failures:
-            print(f"  {ymd}: {err[:110]}")
+            print(f"\n  === {ymd} ===")
+            for line in (err.splitlines() or [err]):
+                print(f"  {line}")
 
 
 if __name__ == "__main__":
