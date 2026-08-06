@@ -14,8 +14,8 @@ PARAM_SECTIONS = {
     "CVD Divergence (Absorption)": ["cvd_pivot_k", "cvd_min_separation", "cvd_max_separation", "cvd_wick_tolerance_ticks", "cvd_min_score"],
     "CVD Divergence (Exhaustion)": ["cvd_exh_pivot_k", "cvd_exh_min_separation", "cvd_exh_max_separation", "cvd_exh_wick_tolerance_ticks", "cvd_exh_min_score"],
     "Basic Risk Management":    ["rr", "sl_type"],
-    "VWAP Risk":                ["sl_placement", "vwap_std", "vwap_session", "vwap_tp_mode"],
-    "VWAP Trailing Risk":       ["trailing_entries", "trailing_in_profit", "late_trailing"]
+    "VWAP Risk":                ["sl_placement", "vwap_std", "vwap_session", "vwap_tp_mode", "is_over_rr", "minimal_rr", "force_trade"],
+    "VWAP Trailing Risk":       ["trailing_entries", "trailing_in_profit", "late_trailing", "trailing_is_over_rr", "trailing_minimal_rr", "trailing_force_trade"]
 }
 
 
@@ -78,11 +78,19 @@ PARAMS = {
     "vwap_std":                     2,      # which sigma band for TP (2 or 3)
     "vwap_session":                 "globex",  # vwap band session: "globex" or "rth"
     "vwap_tp_mode":                 "now",  # "now" (band frozen at entry) or "trailing" (live)
+    "is_over_rr":                   False,  # True = push the target to a higher band when it can't clear minimal_rr
+    "minimal_rr":                   2.0,    # required reward:risk when is_over_rr is on
+    "force_trade":                  True,   # no usable vwap band => True: fixed-RR target (minimal_rr if is_over_rr, else 1:1); False: no trade
     # --- vwap trailing risk script (vwap_tp_risk + signal-driven trailing stop) ---
     # which signals may trail the stop (one bit per finder, same order as valid_entries)
     "trailing_entries":             "1111100",
     "trailing_in_profit":           True,   # True = only breakeven-or-better levels trail (in-loss signals not even logged); False = trail everything
     "late_trailing":                False,  # True = trail to the PREVIOUS logged signal's level (lag one signal); False = trail immediately
+    # min-RR band push + forced-trade switch, independent of the vwap_tp_risk trio above
+    # (each script reads only its own three keys)
+    "trailing_is_over_rr":          False,  # True = push the target to a higher band when it can't clear trailing_minimal_rr
+    "trailing_minimal_rr":          2.0,    # required reward:risk when trailing_is_over_rr is on
+    "trailing_force_trade":         True,   # no usable vwap band => True: fixed-RR target (trailing_minimal_rr if trailing_is_over_rr, else 1:1); False: no trade
 }
 
 # UI/optimizer choice lists (see modules/common/ui/params_form.py for the

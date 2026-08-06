@@ -157,6 +157,37 @@ an unknown / legacy value falls back to `basic_risk`:
 | `vwap_tp_risk` | `sl_placement`: `"VAL/VAH"`, `"zone_logic"` or `"swing_low"` | tick-vwap ±2σ/±3σ band (`vwap_std`, `vwap_session`, `vwap_tp_mode`) |
 | `vwap_trailing_risk` | as `vwap_tp_risk`, plus a signal-driven trailing stop (`trailing_entries`) | as `vwap_tp_risk` |
 
+### The vwap target: tick grid + minimum RR
+
+Both vwap scripts snap the band target to the instrument's **tick grid, toward the entry** (long →
+floor, short → ceil) via their own `_tick_tp` / `_tick_tp_array` copies, so the simulated fill sits
+on a tradable price and the target is never beyond the raw band. In `vwap_tp_mode = "trailing"` the
+whole per-bar band array is snapped, not just the entry value. This rounding used to live in
+`data_transforms/1m_advanced_indicators.py` (`_round_vwap_to_tick`, removed in `d9abe09`) — the
+indicator columns are raw floats now and only the level actually traded gets rounded. The stops
+(VAL/VAH, zone, swing) are real price levels already on the grid and are **not** rounded.
+
+A **minimum-RR switch** can push the target one band out: when it is on and the selected band is too
+close to the entry to clear the required reward:risk (measured on the *rounded* target — the
+conservative order), the target escalates 2σ → 3σ. Only `std2`/`std3` are loaded
+(`VWAP_BAND_COLUMNS` in `core.py`), so there is nothing further to push to and sessions are never
+mixed. `rr_vwap_push` in the notes records whether a push happened *and stuck* (a push that still
+fell short leaves the vwap ladder entirely, so it reports False).
+
+**When no vwap band is usable** — price already past 3σ at entry, *or* no band clears the minimum RR
+— both cases take the same exit, governed by one switch:
+
+| `force_trade` | outcome |
+|---|---|
+| `True` (default) | trade a **fixed-RR** target: `minimal_rr × risk` when the min-RR switch is on, else the historical `1 × risk`. `tp_type` reports the multiple (`"1:1"` / `"2:1"`), never a `tp_vwap_N`. |
+| `False` | **no trade** |
+
+Each script owns an **independent trio** — `is_over_rr`/`minimal_rr`/`force_trade` for
+`vwap_tp_risk`, `trailing_is_over_rr`/`trailing_minimal_rr`/`trailing_force_trade` for
+`vwap_trailing_risk`; neither reads the other's keys, while `sl_placement`/`vwap_std`/
+`vwap_session`/`vwap_tp_mode` stay shared. The defaults (min-RR off, force on) reproduce the
+pre-2026-08 behaviour exactly: past-3σ trades a plain 1:1 and nothing else changes.
+
 (The former `zone_sl_risk` script was folded into `basic_risk` as `sl_type="zone_logic"`; its
 `zone_rr` param is gone — the merged mode uses `rr`.)
 
@@ -169,8 +200,15 @@ can be edited in isolation. All three share the signature
 the post_retest `EntryWindow` (for pullback stops), `trade_win` the post_entry `TradeWindow`,
 `entry_pos` the absolute day position of the entry bar; `levels` carries `val/vah/poc` and the
 day context rides on `trade_win.day` (baselines, CVD, VWAP band arrays). Both vwap scripts return **None (no trade)** when the day has no VWAP
-bands. A risk script may attach a `trade["risk_notes"]` dict (e.g. `tp_type`, `escalated`); it is
-popped in `process_day` and merged into `notes` rather than becoming a stray column.
+bands. A risk script may attach a `trade["risk_notes"]` dict (e.g. `tp_type`, `escalated`,
+`rr_vwap_push`); it is popped in `process_day` and merged into `notes` rather than becoming a stray
+column.
+
+In `vwap_tp_mode = "trailing"`, only a genuine band TP hit reports the level actually filled in the
+`tp` column; every other pre-timeout exit (stop-out, `eod`, in-profit `tp_timeout`) reports the band
+**at entry** — the target the trade opened with, not wherever the live band had drifted to by the
+exit bar. The post-timeout tail is unaffected: there the target really was moved to breakeven, and
+`tp` reports that.
 
 `vwap_trailing_risk` re-detects the entry-style signals on the live trade bars, gated by the
 `trailing_entries` bit string (same order as `valid_entries`). A signal confirmed by a candle
@@ -239,8 +277,11 @@ absorption_baseline_window`. Entry candle: `delta_threshold, body_threshold`. Th
 groups (absorption+delta, consecutive, two-bar, passive size-only, passive wall, CVD divergence
 absorption `cvd_*` / exhaustion `cvd_exh_*`)
 and per-risk-script groups (basic: `rr`/`sl_type` — `"VAL/VAH"`/`"swing_low"`/`"zone_logic"`;
-vwap: `sl_placement`/`vwap_std`/`vwap_session`/`vwap_tp_mode`; vwap trailing:
-`trailing_entries` + the bool switches `trailing_in_profit`/`late_trailing`).
+vwap: `sl_placement`/`vwap_std`/`vwap_session`/`vwap_tp_mode` + the min-RR trio
+`is_over_rr`/`minimal_rr`/`force_trade`; vwap trailing: `trailing_entries` + the bool switches
+`trailing_in_profit`/`late_trailing` + its OWN trio
+`trailing_is_over_rr`/`trailing_minimal_rr`/`trailing_force_trade`). The two trios are deliberately
+independent — one per script — while the rest of the vwap block stays shared by both.
 
 `PARAM_SECTIONS` intentionally omits `tick_size`: it is auto-injected from `ASSET_INFO` by the
 backtester and listed in `HIDDEN_PARAMS`, so it has no UI widget. (That gap is deliberate, not a

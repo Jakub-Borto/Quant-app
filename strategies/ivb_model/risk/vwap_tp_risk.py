@@ -8,15 +8,52 @@ frozen at entry ("now") or trailed bar-by-bar ("trailing"). Both fill simulators
 the trailing variant _run_trade_trailing) are owned here too — no shared module, no cross-script
 imports.
 
+The band target is SNAPPED TO THE TICK GRID toward the entry (long: floor, short: ceil), so the
+simulated fill sits on a tradable price and the target is never beyond the raw band. In "trailing"
+mode the whole per-bar band array is snapped, not just the entry value. Only the vwap target is
+rounded — the stops are real price levels already on the grid.
+
+`is_over_rr` (bool) + `minimal_rr` (float) enforce a minimum reward:risk: when the selected band is
+too close to the entry to clear minimal_rr, the target is pushed 2σ -> 3σ. `rr_vwap_push` in the
+notes records whether a push happened (and stuck).
+
+When NO vwap band is usable — price already past 3σ at entry, or no band clears minimal_rr —
+`force_trade` (bool, default True) is the single switch for both cases: True trades a fixed-RR
+target (minimal_rr x risk when is_over_rr is on, else the historical 1 x risk), False skips the
+trade. `tp_type` reports the multiple ("1:1" / "2:1"), never a tp_vwap_N.
+
+(vwap_trailing_risk owns an independent trio: trailing_is_over_rr / trailing_minimal_rr /
+trailing_force_trade.)
+
 INDICATORS REQUIRED: if the VWAP bands are unavailable for the day (no indicators / missing
 columns / NaN at entry), this script returns None (no trade) — the whole trade is skipped because
 the TP cannot be computed.
 
 exit_reason stays tp / sl / eod (+ tp_timeout / sl_timeout). Which TP was chosen is recorded in
-the trade notes via risk_notes: tp_type = "tp_vwap_2" | "tp_vwap_3" | "1:1".
+the trade notes via risk_notes: tp_type = "tp_vwap_2" | "tp_vwap_3" | "1:1" (or "<minimal_rr>:1"
+for a forced trade while is_over_rr is on).
 """
 
 import numpy as np
+
+
+def _tick_tp(price, direction, tick):
+    """Snap a vwap target to the tick grid TOWARD the entry (long: floor, short: ceil), so the
+    target never sits beyond the raw band. NaN passes through; the final round() kills binary
+    float noise (32.30000000004)."""
+    if np.isnan(price):
+        return price
+    n = price / tick
+    snapped = np.floor(n) if direction == "long" else np.ceil(n)
+    return round(float(snapped) * tick, 10)
+
+
+def _tick_tp_array(band, direction, tick):
+    """_tick_tp over a whole per-bar band array (NaNs survive np.floor/np.ceil)."""
+    with np.errstate(invalid="ignore"):
+        n = band / tick
+        snapped = np.floor(n) if direction == "long" else np.ceil(n)
+    return np.round(snapped * tick, 10)
 
 
 def _zone_sl(entry_win, entry_pos, direction, levels):
@@ -157,6 +194,10 @@ def _run_trade_trailing(trade_win, entry_ts, entry_price, direction, sl, band, p
     SL is fixed. Same-bar race is PESSIMISTIC: if SL and the trailing TP both trigger on one bar,
     the SL wins (loss). Bars with a NaN band value can only trigger the SL. The timeout / EOD tail
     mirrors _run_trade exactly (breakeven TP + swing SL after timeout).
+
+    Only a real band TP hit reports the level actually filled; every other pre-timeout exit records
+    tp = the band AT ENTRY (b[0]) — the target the trade opened with, not wherever the live band
+    had drifted to by the exit bar.
     """
     timeout = params["trade_timeout"]
     n_all   = trade_win.n
@@ -167,6 +208,7 @@ def _run_trade_trailing(trade_win, entry_ts, entry_price, direction, sl, band, p
 
     b     = band[:t_end]
     valid = ~np.isnan(b)
+    tp_e  = float(b[0])                        # the band at entry = this trade's opening target
 
     if direction == "long":
         sl_hit = low[:t_end]  <= sl
@@ -197,18 +239,17 @@ def _run_trade_trailing(trade_win, entry_ts, entry_price, direction, sl, band, p
         # pessimistic: on a same-bar tie (sl_pos == tp_pos) the SL wins
         sl_first = sl_pos is not None and (tp_pos is None or sl_pos <= tp_pos)
         if sl_first:
-            # the live trail level when stopped (informational; may be NaN)
-            trail_at_sl = float(b[sl_pos])
-            return make_trade(index[sl_pos], sl, "sl", sl, trail_at_sl)
+            # stopped out: report the target the trade opened with, not the live trail level
+            return make_trade(index[sl_pos], sl, "sl", sl, tp_e)
         else:
             band_exit = float(b[tp_pos])
             return make_trade(index[tp_pos], band_exit, "tp", sl, band_exit)
 
     if n_all < timeout:
-        # no clean band TP / SL by end of data: exit at last close. Record tp = the trailing band
-        # value at that bar (where the vwap target sat), falling back to the exit price if NaN.
+        # no clean band TP / SL by end of data: exit at last close. Record tp = the band at entry
+        # (the target the trade opened with), falling back to the exit price if NaN.
         exit_price = float(trade_win.c[-1])
-        tp_at_exit = float(b[-1])
+        tp_at_exit = tp_e
         if np.isnan(tp_at_exit):
             tp_at_exit = exit_price
         return make_trade(index[-1], exit_price, "eod", sl, tp_at_exit)
@@ -219,9 +260,9 @@ def _run_trade_trailing(trade_win, entry_ts, entry_price, direction, sl, band, p
                else (timeout_close < entry_price)
 
     if in_profit:
-        # trailing TP timed out in profit: record tp = the trailing band value at the timeout bar
-        # (where the vwap target sat), falling back to the exit price if NaN.
-        tp_at_exit = float(b[-1])
+        # trailing TP timed out in profit: record tp = the band at entry (the target the trade
+        # opened with), falling back to the exit price if NaN.
+        tp_at_exit = tp_e
         if np.isnan(tp_at_exit):
             tp_at_exit = timeout_close
         return make_trade(index[t_end - 1], timeout_close, "tp_timeout", sl, tp_at_exit)
@@ -310,33 +351,67 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
         if past3:
             fallback = True
 
+    # --- minimum-RR push: a band too close to the entry escalates to the next one ---
+    # The RR is measured on the ROUNDED target (that is the level actually traded), so the check
+    # is conservative. Running out of bands joins the same `fallback` path as price-past-3σ.
+    tick    = params["tick_size"]
+    over_rr = bool(params.get("is_over_rr", False))
+    min_rr  = float(params.get("minimal_rr", 0.0))
+    rr_push = False
+
+    if over_rr and not fallback:
+        while True:
+            # same band pick as col_eff below (vwap_std is a plain int spinbox: anything
+            # that isn't 3 reads as the 2σ band)
+            band_e = band3_e if eff_std == 3 else band2_e
+            tp_r   = _tick_tp(float(band_e), direction, tick)
+            reward = (tp_r - entry_price) if direction == "long" else (entry_price - tp_r)
+            if reward / risk >= min_rr:
+                break
+            if eff_std >= 3:
+                fallback = True   # no band clears minimal_rr => same boat as past-3σ
+                rr_push  = False  # the push didn't stick: the traded target isn't a band
+                break
+            eff_std = 3
+            rr_push = True
+
+    # --- no usable vwap band (price past 3σ, or none of them clears minimal_rr) ---
+    # force_trade is the single switch: take a fixed-RR target, or skip the trade.
+    if fallback and not bool(params.get("force_trade", True)):
+        return None
+
     escalated = fallback or (eff_std != params["vwap_std"])
 
     entry_ts = trade_win.day.index[entry_pos]
 
     # --- TP + execution ---
     if fallback:
-        tp = entry_price + risk if direction == "long" else entry_price - risk
+        # forced trade with no vwap target: fixed RR, stretched to minimal_rr when the min-RR
+        # rule is on so the forced target can't undercut it either
+        rr_mult = min_rr if over_rr else 1.0
+        tp = entry_price + rr_mult * risk if direction == "long" \
+        else entry_price - rr_mult * risk
         trade   = _run_trade(trade_win, entry_ts, entry_price, direction, sl, tp, params)
-        tp_type = "1:1"
+        tp_type = f"{rr_mult:g}:1"
     else:
         col_eff = col3 if eff_std == 3 else col2
         tp_type = f"tp_vwap_{eff_std}"
 
         if params["vwap_tp_mode"] == "trailing":
-            band  = vwap_bands[col_eff][entry_pos:]
+            band  = _tick_tp_array(vwap_bands[col_eff][entry_pos:], direction, tick)
             trade = _run_trade_trailing(trade_win, entry_ts, entry_price, direction,
                                         sl, band, params)
         else:  # "now": freeze the band value at entry
-            tp    = float(vwap_bands[col_eff][entry_pos])
+            tp    = _tick_tp(float(vwap_bands[col_eff][entry_pos]), direction, tick)
             trade = _run_trade(trade_win, entry_ts, entry_price, direction, sl, tp, params)
 
     if trade is None:
         return None
 
     trade["risk_notes"] = {
-        "tp_type":   tp_type,
-        "escalated": bool(escalated),
+        "tp_type":      tp_type,
+        "escalated":    bool(escalated),
+        "rr_vwap_push": bool(rr_push),
     }
 
     return trade
