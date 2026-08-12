@@ -15,7 +15,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QLabel, QWidget  # noqa: E402
+from PySide6.QtCore import QEvent, QObject  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QWidget  # noqa: E402
 
 from modules.common.backend.settings import (UI_PREF_TRADE_REPORT,  # noqa: E402
                                              Settings, load_settings)
@@ -136,6 +137,54 @@ def _stack(qtbot, settings=None, keys=("metrics", "news", "rr", "trades_table"))
     stack.build()
     qtbot.addWidget(stack)
     return stack, widgets
+
+
+class _TopLevelSpy(QObject):
+    """Counts widgets that get SHOWN while they still have no parent.
+
+    Qt turns such a widget into a real top-level window for as long as it
+    takes to reparent it — with an OS title bar, titled after the application
+    ("Quant Research Platform"). Building a report used to do this once per
+    section, so opening the Optimizer flashed 28 empty windows.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.hits = []
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Show and isinstance(obj, QWidget)
+                and obj.isWindow() and obj.parent() is None):
+            self.hits.append(type(obj).__name__)
+        return False
+
+
+def test_building_a_stack_never_flashes_a_top_level_window(qtbot):
+    spy = _TopLevelSpy()
+    app = QApplication.instance()
+    app.installEventFilter(spy)
+    try:
+        _stack(qtbot, keys=[s.key for s in lay.DEFAULT_SECTIONS])
+    finally:
+        app.removeEventFilter(spy)
+    assert spy.hits == []
+
+
+def test_an_expanded_collapsible_never_flashes_its_body(qtbot):
+    """CollapsibleSection used to show its body before adding it to the
+    layout, so every expanded=True section flashed a window of its own."""
+    from modules.common.ui.widgets import CollapsibleSection
+
+    spy = _TopLevelSpy()
+    app = QApplication.instance()
+    app.installEventFilter(spy)
+    try:
+        box = CollapsibleSection("Sweep", expanded=True)
+        qtbot.addWidget(box)
+    finally:
+        app.removeEventFilter(spy)
+    assert spy.hits == []
+    assert box.content.isVisibleTo(box)      # still expanded, just not flashed
 
 
 def test_stack_orders_from_settings(qtbot):

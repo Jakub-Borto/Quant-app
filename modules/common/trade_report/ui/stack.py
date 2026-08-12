@@ -151,7 +151,13 @@ class SectionStack(QWidget):
         """Create frames for everything registered, then lay them out."""
         for key, widget in self._pending.items():
             if key not in self._frames:
-                frame = _SectionFrame(SPEC_BY_KEY[key], widget)
+                # parented HERE, not by the addWidget below: _SectionFrame's
+                # constructor ends in set_mode, which makes the frame visible
+                # — and showing a parentless widget spawns a real top-level
+                # window for one frame (a titled box flashing on screen while
+                # the report is built; 14 per report, so the Optimizer's two
+                # drill-downs flashed 28 of them)
+                frame = _SectionFrame(SPEC_BY_KEY[key], widget, parent=self)
                 self._frames[key] = frame
                 self._lay.addWidget(frame)
         self._pending.clear()

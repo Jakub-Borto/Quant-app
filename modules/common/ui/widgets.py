@@ -166,7 +166,6 @@ class CollapsibleSection(QWidget):
         self.content.setStyleSheet(
             "QFrame#cardBody { border-top: none; "
             "border-top-left-radius: 0; border-top-right-radius: 0; }")
-        self.content.setVisible(expanded)
         self.content_layout = QVBoxLayout(self.content)
         self.content_layout.setContentsMargins(14, 12, 14, 12)
 
@@ -175,6 +174,10 @@ class CollapsibleSection(QWidget):
         lay.setSpacing(0)
         lay.addWidget(self._button)
         lay.addWidget(self.content)
+        # AFTER addWidget, never before: showing a widget that has no parent
+        # yet makes it a real top-level window for one frame — a titled box
+        # flashing on screen while the page is still being built
+        self.content.setVisible(expanded)
         # without this the header button itself is crushed (37 -> 19px) for a
         # frame while the body is shown/hidden — a flicker on the very row
         # being clicked. Same mechanism as the section stack.
