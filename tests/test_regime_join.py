@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from modules.common.backend import regime_join as rj
-from modules.common.backend.trade_stats import regime_performance_rows
+from modules.common.trade_report.backend.trade_stats import regime_performance_rows
 
 NY = "America/New_York"
 
@@ -244,7 +244,7 @@ def test_regime_rows_without_declared_states():
 
 
 def test_entry_breakdown_rows():
-    from modules.common.backend.trade_stats import (compute_metrics,
+    from modules.common.trade_report.backend.trade_stats import (compute_metrics,
                                                     entry_breakdown_rows)
 
     n = 24
@@ -286,7 +286,7 @@ def test_entry_breakdown_rows():
 def test_entry_breakdown_handles_an_all_breakeven_entry():
     """compute_metrics divides by len(trades); an entry whose every trade is
     flat must not blow up or report a bogus profit factor."""
-    from modules.common.backend.trade_stats import entry_breakdown_rows
+    from modules.common.trade_report.backend.trade_stats import entry_breakdown_rows
 
     trades = pd.DataFrame({
         "date": pd.date_range("2026-01-05", periods=4, freq="D"),

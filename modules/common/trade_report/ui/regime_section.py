@@ -38,13 +38,13 @@ from modules.common.backend.data_roots import RegimeRunRef, list_regime_runs
 from modules.common.backend.regime_join import (MODE_ASOF, MODE_EXACT,
                                                 MODE_FINAL, MODE_LABELS,
                                                 UNKNOWN, attach_regime)
-from modules.common.backend.trade_stats import regime_performance_rows
+from ..backend.trade_stats import regime_performance_rows
 from modules.regime_detector.backend import io as rio
-from ..dataframe_model import make_table_view, update_table_view
-from ..widgets import Banner, Caption, hline
-from ..workers import FunctionWorker
+from modules.common.ui.dataframe_model import make_table_view, update_table_view
+from modules.common.ui.widgets import Banner, Caption, hline
+from modules.common.ui.workers import FunctionWorker
 from .filters import make_regime_filter
-from .sections import ReportSection
+from .stack import ReportSection
 
 _DEFAULT_SESSION_START = "18:00"
 _GB = 1024 ** 3

@@ -16,16 +16,14 @@ Subclasses supply two things: a frame (via set_source) and a save context
 import pandas as pd
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 
-from modules.common.backend.trade_stats import DAY_TYPE_ORDER
-from modules.common.ui.trade_report.actions_row import TradeActionsRow
-from modules.common.ui.trade_report.entry_section import EntryBreakdownSection
-from modules.common.ui.trade_report.filters import (CheckboxFilterRow,
-                                                    make_day_type_filter)
-from modules.common.ui.trade_report.news_section import NewsBreakdownTable
-from modules.common.ui.trade_report.notes_table_section import TradeNotesSection
-from modules.common.ui.trade_report.panel import TradeReportPanel
-from modules.common.ui.trade_report.regime_section import (FILTER_COLUMN,
-                                                           RegimeSection)
+from ..backend.trade_stats import DAY_TYPE_ORDER
+from .actions_row import TradeActionsRow
+from .entry_section import EntryBreakdownSection
+from .filters import CheckboxFilterRow, make_day_type_filter
+from .news_section import NewsBreakdownTable
+from .notes_table_section import TradeNotesSection
+from .panel import TradeReportPanel
+from .regime_section import FILTER_COLUMN, RegimeSection
 from modules.common.ui.widgets import (Banner, Caption, SectionHeader, hline,
                                        pin_minimum_height)
 

@@ -19,8 +19,8 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt                                 # noqa: E402
 
 from modules.common.backend.settings import Settings          # noqa: E402
-from modules.common.backend.trade_stats import DAY_TYPE_ORDER  # noqa: E402
-from modules.common.ui.trade_report.notes_table_section import (  # noqa: E402
+from modules.common.trade_report.backend.trade_stats import DAY_TYPE_ORDER  # noqa: E402
+from modules.common.trade_report.ui.notes_table_section import (  # noqa: E402
     TradeNotesSection)
 
 

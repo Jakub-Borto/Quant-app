@@ -11,7 +11,7 @@ import math
 import pandas as pd
 import pytest
 
-from modules.common.backend.trade_stats import compute_metrics
+from modules.common.trade_report.backend.trade_stats import compute_metrics
 
 SQRT252 = math.sqrt(252)
 

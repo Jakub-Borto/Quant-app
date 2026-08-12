@@ -24,7 +24,7 @@ import pandas as pd
 from modules.common.backend.data_roots import optimizations_root
 from modules.common.ui import theme
 from modules.common.ui.charts.heatmap import HeatmapChart
-from modules.common.ui.trade_report.filters import CheckboxFilterRow
+from modules.common.trade_report.ui.filters import CheckboxFilterRow
 from modules.common.ui.widgets import (Banner, Caption, CollapsibleSection,
                                        SectionHeader, pin_minimum_height,
                                        wrap_card)

@@ -7,9 +7,9 @@ preserving the old filter ordering).
 import pandas as pd
 from PySide6.QtWidgets import QVBoxLayout
 
-from modules.common.backend.trade_stats import news_holiday_rows
-from ..dataframe_model import make_table_view, update_table_view
-from .sections import ReportSection
+from ..backend.trade_stats import news_holiday_rows
+from modules.common.ui.dataframe_model import make_table_view, update_table_view
+from .stack import ReportSection
 
 
 class NewsBreakdownTable(ReportSection):

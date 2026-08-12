@@ -96,7 +96,7 @@ def test_data_formatter_window(qtbot, settings):
 
 @needs_data
 def test_backtester_window(qtbot, settings):
-    from modules.common.ui.trade_report.sections import DEFAULT_ORDER
+    from modules.common.trade_report import DEFAULT_ORDER
     from modules.backtester.window import BacktesterWindow
     win = BacktesterWindow(settings)
     qtbot.addWidget(win)
@@ -112,7 +112,7 @@ def test_backtester_window(qtbot, settings):
 def test_optimizer_cell_detail_constructs(qtbot, settings):
     """The Optimizer smoke test never reaches the drill-down (it needs a
     heatmap click), so construct it directly."""
-    from modules.common.ui.trade_report.sections import DEFAULT_ORDER
+    from modules.common.trade_report import DEFAULT_ORDER
     from modules.optimizer.cell_detail import CellDetailPanel
     panel = CellDetailPanel(settings, track_worker=lambda w: None)
     qtbot.addWidget(panel)
@@ -122,7 +122,7 @@ def test_optimizer_cell_detail_constructs(qtbot, settings):
 @needs_data
 def test_optimizer_combine_detail_constructs(qtbot, settings):
     """Same drill-down host as the cell detail, fed a combined set instead."""
-    from modules.common.ui.trade_report.sections import DEFAULT_ORDER
+    from modules.common.trade_report import DEFAULT_ORDER
     from modules.optimizer.combine_detail import CombineDetailPanel
     panel = CombineDetailPanel(settings, track_worker=lambda w: None)
     qtbot.addWidget(panel)

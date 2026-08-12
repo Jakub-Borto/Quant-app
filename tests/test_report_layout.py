@@ -19,7 +19,8 @@ from PySide6.QtWidgets import QLabel, QWidget  # noqa: E402
 
 from modules.common.backend.settings import (UI_PREF_TRADE_REPORT,  # noqa: E402
                                              Settings, load_settings)
-from modules.common.ui.trade_report import sections as sec  # noqa: E402
+from modules.common.trade_report.backend import layout as lay  # noqa: E402
+from modules.common.trade_report.ui import stack as sec  # noqa: E402
 
 
 # ── settings persistence ─────────────────────────────────────────────────────
@@ -68,59 +69,59 @@ def test_ui_pref_accessors_are_deep_copies():
 # ── resolve_layout ───────────────────────────────────────────────────────────
 
 def test_resolve_layout_defaults():
-    order, modes = sec.resolve_layout(None)
-    assert order == sec.DEFAULT_ORDER
-    assert modes["day_type_filter"] == sec.MODE_VISIBLE
-    assert modes["news"] == sec.MODE_COLLAPSED
+    order, modes = lay.resolve_layout(None)
+    assert order == lay.DEFAULT_ORDER
+    assert modes["day_type_filter"] == lay.MODE_VISIBLE
+    assert modes["news"] == lay.MODE_COLLAPSED
     # the shipped order puts every dropdown after the always-visible block
     first_collapsed = min(i for i, k in enumerate(order)
-                          if modes[k] == sec.MODE_COLLAPSED)
+                          if modes[k] == lay.MODE_COLLAPSED)
     last_visible_locked = max(i for i, k in enumerate(order)
-                              if sec.SPEC_BY_KEY[k].lockable)
+                              if lay.SPEC_BY_KEY[k].lockable)
     assert last_visible_locked < first_collapsed
 
 
 def test_resolve_layout_drops_unknown_and_readds_missing_keys():
     saved = {"order": ["rr", "metrics", "section_from_the_future"],
              "modes": {"rr": "visible"}}
-    order, modes = sec.resolve_layout(saved)
+    order, modes = lay.resolve_layout(saved)
     assert "section_from_the_future" not in order   # unknown key dropped
-    assert set(order) == set(sec.DEFAULT_ORDER)     # nothing lost
+    assert set(order) == set(lay.DEFAULT_ORDER)     # nothing lost
     assert order.index("rr") < order.index("metrics")   # user's order kept
-    assert modes["rr"] == sec.MODE_VISIBLE
+    assert modes["rr"] == lay.MODE_VISIBLE
     assert len(order) == len(set(order))            # no duplicates
 
 
 def test_new_section_lands_next_to_its_default_neighbour():
     """Shipping a new section must not scramble a saved order: it appears
     just after the section it follows by default."""
-    full = list(sec.DEFAULT_ORDER)
+    full = list(lay.DEFAULT_ORDER)
     full.remove("rr")                  # pretend 'rr' is brand new
     saved = {"order": full, "modes": {}}
-    order, _modes = sec.resolve_layout(saved)
-    assert set(order) == set(sec.DEFAULT_ORDER)
-    default_predecessor = sec.DEFAULT_ORDER[sec.DEFAULT_ORDER.index("rr") - 1]
+    order, _modes = lay.resolve_layout(saved)
+    assert set(order) == set(lay.DEFAULT_ORDER)
+    default_predecessor = lay.DEFAULT_ORDER[lay.DEFAULT_ORDER.index("rr") - 1]
     assert order.index("rr") == order.index(default_predecessor) + 1
 
 
 def test_resolve_layout_ignores_duplicate_saved_keys():
-    order, _modes = sec.resolve_layout({"order": ["rr", "rr", "metrics"]})
+    order, _modes = lay.resolve_layout({"order": ["rr", "rr", "metrics"]})
     assert order.count("rr") == 1
 
 
 def test_locked_sections_are_forced_visible():
-    saved = {"order": list(sec.DEFAULT_ORDER),
+    saved = {"order": list(lay.DEFAULT_ORDER),
              "modes": {"day_type_filter": "hidden", "metrics": "collapsed",
                        "equity": "hidden", "trade_type_filter": "collapsed"}}
-    _order, modes = sec.resolve_layout(saved)
+    _order, modes = lay.resolve_layout(saved)
     for key in ("day_type_filter", "trade_type_filter", "metrics", "equity"):
-        assert modes[key] == sec.MODE_VISIBLE, key
-    assert sec.SPEC_BY_KEY["news"].lockable is False
+        assert modes[key] == lay.MODE_VISIBLE, key
+    assert lay.SPEC_BY_KEY["news"].lockable is False
 
 
 def test_resolve_layout_rejects_garbage_mode():
-    _order, modes = sec.resolve_layout({"order": [], "modes": {"rr": "sideways"}})
-    assert modes["rr"] == sec.SPEC_BY_KEY["rr"].default_mode
+    _order, modes = lay.resolve_layout({"order": [], "modes": {"rr": "sideways"}})
+    assert modes["rr"] == lay.SPEC_BY_KEY["rr"].default_mode
 
 
 # ── SectionStack ─────────────────────────────────────────────────────────────
@@ -168,13 +169,13 @@ def test_stack_mode_round_trip(qtbot):
     stack.show()
     frame = stack.frame("news")
 
-    for mode in (sec.MODE_VISIBLE, sec.MODE_COLLAPSED, sec.MODE_HIDDEN,
-                 sec.MODE_VISIBLE):
+    for mode in (lay.MODE_VISIBLE, lay.MODE_COLLAPSED, lay.MODE_HIDDEN,
+                 lay.MODE_VISIBLE):
         s.set_ui_pref(UI_PREF_TRADE_REPORT,
-                      {"order": list(sec.DEFAULT_ORDER), "modes": {"news": mode}})
+                      {"order": list(lay.DEFAULT_ORDER), "modes": {"news": mode}})
         stack.reload_layout()
         assert frame.mode == mode
-        assert frame.isVisible() == (mode != sec.MODE_HIDDEN)
+        assert frame.isVisible() == (mode != lay.MODE_HIDDEN)
         assert widgets["news"].parent() is not None    # still owned somewhere
 
 
@@ -248,14 +249,14 @@ def test_layout_bus_survives_a_closed_report(qtbot):
 # ── the layout dialog ────────────────────────────────────────────────────────
 
 def test_layout_dialog_round_trip(tmp_path, qtbot):
-    from modules.common.ui.trade_report.layout_dialog import ReportLayoutDialog
+    from modules.common.trade_report.ui.layout_dialog import ReportLayoutDialog
     path = tmp_path / "settings.json"
     s = load_settings(path)
 
     dlg = ReportLayoutDialog(s, settings_path=path)
     qtbot.addWidget(dlg)
     rows = [dlg._list.item(i).data(sec_role()) for i in range(dlg._list.count())]
-    assert rows == list(sec.DEFAULT_ORDER)
+    assert rows == list(lay.DEFAULT_ORDER)
 
     dlg._list.setCurrentRow(dlg._list.count() - 1)     # the last section
     moved = dlg._list.currentItem().data(sec_role())
@@ -263,26 +264,26 @@ def test_layout_dialog_round_trip(tmp_path, qtbot):
     dlg._on_ok()
 
     saved = load_settings(path).ui_pref(UI_PREF_TRADE_REPORT)
-    assert saved["order"].index(moved) == len(sec.DEFAULT_ORDER) - 2
+    assert saved["order"].index(moved) == len(lay.DEFAULT_ORDER) - 2
 
 
 def test_layout_dialog_locked_rows_cannot_change_mode(tmp_path, qtbot):
-    from modules.common.ui.trade_report.layout_dialog import ReportLayoutDialog
+    from modules.common.trade_report.ui.layout_dialog import ReportLayoutDialog
     s = load_settings(tmp_path / "settings.json")
     dlg = ReportLayoutDialog(s, settings_path=tmp_path / "settings.json")
     qtbot.addWidget(dlg)
 
-    locked = sec.DEFAULT_ORDER.index("day_type_filter")
+    locked = lay.DEFAULT_ORDER.index("day_type_filter")
     dlg._list.setCurrentRow(locked)
     assert not dlg._mode.isEnabled()
 
-    free = sec.DEFAULT_ORDER.index("news")
+    free = lay.DEFAULT_ORDER.index("news")
     dlg._list.setCurrentRow(free)
     assert dlg._mode.isEnabled()
 
 
 def test_layout_dialog_reset(tmp_path, qtbot):
-    from modules.common.ui.trade_report.layout_dialog import ReportLayoutDialog
+    from modules.common.trade_report.ui.layout_dialog import ReportLayoutDialog
     path = tmp_path / "settings.json"
     s = load_settings(path)
     s.set_ui_pref(UI_PREF_TRADE_REPORT,
@@ -291,9 +292,9 @@ def test_layout_dialog_reset(tmp_path, qtbot):
     qtbot.addWidget(dlg)
     dlg._on_reset()
     dlg._on_ok()
-    order, modes = sec.resolve_layout(load_settings(path).ui_pref(UI_PREF_TRADE_REPORT))
-    assert order == sec.DEFAULT_ORDER
-    assert modes["news"] == sec.MODE_COLLAPSED
+    order, modes = lay.resolve_layout(load_settings(path).ui_pref(UI_PREF_TRADE_REPORT))
+    assert order == lay.DEFAULT_ORDER
+    assert modes["news"] == lay.MODE_COLLAPSED
 
 
 def sec_role():
@@ -328,8 +329,8 @@ def test_panel_set_trades_renders_every_section(qtbot, tmp_path, monkeypatch):
     a rebuild (exactly what happened to ExposureSection during the section
     split) would otherwise only surface when a human ran a backtest."""
     import pandas as pd
-    from modules.common.ui.trade_report import exposure_section as ex
-    from modules.common.ui.trade_report.panel import TradeReportPanel
+    from modules.common.trade_report.ui import exposure_section as ex
+    from modules.common.trade_report.ui.panel import TradeReportPanel
 
     # force the DEEP exposure path (the one that builds the 2x2 cell grid,
     # each cell a coefficient table plus a scatter+fit chart)
@@ -366,7 +367,7 @@ def test_exposure_cell_renders_table_and_chart(qtbot, monkeypatch, tmp_path):
     unreadable. Assert real widgets with real sizes now."""
     import numpy as np
     from modules.common.ui.charts.scatter_fit import ScatterFitChart
-    from modules.common.ui.trade_report.exposure_section import _cell
+    from modules.common.trade_report.ui.exposure_section import _cell
 
     res = {"alpha": 1.5, "alpha_ann": 378.0, "beta": -0.02, "t_alpha": 2.1,
            "t_beta": -0.3, "r2": 0.001, "n": 149,
@@ -577,7 +578,7 @@ def test_equity_selection_marks_deselects_and_survives_replot(qtbot, tmp_path):
     """Clicking a trade must be visible on the chart, clickable again to
     deselect, and must not survive a filter change (the row index would point
     at a different trade)."""
-    from modules.common.ui.trade_report.panel import TradeReportPanel
+    from modules.common.trade_report.ui.panel import TradeReportPanel
 
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QMouseEvent
@@ -662,8 +663,8 @@ def test_regime_filter_has_its_own_timing(qtbot, tmp_path):
 
     from modules.common.backend.regime_join import (MODE_ASOF, MODE_EXACT,
                                                     MODE_FINAL)
-    from modules.common.ui.trade_report.actions_row import DERIVED_COLUMNS
-    from modules.common.ui.trade_report.regime_section import (FILTER_COLUMN,
+    from modules.common.trade_report.ui.actions_row import DERIVED_COLUMNS
+    from modules.common.trade_report.ui.regime_section import (FILTER_COLUMN,
                                                                RegimeSection)
 
     assert "regime" in DERIVED_COLUMNS and FILTER_COLUMN in DERIVED_COLUMNS
@@ -944,7 +945,7 @@ def test_exposure_rebuild_does_not_leak_widgets(qtbot, monkeypatch, tmp_path):
     four scatter charts (48 after a dozen filter toggles)."""
     import numpy as np
     from modules.common.ui.charts.scatter_fit import ScatterFitChart
-    from modules.common.ui.trade_report import exposure_section as ex
+    from modules.common.trade_report.ui import exposure_section as ex
 
     cells = {(s, b): {"alpha": 0.1, "alpha_ann": 25.2, "beta": 0.5,
                       "t_alpha": 1.0, "t_beta": 2.0, "r2": 0.3, "n": 10,
@@ -971,7 +972,7 @@ def test_panel_handles_trades_without_optional_columns(qtbot, tmp_path):
     """A strategy emitting neither exit_reason nor sl/tp must not crash the
     now-standalone exit and RR sections."""
     import pandas as pd
-    from modules.common.ui.trade_report.panel import TradeReportPanel
+    from modules.common.trade_report.ui.panel import TradeReportPanel
 
     trades = _sample_trades().drop(columns=["exit_reason", "sl", "tp"])
     panel = TradeReportPanel(Settings({}, [str(tmp_path)]))

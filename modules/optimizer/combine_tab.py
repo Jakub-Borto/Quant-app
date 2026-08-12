@@ -31,7 +31,7 @@ import pandas as pd
 from modules.common.backend.data_roots import optimizations_root
 from modules.common.ui.charts.path_chart import CombinePathChart
 from modules.common.ui.dataframe_model import make_table_view, update_table_view
-from modules.common.ui.trade_report.filters import CheckboxFilterRow
+from modules.common.trade_report.ui.filters import CheckboxFilterRow
 from modules.common.ui.widgets import (Banner, Caption, CollapsibleSection,
                                        InfoLabel, ProgressLogPanel,
                                        SectionHeader, hline,

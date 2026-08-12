@@ -9,11 +9,11 @@ re-bins the currently held trades without touching the filter pipeline.
 import pandas as pd
 from PySide6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QVBoxLayout
 
-from modules.common.backend.trade_stats import (rr_bin_edges,
+from ..backend.trade_stats import (rr_bin_edges,
                                                 rr_distribution_series)
-from ..charts.histogram import OverlaidHistogram
-from ..widgets import Banner
-from .sections import ReportSection
+from modules.common.ui.charts.histogram import OverlaidHistogram
+from modules.common.ui.widgets import Banner
+from .stack import ReportSection
 
 
 class RRDistributionSection(ReportSection):

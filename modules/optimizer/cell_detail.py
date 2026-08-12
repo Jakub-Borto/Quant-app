@@ -15,7 +15,7 @@ import pandas as pd
 
 from modules.common.backend.data_roots import DatasetRef  # noqa: F401 (typing)
 from modules.optimizer.backend.heatmap_model import _fmt_axis_value
-from modules.optimizer.report_host import TradeReportHost
+from modules.common.trade_report.ui.report import TradeReportHost
 
 
 class CellDetailPanel(TradeReportHost):

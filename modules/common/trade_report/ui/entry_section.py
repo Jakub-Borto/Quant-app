@@ -13,10 +13,10 @@ Hidden when the strategy emits no trade_type column.
 import pandas as pd
 from PySide6.QtWidgets import QVBoxLayout
 
-from modules.common.backend.trade_stats import ALL_ENTRIES, entry_breakdown_rows
-from ..dataframe_model import make_table_view, update_table_view
-from ..widgets import Caption
-from .sections import ReportSection
+from ..backend.trade_stats import ALL_ENTRIES, entry_breakdown_rows
+from modules.common.ui.dataframe_model import make_table_view, update_table_view
+from modules.common.ui.widgets import Caption
+from .stack import ReportSection
 
 
 class EntryBreakdownSection(ReportSection):

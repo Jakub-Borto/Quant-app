@@ -34,18 +34,18 @@ from modules.common.backend.data_roots import (DatasetRef, available_dates,
                                                resolve_ff_events,
                                                scan_structure)
 from modules.common.backend.plugins import PluginRef, list_strategies, load_strategy
-from modules.common.backend.trade_stats import DAY_TYPE_ORDER
+from modules.common.trade_report.backend.trade_stats import DAY_TYPE_ORDER
 from modules.common.ui.module_window import ModuleWindowBase
 from modules.common.ui.params_form import ParamsForm
-from modules.common.ui.trade_report.filters import (make_day_type_filter,
+from modules.common.trade_report.ui.filters import (make_day_type_filter,
                                                     make_trade_type_filter)
-from modules.common.ui.trade_report.actions_row import TradeActionsRow
-from modules.common.ui.trade_report.layout_dialog import ReportLayoutDialog
-from modules.common.ui.trade_report.entry_section import EntryBreakdownSection
-from modules.common.ui.trade_report.news_section import NewsBreakdownTable
-from modules.common.ui.trade_report.notes_table_section import TradeNotesSection
-from modules.common.ui.trade_report.panel import TradeReportPanel
-from modules.common.ui.trade_report.regime_section import (FILTER_COLUMN,
+from modules.common.trade_report.ui.actions_row import TradeActionsRow
+from modules.common.trade_report.ui.layout_dialog import ReportLayoutDialog
+from modules.common.trade_report.ui.entry_section import EntryBreakdownSection
+from modules.common.trade_report.ui.news_section import NewsBreakdownTable
+from modules.common.trade_report.ui.notes_table_section import TradeNotesSection
+from modules.common.trade_report.ui.panel import TradeReportPanel
+from modules.common.trade_report.ui.regime_section import (FILTER_COLUMN,
                                                            RegimeSection)
 from modules.common.ui.widgets import (Banner, Caption, SectionHeader,
                                        gear_button, wrap_card)

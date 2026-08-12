@@ -17,9 +17,10 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox,
                                QListWidgetItem, QPushButton, QVBoxLayout)
 
 from modules.common.backend.settings import SETTINGS_PATH, UI_PREF_TRADE_REPORT
-from .. import theme
-from .sections import (DEFAULT_ORDER, LAYOUT_BUS, MODE_LABELS, MODES,
-                       SPEC_BY_KEY, resolve_layout)
+from modules.common.ui import theme
+from ..backend.layout import (DEFAULT_ORDER, MODE_LABELS, MODES, SPEC_BY_KEY,
+                              resolve_layout)
+from .stack import LAYOUT_BUS
 
 
 class ReportLayoutDialog(QDialog):

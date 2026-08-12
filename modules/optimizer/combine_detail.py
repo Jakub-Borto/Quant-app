@@ -13,7 +13,7 @@ import re
 
 from modules.optimizer.backend.combine.materialize import (SCOPE_LABELS,
                                                            VID_COLUMN)
-from modules.optimizer.report_host import TradeReportHost
+from modules.common.trade_report.ui.report import TradeReportHost
 
 
 class CombineDetailPanel(TradeReportHost):

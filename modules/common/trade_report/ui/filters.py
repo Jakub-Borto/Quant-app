@@ -7,7 +7,7 @@ backtester view and the optimizer cell detail.
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QCheckBox, QGridLayout, QWidget
 
-from modules.common.backend.trade_stats import DAY_TYPE_ORDER, UNKNOWN_REGIME
+from ..backend.trade_stats import DAY_TYPE_ORDER, UNKNOWN_REGIME
 
 
 class CheckboxFilterRow(QWidget):

@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from modules.common.backend.chart_window import _is_timestamp
+from .chart_window import _is_timestamp
 
 NOTES_PREFIX = "notes."
 

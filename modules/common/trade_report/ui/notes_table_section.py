@@ -37,10 +37,10 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QSizePolicy, QStackedWidget, QToolButton,
                                QVBoxLayout, QWidget, QWidgetAction)
 
-from modules.common.backend import trade_notes as tn
-from ..dataframe_model import make_table_view, update_table_view
-from ..widgets import Banner, Caption, hline, pin_minimum_height
-from .sections import ReportSection
+from ..backend import trade_notes as tn
+from modules.common.ui.dataframe_model import make_table_view, update_table_view
+from modules.common.ui.widgets import Banner, Caption, hline, pin_minimum_height
+from .stack import ReportSection
 
 # Flattening is rows x keys of json.loads + dict.get. Below the cap it runs
 # the moment the section is first shown; above it the user asks for it

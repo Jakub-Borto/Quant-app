@@ -37,14 +37,14 @@ API:
 import pandas as pd
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from ..charts.equity_curve import EquityCurveChart
-from ..widgets import pin_minimum_height
+from modules.common.ui.charts.equity_curve import EquityCurveChart
+from modules.common.ui.widgets import pin_minimum_height
 from .chart_controls import ChartViewControls
 from .exit_section import ExitBreakdownSection
 from .exposure_section import ExposureSection
 from .metrics_section import MetricsSection
 from .rr_section import RRDistributionSection
-from .sections import SectionStack
+from .stack import SectionStack
 from .trade_detail import TradeDetailView
 
 

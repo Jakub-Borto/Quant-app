@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from modules.common.backend.trade_notes import (KIND_BOOL, KIND_DATETIME,
+from modules.common.trade_report.backend.trade_notes import (KIND_BOOL, KIND_DATETIME,
                                                 KIND_EMPTY, KIND_LIST,
                                                 KIND_NUMERIC, KIND_TEXT,
                                                 KIND_TIME, OPS, ColumnSource,

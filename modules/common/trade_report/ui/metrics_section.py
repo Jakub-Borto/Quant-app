@@ -10,9 +10,9 @@ The exit-breakdown table used to live here too; it is now its own section
 import pandas as pd
 from PySide6.QtWidgets import QGridLayout, QVBoxLayout
 
-from modules.common.backend.trade_stats import compute_metrics
-from ..widgets import MetricTile
-from .sections import ReportSection
+from ..backend.trade_stats import compute_metrics
+from modules.common.ui.widgets import MetricTile
+from .stack import ReportSection
 
 _SHARPE_DAILY_HELP = ("daily P&L over every business day between first and "
                       "last trade — days without trades count as 0; ×√252")

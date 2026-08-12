@@ -12,9 +12,9 @@ import pandas as pd
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
 
-from modules.common.backend.chart_window import _is_timestamp, resolve_chart_window
-from ..charts.candlestick import TradeChart
-from ..widgets import Banner, Caption, MetricTile, SectionHeader, hline
+from ..backend.chart_window import _is_timestamp, resolve_chart_window
+from modules.common.ui.charts.candlestick import TradeChart
+from modules.common.ui.widgets import Banner, Caption, MetricTile, SectionHeader, hline
 
 
 class TradeDetailView(QWidget):

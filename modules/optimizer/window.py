@@ -14,7 +14,7 @@ import pandas as pd
 from PySide6.QtWidgets import QTabWidget, QVBoxLayout
 
 from modules.common.ui.module_window import ModuleWindowBase
-from modules.common.ui.trade_report.layout_dialog import ReportLayoutDialog
+from modules.common.trade_report.ui.layout_dialog import ReportLayoutDialog
 from modules.common.ui.widgets import gear_button
 from modules.optimizer.combine_tab import CombineTab
 from modules.optimizer.explore_tab import ExploreTab
