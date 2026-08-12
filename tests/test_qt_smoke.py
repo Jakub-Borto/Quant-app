@@ -104,7 +104,7 @@ def test_backtester_window(qtbot, settings):
     assert win._strategy.count() > 0
     assert win._params_form is not None or win._strategy.count() == 0
     # every registry section is composed, and the layout gear is pinned
-    assert sorted(win._panel.sections.keys()) == sorted(DEFAULT_ORDER)
+    assert sorted(win._report.panel.sections.keys()) == sorted(DEFAULT_ORDER)
     assert win._header_actions is not None
 
 
@@ -113,21 +113,25 @@ def test_optimizer_cell_detail_constructs(qtbot, settings):
     """The Optimizer smoke test never reaches the drill-down (it needs a
     heatmap click), so construct it directly."""
     from modules.common.trade_report import DEFAULT_ORDER
-    from modules.optimizer.cell_detail import CellDetailPanel
-    panel = CellDetailPanel(settings, track_worker=lambda w: None)
-    qtbot.addWidget(panel)
-    assert sorted(panel._panel.sections.keys()) == sorted(DEFAULT_ORDER)
+    from modules.common.trade_report.ui import TradeReport
+    report = TradeReport(settings, track_worker=lambda w: None,
+                         header="Cell detail")
+    qtbot.addWidget(report)
+    assert sorted(report.panel.sections.keys()) == sorted(DEFAULT_ORDER)
 
 
 @needs_data
 def test_optimizer_combine_detail_constructs(qtbot, settings):
     """Same drill-down host as the cell detail, fed a combined set instead."""
     from modules.common.trade_report import DEFAULT_ORDER
-    from modules.optimizer.combine_detail import CombineDetailPanel
-    panel = CombineDetailPanel(settings, track_worker=lambda w: None)
-    qtbot.addWidget(panel)
-    assert sorted(panel._panel.sections.keys()) == sorted(DEFAULT_ORDER)
-    panel.set_scope("is")           # no set loaded yet -> no-op, never raises
+    from modules.common.trade_report.ui import TradeReport
+    from modules.optimizer.combine_detail import CombineReportSource
+    report = TradeReport(settings, track_worker=lambda w: None,
+                         header="Combined trade report")
+    qtbot.addWidget(report)
+    assert sorted(report.panel.sections.keys()) == sorted(DEFAULT_ORDER)
+    # no set loaded yet -> no-op, never raises
+    CombineReportSource(report).set_scope("is")
 
 
 def test_combine_report_scope_switch_keeps_reappearing_trade_types(qtbot, tmp_path):
@@ -139,7 +143,8 @@ def test_combine_report_scope_switch_keeps_reappearing_trade_types(qtbot, tmp_pa
     import pandas as pd
 
     from modules.common.backend.settings import Settings
-    from modules.optimizer.combine_detail import CombineDetailPanel
+    from modules.common.trade_report.ui import TradeReport
+    from modules.optimizer.combine_detail import CombineReportSource
 
     def frame(trade_types):
         rows = []
@@ -158,24 +163,26 @@ def test_combine_report_scope_switch_keeps_reappearing_trade_types(qtbot, tmp_pa
 
     slices = {"all": frame(["alpha", "beta"]), "is": frame(["alpha", "beta"]),
               "oos": frame(["alpha"])}          # beta has no out-of-sample trades
-    panel = CombineDetailPanel(Settings({}, [str(tmp_path)]), lambda w: None)
-    qtbot.addWidget(panel)
+    report = TradeReport(Settings({}, [str(tmp_path)]),
+                         track_worker=lambda w: None)
+    qtbot.addWidget(report)
+    panel = CombineReportSource(report)
     panel.show_set(resolve=lambda s: slices[s], scope="all",
                    header_stem="combined", save_stem=["ES", "run", "k2"],
                    ticker="ES", tick_size=0.25, ticks_per_point=4.0,
                    dataset="", root=tmp_path, regime_start="2026-01-05",
                    regime_end="2026-01-06", day_bucket_defaults={"normal"})
-    assert set(panel._tt_filter.selected()) == {"alpha", "beta"}
+    assert set(report._tt_filter.selected()) == {"alpha", "beta"}
 
     panel.set_scope("oos")
-    assert set(panel._tt_filter.selected()) == {"alpha"}
+    assert set(report._tt_filter.selected()) == {"alpha"}
     panel.set_scope("all")
-    assert set(panel._tt_filter.selected()) == {"alpha", "beta"}
+    assert set(report._tt_filter.selected()) == {"alpha", "beta"}
 
     # a deliberate uncheck DOES survive the switch
-    panel._tt_filter._boxes["beta"].setChecked(False)
+    report._tt_filter._boxes["beta"].setChecked(False)
     panel.set_scope("is")
-    assert set(panel._tt_filter.selected()) == {"alpha"}
+    assert set(report._tt_filter.selected()) == {"alpha"}
 
 
 @needs_data
@@ -369,6 +376,14 @@ def test_worker_import_chain_is_qt_free():
         "import modules.optimizer.backend.run_setup; "
         "import modules.common.backend.regime_join; "
         "import modules.regime_detector.backend.runner; "
+        # the report's backend half, and the package __init__ that every one
+        # of those imports executes on the way in
+        "import modules.common.trade_report; "
+        "import modules.common.trade_report.backend.trade_stats; "
+        "import modules.common.trade_report.backend.trade_notes; "
+        "import modules.common.trade_report.backend.layout; "
+        "import modules.optimizer.cell_detail; "
+        "import modules.optimizer.combine_detail; "
         "assert 'PySide6' not in sys.modules, 'engine import pulled in Qt'; "
         "assert 'pyqtgraph' not in sys.modules, 'engine import pulled in pyqtgraph'; "
         "print('CLEAN')"

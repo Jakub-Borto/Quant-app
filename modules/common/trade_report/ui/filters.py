@@ -38,12 +38,6 @@ class CheckboxFilterRow(QWidget):
         return all(box.isChecked() for box in self._boxes.values())
 
 
-def make_trade_type_filter(trade_types: list[str],
-                           per_row: int = 6) -> CheckboxFilterRow:
-    """Filter row over the distinct trade_type values (all checked)."""
-    return CheckboxFilterRow([(t, t) for t in trade_types], per_row=per_row)
-
-
 def make_day_type_filter(checked_tags: set | None = None) -> CheckboxFilterRow:
     """Filter row over DAY_TYPE_ORDER (all checked unless told otherwise)."""
     return CheckboxFilterRow(list(DAY_TYPE_ORDER), checked_tags=checked_tags,

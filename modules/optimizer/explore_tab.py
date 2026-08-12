@@ -35,7 +35,8 @@ from modules.optimizer.backend.heatmap_model import (MIN_TRADES_DEFAULT,
                                                      _fmt_axis_value)
 from modules.optimizer.backend.metrics import (METRIC_LABELS, METRIC_ORDER,
                                                compute_metrics_by_cell)
-from modules.optimizer.cell_detail import CellDetailPanel
+from modules.common.trade_report.ui import TradeReport
+from modules.optimizer import cell_detail
 
 UNSAVED_LABEL = "● Unsaved run — switching away discards it"
 NEW_FOLDER    = "── New folder ──"
@@ -213,10 +214,13 @@ class ExploreTab(QWidget):
         self._reading.setVisible(False)
         lay.addWidget(self._reading)
 
-        self.cell_detail = CellDetailPanel(settings, track_worker)
-        lay.addWidget(self.cell_detail)
+        self.cell_report = TradeReport(
+            settings, track_worker=track_worker, header="Cell detail",
+            empty_message="No trades in this cell.")
+        self.cell_report.setVisible(False)
+        lay.addWidget(self.cell_report)
         # un-clicking the selected square closes its drill-down report
-        self._heatmap.cellDeselected.connect(self.cell_detail.hide_detail)
+        self._heatmap.cellDeselected.connect(self.cell_report.clear)
         lay.addSpacing(BOTTOM_PADDING)
         lay.addStretch()
 
@@ -331,7 +335,7 @@ class ExploreTab(QWidget):
 
     def _show_run(self, unsaved: bool | None) -> None:
         """Rebuild the caption/save-panel/controls for the current state."""
-        self.cell_detail.hide_detail()
+        self.cell_report.clear()
         if unsaved is None or self.state.trades is None:
             for w in (self._caption, self._held, self._heatmap,
                       self._heatmap_caption, self._reading, self._save_panel):
@@ -546,7 +550,7 @@ class ExploreTab(QWidget):
     def _on_cell_clicked(self, xi: int, yj: int) -> None:
         meta = self.state.meta
         x_axis, y_axis, slider_axes = self._axes()
-        self.cell_detail.show_cell(
-            self.state.trades, meta, x_axis, y_axis, slider_axes,
+        cell_detail.show_cell(
+            self.cell_report, self.state.trades, meta, x_axis, y_axis, slider_axes,
             self._slider_values(), self._half(), meta.get("split_date"),
             (xi, yj), self._buckets.selected(), self.state.run_root)

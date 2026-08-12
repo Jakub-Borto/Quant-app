@@ -91,21 +91,31 @@ modules/
                            discovery/loading), data_roots (multi-root scans,
                            output routing, ff-events resolution), trade_files
                            (save_trades + save_temp_trades + filter
-                           kv-metadata), trade_stats (compute_metrics,
-                           DAY_TYPE_ORDER, RR series), benchmark (α/β
-                           regression), chart_window
+                           kv-metadata), regime_join
     ui/                    shared Qt: theme, workers (FunctionWorker +
                            cancellation), widgets, params_form, dataframe
                            model, settings dialog, charts/ (pyqtgraph:
                            equity, candlestick, histogram, fan, heatmap,
-                           path), trade_report/ (the shared report as an
-                           ORDERED STACK of sections — sections.py holds the
-                           registry + SectionStack, layout_dialog.py the gear
-                           UI; order/visibility persist in settings.json
-                           ui_prefs and are shared by Backtester AND
-                           Optimizer cell detail. Also TradeActionsRow (Save
-                           Trades / Go to Analytics / Go to Monte Carlo) and
-                           the regime source/filter sections)
+                           path)
+    trade_report/          THE shared report — one implementation, used by
+                           the Backtester AND both Optimizer drill-downs.
+                           backend/ (pure): frame.py (the canonical trades
+                           shape + narrow/entry_frame/apply_mask + the
+                           ReportContext / SaveTarget value types), layout.py
+                           (the section registry, the 14 persistence keys,
+                           resolve_layout), trade_stats (compute_metrics,
+                           DAY_TYPE_ORDER, RR series), trade_notes (flatten +
+                           query the strategies' notes JSON), benchmark (α/β),
+                           chart_window. ui/: report.py = TradeReport, the
+                           ONE filter chain; stack.py + panel.py render it as
+                           an ORDERED STACK of sections whose order/visibility
+                           persist in settings.json ui_prefs (layout_dialog.py
+                           is the gear); one file per section, plus
+                           TradeActionsRow (Save Trades / Go to Analytics /
+                           Go to Monte Carlo). The root __init__ MUST stay
+                           Qt-free — importing anything under backend/ runs
+                           it, and a Qt export would drag PySide6 into
+                           optimizer pool workers.
   data_formatter/          backend/scan.py + window.py
   backtester/              backend/{run,day_types}.py + window.py
   analytics/               backend/{io,sizing,costs,metrics}.py +
@@ -124,10 +134,10 @@ modules/
                            (engine, param_space, metrics, buckets, io, loader,
                            combine/, + heatmap_model, run_setup) — pure,
                            tested; UI: sweep_panel, new_run_tab, explore_tab,
-                           report_host (the shared drill-down: sections +
-                           the backtester-shaped filter chain), its two
-                           subclasses cell_detail + combine_detail,
-                           combine_tab, window.py
+                           combine_tab, window.py + cell_detail /
+                           combine_detail — slicing and save names ONLY (both
+                           Qt-free); the report itself is
+                           modules.common.trade_report
   scripts/                 quick-script launcher: backend/{ports,scan,browser}.py
                            (pure) + process_manager.py (QProcess per script
                            instance) + log_panel.py + window.py
@@ -146,7 +156,10 @@ regime_detectors/          regime-detector plugins (+ base.py: import-idiom
                            doc; scaffold `_scaffold_example.py`)
 forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
 orderbook_replay_cpp/      C++ (pybind11) L3 order-book replay kernel
-tests/                     pytest suite (optimizer backend + metrics + Qt smoke)
+tests/                     pytest suite (optimizer backend + metrics + Qt
+                           smoke + the shared report: test_trade_report.py
+                           pins that the Backtester's and the Optimizer's
+                           frame shapes produce the SAME report)
 ```
 
 (The data root lives OUTSIDE the repo at `D:/market_data` since July 2026.)
@@ -202,7 +215,15 @@ column schema, not Python imports.
 - **Qt spin boxes need explicit ranges** — the 0..99.99 default silently
   clamps real values (a logic bug, not a cosmetic one).
 - **Backend never imports Qt** — a worker-process import chain that pulls in
-  PySide6 is a bug (tests/test_qt_smoke.py enforces this).
+  PySide6 is a bug (tests/test_qt_smoke.py enforces this). That includes a
+  package `__init__.py` that re-exports a widget.
+- **The trade report has ONE implementation.** Backtester, Optimizer cell
+  drill-down and Combine drill-down all construct
+  `modules.common.trade_report.ui.TradeReport` — there is no subclassing and
+  no second copy of the filter chain. A caller hands it a `ReportContext`
+  once per selection and calls `show_trades(frame, …)`; anything about
+  filtering, sections or the save handoff is changed in that package, never
+  in a calling module.
 - **No `from __future__ import annotations` in a plugin file that defines a
   `@dataclass`.** The plugin loader execs files WITHOUT `sys.modules`
   registration; on Python 3.13 string dataclass annotations crash

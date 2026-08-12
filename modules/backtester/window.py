@@ -1,24 +1,23 @@
 """
 Backtester window — run a strategy on a dataset and inspect the results.
 
-The PySide6 port of legacy_streamlit/views/backtester.py. Same flow and same
-filter ordering:
+This window owns the run: the pickers, the params form, the worker thread and
+the day-type tagging.
 
     controls -> params form -> Run (worker thread)
     -> tag day types (FF events from the dataset's data root)
-    -> trade-type filter row  (recompute cumulative_ticks)
-    -> News & Holiday breakdown  (sees trade-type-filtered, PRE-day-filter trades)
-    -> day-type filter row  (recompute cumulative_ticks)
-    -> shared TradeReportPanel (metrics / exposure / equity / detail / RR)
-    -> trades table + the shared TradeActionsRow: Save Trades (strips the
-       derived day_type column; kv-metadata + dedup; saves into the run's
-       data root trades/) and Go to Analytics / Go to Monte Carlo (save the
-       filtered trades to the run root's temp/ as {ASSET}_temp_file_N.parquet,
-       then open the module in a new window with that file preselected)
+    -> TradeReport.show_trades()
+
+Everything after that — the filter chain, every section, Save Trades and the
+Analytics / Monte Carlo handoff — is modules.common.trade_report, the same
+widget the Optimizer's cell and Combine drill-downs use. There is exactly one
+implementation of it; if you are about to change filter behaviour, change it
+there.
 
 Save uses the dataset/strategy/dates captured AT RUN TIME (the old page read
 the current widget values, which could drift after the run — same values in
-every normal flow).
+every normal flow). day_types defaults to KEEP, so a day-type choice survives
+a re-run — the one report behaviour this window relies on.
 """
 
 import pandas as pd
@@ -34,21 +33,12 @@ from modules.common.backend.data_roots import (DatasetRef, available_dates,
                                                resolve_ff_events,
                                                scan_structure)
 from modules.common.backend.plugins import PluginRef, list_strategies, load_strategy
-from modules.common.trade_report.backend.trade_stats import DAY_TYPE_ORDER
+from modules.common.trade_report.ui import (ReportContext, SaveTarget,
+                                            TradeReport, attach_layout_gear)
 from modules.common.ui.module_window import ModuleWindowBase
 from modules.common.ui.params_form import ParamsForm
-from modules.common.trade_report.ui.filters import (make_day_type_filter,
-                                                    make_trade_type_filter)
-from modules.common.trade_report.ui.actions_row import TradeActionsRow
-from modules.common.trade_report.ui.layout_dialog import ReportLayoutDialog
-from modules.common.trade_report.ui.entry_section import EntryBreakdownSection
-from modules.common.trade_report.ui.news_section import NewsBreakdownTable
-from modules.common.trade_report.ui.notes_table_section import TradeNotesSection
-from modules.common.trade_report.ui.panel import TradeReportPanel
-from modules.common.trade_report.ui.regime_section import (FILTER_COLUMN,
-                                                           RegimeSection)
 from modules.common.ui.widgets import (Banner, Caption, SectionHeader,
-                                       gear_button, wrap_card)
+                                       wrap_card)
 from modules.common.ui.workers import FunctionWorker
 
 
@@ -57,22 +47,6 @@ from modules.common.ui.workers import FunctionWorker
 # run-out means the last sections behave like the ones above them.
 BOTTOM_PADDING = 900
 
-
-def _entry_frame(frame, column: str, selected) -> "pd.DataFrame":
-    """Apply one filter to the entry-breakdown frame, which is everything the
-    report is showing EXCEPT the trade-type filter (entry types have to stay
-    comparable, so filtering to one of them would defeat the table)."""
-    if selected is None or column not in frame.columns:
-        return frame
-    return frame[frame[column].isin(selected)]
-
-
-def _entry_mask(frame, notes_section) -> "pd.DataFrame":
-    """The trade-notes query applied to the same entry-breakdown frame.
-    _entry_frame's column+isin shape cannot express an arbitrary predicate,
-    so this is a sibling rather than another parameter."""
-    mask = notes_section.mask_for(frame)
-    return frame if mask is None else frame[mask]
 
 
 class BacktesterWindow(ModuleWindowBase):
@@ -90,22 +64,13 @@ class BacktesterWindow(ModuleWindowBase):
         self._strategy_module = None
         self._structure: dict = {}
         self._params_form: ParamsForm | None = None
-        self._regime_tagged: pd.DataFrame | None = None   # _tagged + regime
-        # the notes section is a filter stage AND lives inside the report it
-        # filters; the latch makes a re-entrant _apply_filters impossible
-        self._in_apply = False
-
-        self._layout_gear = gear_button("Report layout — order and show/hide "
-                                        "the report's sections")
-        self._layout_gear.clicked.connect(self._open_layout_dialog)
-        self.add_header_action(self._layout_gear)
+        attach_layout_gear(self, settings,
+                           tooltip="Report layout — order and show/hide the "
+                                   "report's sections")
 
         self._build_controls()
         self._build_results_area()
         self._rescan()
-
-    def _open_layout_dialog(self) -> None:
-        ReportLayoutDialog(self.settings, parent=self).exec()
 
     # ══ controls ═══════════════════════════════════════════════════════════════
     def _build_controls(self) -> None:
@@ -165,70 +130,11 @@ class BacktesterWindow(ModuleWindowBase):
         self._strategy.currentIndexChanged.connect(self._on_strategy_changed)
 
     def _build_results_area(self) -> None:
-        """Build every results widget, hand the host-owned ones to the panel,
-        and let the panel lay them all out in the user's saved order. Only the
-        two banners live outside the section stack — they are transient
-        messages, not sections."""
-        self._results = QWidget()
-        self._results.setVisible(False)
-        lay = QVBoxLayout(self._results)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
-
-        self._filter_banner = Banner()
-        lay.addWidget(self._filter_banner)
-
-        self._panel = TradeReportPanel(self.settings)
-
-        # trade-type filter: a stable container, because the filter row itself
-        # is rebuilt from each run's trade_type values
-        self._tt_container = QWidget()
-        self._tt_holder = QVBoxLayout(self._tt_container)
-        self._tt_holder.setContentsMargins(0, 0, 0, 0)
-        self._tt_holder.addWidget(Caption("Filter by trade type"))
-        self._tt_filter = None
-
-        self._dt_container = QWidget()
-        dt_lay = QVBoxLayout(self._dt_container)
-        dt_lay.setContentsMargins(0, 0, 0, 0)
-        dt_lay.addWidget(Caption("Filter by day type"))
-        self._dt_filter = make_day_type_filter()
-        self._dt_filter.selectionChanged.connect(self._apply_filters)
-        dt_lay.addWidget(self._dt_filter)
-
-        self._news = NewsBreakdownTable()
-        self._entry = EntryBreakdownSection()
-        self._regime = RegimeSection(self.settings, self.track_worker)
-        self._regime.sourceChanged.connect(self._on_regime_source_changed)
-        self._regime.selectionChanged.connect(self._apply_filters)
-        self._notes = TradeNotesSection(self.settings, self.track_worker)
-        self._notes.queryChanged.connect(self._apply_filters)
-
-        actions_holder = QWidget()
-        save_col = QVBoxLayout(actions_holder)
-        save_col.setContentsMargins(0, 0, 0, 0)
-        save_row = QHBoxLayout()
-        self._save_banner = Banner()
-        self._actions_row = TradeActionsRow(self.settings, self._actions_context,
-                                            self._save_banner)
-        save_row.addStretch()
-        save_row.addWidget(self._actions_row)
-        save_row.addStretch()
-        save_col.addLayout(save_row)
-        save_col.addWidget(self._save_banner)
-
-        for key, widget in (("trade_type_filter", self._tt_container),
-                            ("day_type_filter", self._dt_container),
-                            ("news", self._news),
-                            ("entry_breakdown", self._entry),
-                            ("regime", self._regime),
-                            ("trades_table", self._notes),
-                            ("actions", actions_holder)):
-            self._panel.attach_host_section(key, widget)
-        self._panel.build_sections()
-        lay.addWidget(self._panel)
-
-        self.content.addWidget(self._results)
+        """The whole report is one widget — see modules.common.trade_report."""
+        self._report = TradeReport(self.settings,
+                                   track_worker=self.track_worker)
+        self._report.setVisible(False)
+        self.content.addWidget(self._report)
         self.content.addSpacing(BOTTOM_PADDING)
         self.content.addStretch()
 
@@ -322,7 +228,6 @@ class BacktesterWindow(ModuleWindowBase):
     # ══ run flow ═══════════════════════════════════════════════════════════════
     def _on_run(self) -> None:
         self._banner.clear_message()
-        self._save_banner.clear_message()
         ref: DatasetRef | None = self._dataset.currentData()
         if ref is None or self._strategy_module is None:
             self._banner.show_message("error", "Pick a dataset and a strategy first.")
@@ -365,7 +270,7 @@ class BacktesterWindow(ModuleWindowBase):
         self._run_btn.setEnabled(True)
         self._status.setText("")
         if trades.empty:
-            self._results.setVisible(False)
+            self._report.setVisible(False)
             self._banner.show_message("warning", "Strategy produced no trades.")
             return
 
@@ -374,178 +279,18 @@ class BacktesterWindow(ModuleWindowBase):
         ff = resolve_ff_events(self._run_ref.root, self.settings.data_roots)
         self._tagged = tag_trades(trades, load_day_classifications(ff))
 
-        # (re)build the trade-type filter row from this run's values
-        if self._tt_filter is not None:
-            self._tt_filter.deleteLater()
-            self._tt_filter = None
-        unique_types = []
-        if "trade_type" in self._tagged.columns:
-            unique_types = sorted(self._tagged["trade_type"].dropna().unique().tolist())
-        self._panel.set_section_visible("trade_type_filter", bool(unique_types))
-        if unique_types:
-            self._tt_filter = make_trade_type_filter(unique_types)
-            self._tt_filter.selectionChanged.connect(self._apply_filters)
-            self._tt_holder.addWidget(self._tt_filter)
-
-        panel_ref = self._run_ref
-        self._panel.set_context(self._run_asset,
-                                ASSET_INFO[self._run_asset]["tick_size"],
-                                ASSET_INFO[self._run_asset]["ticks_per_point"],
-                                candles_folder=panel_ref.path,
-                                parquet_root=panel_ref.root / "parquet")
-        # regimes: narrow the run list to this asset and the load to this run's
-        # dates, then re-join if a run is already loaded
+        info = ASSET_INFO[self._run_asset]
         dates = pd.to_datetime(self._tagged["date"])
-        self._regime.set_context(self._run_asset,
-                                 dates.min().strftime("%Y-%m-%d"),
-                                 dates.max().strftime("%Y-%m-%d"))
-        self._regime_tagged = self._regime.annotate(self._tagged)
-        self._notes.set_source(self._regime_tagged)
-
-        self._results.setVisible(True)
-        self._apply_filters()
-
-    # ══ filters + report (the old post-run render chain, verbatim order) ═══════
-    def _on_regime_source_changed(self) -> None:
-        """Re-run the (potentially expensive) regime join once per source
-        change, not once per filter toggle."""
-        if self._tagged is None:
-            return
-        self._regime_tagged = self._regime.annotate(self._tagged)
-        self._notes.set_source(self._regime_tagged)
-        self._apply_filters()
-
-    def _apply_filters(self) -> None:
-        if self._tagged is None or self._in_apply:
-            return
-        self._in_apply = True
-        try:
-            self._run_filters()
-        finally:
-            self._in_apply = False
-
-    def _run_filters(self) -> None:
-        self._panel.set_section_forced_visible("trades_table", False)
-        trades = getattr(self, "_regime_tagged", None)
-        if trades is None or len(trades) != len(self._tagged):
-            trades = self._tagged
-        self._filter_banner.clear_message()
-
-        # every entry type, before the trade-type filter narrows them (the
-        # day-type/regime filters ARE applied further down — see _entry_frame)
-        all_entries = trades
-
-        # ── trade-type filter ─────────────────────────────────────────────────
-        self._selected_trade_types_meta = "all"
-        trade_type_filtered = False
-        if self._tt_filter is not None:
-            unique_types = sorted(trades["trade_type"].dropna().unique().tolist())
-            selected_types = self._tt_filter.selected()
-            if not selected_types:
-                self._filter_banner.show_message("warning", "No trade types selected.")
-                self._set_report_visible(False)
-                return
-            trades = trades[trades["trade_type"].isin(selected_types)].copy()
-            trades["cumulative_ticks"] = trades["ticks"].cumsum()
-            trade_type_filtered = len(selected_types) < len(unique_types)
-            if trade_type_filtered:
-                self._selected_trade_types_meta = selected_types
-
-        # ── news & holiday breakdown — BEFORE the day-type filter ─────────────
-        has_news = self._news.set_trades(trades)
-        self._panel.set_section_visible("news", has_news)
-
-        # ── day-type filter ───────────────────────────────────────────────────
-        selected_day_types = self._dt_filter.selected()
-        if not selected_day_types:
-            self._filter_banner.show_message("warning", "No day types selected.")
-            self._set_report_visible(False)
-            return
-        trades = trades[trades["day_type"].isin(selected_day_types)].copy()
-        trades["cumulative_ticks"] = trades["ticks"].cumsum()
-        all_entries = _entry_frame(all_entries, "day_type", selected_day_types)
-        if trades.empty:
-            self._filter_banner.show_message("warning",
-                                             "No trades match the selected filters.")
-            self._set_report_visible(False)
-            return
-
-        day_type_filtered = len(selected_day_types) < len(DAY_TYPE_ORDER)
-
-        # ── regime breakdown — BEFORE the regime filter, so the table always
-        #    shows every state (same rule as the news table above) ────────────
-        regime_states = self._regime.states()
-        self._regime.set_trades(trades)
-
-        # ── regime filter ─────────────────────────────────────────────────────
-        regime_filtered = False
-        selected_regimes = self._regime.selected()
-        if selected_regimes is not None and FILTER_COLUMN in trades.columns:
-            if not selected_regimes:
-                self._filter_banner.show_message("warning",
-                                                 "No regime states selected.")
-                self._set_report_visible(False)
-                return
-            trades = trades[trades[FILTER_COLUMN].isin(selected_regimes)].copy()
-            trades["cumulative_ticks"] = trades["ticks"].cumsum()
-            all_entries = _entry_frame(all_entries, FILTER_COLUMN, selected_regimes)
-            if trades.empty:
-                self._filter_banner.show_message(
-                    "warning", "No trades match the selected regime states.")
-                self._set_report_visible(False)
-                return
-            regime_filtered = len(selected_regimes) < len(regime_states) + 1
-
-        # ── trade-notes query — LAST, so a condition can reference every
-        #    derived column, day_type and regime included ───────────────────
-        notes_filtered = False
-        notes_mask = self._notes.report_mask(trades)
-        if notes_mask is not None:
-            trades = trades[notes_mask].copy()
-            trades["cumulative_ticks"] = trades["ticks"].cumsum()
-            all_entries = _entry_mask(all_entries, self._notes)
-            if trades.empty:
-                self._filter_banner.show_message(
-                    "warning", "No trades match the trade-notes query.")
-                self._set_report_visible(False)
-                # keep the section itself on screen — it holds the query the
-                # user needs to undo
-                self._panel.set_section_forced_visible("trades_table", True)
-                self._notes.set_trades(trades)
-                return
-            notes_filtered = self._notes.is_narrowing()
-
-        self._filtered = (day_type_filtered or trade_type_filtered
-                          or regime_filtered or notes_filtered)
-        self._selected_day_types = selected_day_types
-        self._filtered_trades = trades
-
-        # entry breakdown: every entry type, under the day/regime slice
-        self._panel.set_section_visible(
-            "entry_breakdown", self._entry.set_trades(all_entries))
-
-        self._set_report_visible(True)
-        self._panel.set_trades(trades)
-
-        # only worth a column of its own when it can disagree with `regime`
-        self._notes.set_display_hints(
-            show_regime_filter=(self._regime.timings_differ()
-                                and FILTER_COLUMN in trades.columns))
-        self._notes.set_trades(trades)
-
-    def _set_report_visible(self, visible: bool) -> None:
-        self._panel.set_report_visible(visible)
-
-    # ══ save / go to Analytics / Monte Carlo (shared TradeActionsRow) ═══════════
-    def _actions_context(self) -> dict | None:
-        trades = getattr(self, "_filtered_trades", None)
-        if trades is None or self._run_ref is None:
-            return None
-        i = self._run_inputs
-        save_name = (f"{i['dataset']}_{i['strategy']}_"
-                     f"{i['start_date']}_{i['end_date']}")
-        return {"trades": trades, "asset": self._run_asset,
-                "root": self._run_ref.root, "save_name": save_name,
-                "filtered": self._filtered,
-                "day_types": self._selected_day_types,
-                "trade_types": self._selected_trade_types_meta}
+        inputs = self._run_inputs
+        self._report.set_context(ReportContext(
+            ticker=self._run_asset, tick_size=info["tick_size"],
+            ticks_per_point=info["ticks_per_point"],
+            root=self._run_ref.root, candles_folder=self._run_ref.path,
+            # narrow the regime run list to this asset and this run's dates
+            regime_start=dates.min().strftime("%Y-%m-%d"),
+            regime_end=dates.max().strftime("%Y-%m-%d")))
+        # day_types defaults to KEEP, so a day-type choice survives a re-run
+        self._report.show_trades(
+            self._tagged,
+            save_target=SaveTarget([inputs["dataset"], inputs["strategy"],
+                                    inputs["start_date"], inputs["end_date"]]))

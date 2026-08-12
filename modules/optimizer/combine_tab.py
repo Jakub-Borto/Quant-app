@@ -45,7 +45,8 @@ from modules.optimizer.backend.combine.pool import (discover_entry_runs,
                                                     list_containers,
                                                     load_entry_runs)
 from modules.optimizer.backend.combine.runner import run_combine
-from modules.optimizer.combine_detail import CombineDetailPanel
+from modules.common.trade_report.ui import TradeReport
+from modules.optimizer.combine_detail import CombineReportSource
 
 _SELECTION_TOOLTIP = """\
 Redundancy penalty λ (ticks per unit correlation): greedy scores each
@@ -284,8 +285,13 @@ class CombineTab(QWidget):
             "across the boundary day can overlap at the seam."))
         self._report_banner = Banner()
         rlay.addWidget(self._report_banner)
-        self._combine_detail = CombineDetailPanel(self.settings, track_worker)
-        rlay.addWidget(self._combine_detail)
+        self._combine_report = TradeReport(
+            self.settings, track_worker=track_worker,
+            header="Combined trade report",
+            empty_message="No trades in this slice of the combined set.")
+        self._combine_report.setVisible(False)
+        self._combine_detail = CombineReportSource(self._combine_report)
+        rlay.addWidget(self._combine_report)
         lay.addWidget(self._results_box)
         lay.addSpacing(BOTTOM_PADDING)
         lay.addStretch()
@@ -509,7 +515,7 @@ class CombineTab(QWidget):
         # a different saved run is a different ticker/window/pool — close the
         # report rather than refreshing it into an unrelated set
         self._report_btn.setChecked(False)
-        self._combine_detail.hide_detail()
+        self._combine_detail.clear()
         self._report_banner.clear_message()
 
         path_df, members_df, meta = cmb_io.load_combine_run(
@@ -623,7 +629,7 @@ class CombineTab(QWidget):
         if checked:
             self._open_report()
         else:
-            self._combine_detail.hide_detail()
+            self._combine_detail.clear()
             self._report_banner.clear_message()
 
     def _on_scope_changed(self, scope: str) -> None:
@@ -667,7 +673,7 @@ class CombineTab(QWidget):
                 day_bucket_defaults=set(meta.get("enabled_day_buckets", [])))
         except (OSError, ValueError, KeyError) as exc:
             self._invalidate_cells()
-            self._combine_detail.hide_detail()
+            self._combine_detail.clear()
             self._report_btn.setChecked(False)
             self._report_banner.show_message(
                 "error", f"Could not rebuild this set's trades: {exc}")

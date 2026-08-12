@@ -36,8 +36,8 @@ NOTES = [
 
 
 def _host_frame(notes=None, trade_types=("alpha", "beta", "alpha")):
-    """A frame shaped like an optimizer run's rows (what TradeReportHost
-    expects: pnl_ticks + day_bucket, not ticks + day_type)."""
+    """A frame shaped like an optimizer run's rows (pnl_ticks + day_bucket,
+    which from_optimizer_rows normalises, not ticks + day_type)."""
     notes = NOTES if notes is None else notes
     rows = []
     for n, ttype in enumerate(trade_types):
@@ -271,62 +271,72 @@ def test_the_match_readout_counts_against_the_whole_set(section):
 # ══ scope: table only vs the whole report ════════════════════════════════════
 @pytest.fixture
 def host(qtbot, tmp_path):
-    from modules.optimizer.combine_detail import CombineDetailPanel
-    panel = CombineDetailPanel(Settings({}, [str(tmp_path)]), lambda w: None)
-    qtbot.addWidget(panel)
-    return panel
+    """The shared report itself — the same widget all three modules use."""
+    from modules.common.trade_report.ui import TradeReport
+    report = TradeReport(Settings({}, [str(tmp_path)]),
+                         track_worker=lambda w: None)
+    qtbot.addWidget(report)
+    return report
 
 
 def _load(host, tmp_path, frames=None):
+    """Drive the report the way the Combine tab does. Returns the source, so a
+    test can switch scope; the notes section is host._notes."""
+    from modules.optimizer.combine_detail import CombineReportSource
     frames = frames or {"all": _host_frame()}
-    host.show_set(resolve=lambda scope: frames[scope], scope="all",
-                  header_stem="combined", save_stem=["ES", "run", "k2"],
-                  ticker="ES", tick_size=0.25, ticks_per_point=4.0,
-                  dataset="", root=tmp_path, regime_start="2026-01-05",
-                  regime_end="2026-01-07",
-                  # every bucket checked, so the day filter itself is not
-                  # narrowing and `filtered` can only come from the query
-                  day_bucket_defaults={tag for tag, _ in DAY_TYPE_ORDER})
+    source = CombineReportSource(host)
+    source.show_set(resolve=lambda scope: frames[scope], scope="all",
+                    header_stem="combined", save_stem=["ES", "run", "k2"],
+                    ticker="ES", tick_size=0.25, ticks_per_point=4.0,
+                    dataset="", root=tmp_path, regime_start="2026-01-05",
+                    regime_end="2026-01-07",
+                    # every bucket checked, so the day filter itself is not
+                    # narrowing and `filtered` can only come from the query
+                    day_bucket_defaults={tag for tag, _ in DAY_TYPE_ORDER})
     host._notes.expand_notes()
-    return host._notes
+    return source
 
 
 def test_scope_off_narrows_only_the_table(host, tmp_path):
-    notes = _load(host, tmp_path)
+    _load(host, tmp_path)
+    notes = host._notes
     _condition(_first_row(notes), "notes.flip_count", "ge", "3")
     notes._commit()
 
     assert notes._table.model().rowCount() == 2
-    assert len(host._filtered_trades) == 3          # the report is untouched
-    assert host._filtered is False
+    assert len(host.filtered_trades()) == 3          # the report is untouched
+    assert host.is_filtered() is False
     assert host._actions_context()["filtered"] is False
 
 
 def test_scope_on_narrows_the_whole_report(host, tmp_path):
-    notes = _load(host, tmp_path)
+    _load(host, tmp_path)
+    notes = host._notes
     _condition(_first_row(notes), "notes.flip_count", "ge", "3")
     notes._commit()
     notes._scope.setChecked(True)
 
-    assert len(host._filtered_trades) == 2
-    assert host._filtered is True
+    assert len(host.filtered_trades()) == 2
+    assert host.is_filtered() is True
     assert host._actions_context()["filtered"] is True
     assert notes._table.model().rowCount() == 2
 
 
 def test_a_query_that_matches_everything_is_not_a_filter(host, tmp_path):
-    notes = _load(host, tmp_path)
+    _load(host, tmp_path)
+    notes = host._notes
     _condition(_first_row(notes), "notes.flip_count", "ge", "0")
     notes._commit()
     notes._scope.setChecked(True)
 
-    assert len(host._filtered_trades) == 3
+    assert len(host.filtered_trades()) == 3
     assert notes.is_narrowing() is False
-    assert host._filtered is False
+    assert host.is_filtered() is False
 
 
 def test_one_apply_runs_the_filter_chain_exactly_once(host, tmp_path):
-    notes = _load(host, tmp_path)
+    _load(host, tmp_path)
+    notes = host._notes
     notes._scope.setChecked(True)
     calls = []
     original = host._run_filters
@@ -338,23 +348,25 @@ def test_one_apply_runs_the_filter_chain_exactly_once(host, tmp_path):
 
 
 def test_a_query_matching_nothing_keeps_the_section_reachable(host, tmp_path):
-    notes = _load(host, tmp_path)
+    _load(host, tmp_path)
+    notes = host._notes
     _condition(_first_row(notes), "notes.flip_count", "gt", "99")
     notes._commit()
     notes._scope.setChecked(True)
 
-    stack = host._panel.sections
+    stack = host.panel.sections
     assert stack.frame("metrics").isVisible() is False
     assert stack.frame("trades_table").isVisible() is True
     assert notes._table.model().rowCount() == 0
 
     notes._clear()                                   # and it can be undone
     assert stack.frame("trades_table").isVisible() is True
-    assert len(host._filtered_trades) == 3
+    assert len(host.filtered_trades()) == 3
 
 
 def test_flattened_columns_never_reach_the_saved_trades(host, tmp_path):
-    notes = _load(host, tmp_path)
+    _load(host, tmp_path)
+    notes = host._notes
     _condition(_first_row(notes), "notes.flip_count", "ge", "3")
     notes._commit()
     notes._scope.setChecked(True)
@@ -368,14 +380,15 @@ def test_flattened_columns_never_reach_the_saved_trades(host, tmp_path):
 def test_a_query_on_a_shared_key_survives_a_scope_switch(host, tmp_path):
     frames = {"all": _host_frame(), "oos": _host_frame(NOTES[:2],
                                                        ("alpha", "beta"))}
-    notes = _load(host, tmp_path, frames)
+    source = _load(host, tmp_path, frames)
+    notes = host._notes
     _condition(_first_row(notes), "notes.flip_count", "ge", "3")
     notes._commit()
     notes._scope.setChecked(True)
-    assert len(host._filtered_trades) == 2
+    assert len(host.filtered_trades()) == 2
 
-    host.set_scope("oos")
-    assert len(host._filtered_trades) == 1
+    source.set_scope("oos")
+    assert len(host.filtered_trades()) == 1
     assert _first_row(notes)._orphan is False
 
 
@@ -385,12 +398,13 @@ def test_a_query_on_a_vanished_key_degrades_to_identity(host, tmp_path):
     silently empty the whole report."""
     frames = {"all": _host_frame(), "oos": _host_frame(NOTES[:2],
                                                        ("alpha", "beta"))}
-    notes = _load(host, tmp_path, frames)
+    source = _load(host, tmp_path, frames)
+    notes = host._notes
     _condition(_first_row(notes), "notes.trail5_stop", "gt", "0")
     notes._commit()
     notes._scope.setChecked(True)
-    assert len(host._filtered_trades) == 1
+    assert len(host.filtered_trades()) == 1
 
-    host.set_scope("oos")
+    source.set_scope("oos")
     assert _first_row(notes)._orphan is True
-    assert len(host._filtered_trades) == 2          # identity, not zero
+    assert len(host.filtered_trades()) == 2          # identity, not zero

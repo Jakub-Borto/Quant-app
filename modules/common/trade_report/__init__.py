@@ -22,11 +22,15 @@ shared package reaching into a feature module. It is deliberate and safe
 no cycle); do not "fix" it by hoisting anything the other way.
 """
 
+from .backend.frame import (KEEP, ReportContext, SaveTarget, TradeFrameError,
+                            canonical_trades, from_optimizer_rows, save_name)
 from .backend.layout import (DEFAULT_ORDER, DEFAULT_SECTIONS, MODE_COLLAPSED,
                              MODE_HIDDEN, MODE_LABELS, MODE_VISIBLE, MODES,
                              REPORT_KEYS, SPEC_BY_KEY, SectionSpec,
                              resolve_layout)
 
-__all__ = ["DEFAULT_ORDER", "DEFAULT_SECTIONS", "MODE_COLLAPSED",
+__all__ = ["KEEP", "ReportContext", "SaveTarget", "TradeFrameError",
+           "canonical_trades", "from_optimizer_rows", "save_name",
+           "DEFAULT_ORDER", "DEFAULT_SECTIONS", "MODE_COLLAPSED",
            "MODE_HIDDEN", "MODE_LABELS", "MODE_VISIBLE", "MODES",
            "REPORT_KEYS", "SPEC_BY_KEY", "SectionSpec", "resolve_layout"]

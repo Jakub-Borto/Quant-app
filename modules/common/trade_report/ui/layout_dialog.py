@@ -152,3 +152,23 @@ class ReportLayoutDialog(QDialog):
 
 
 DEFAULT_SECTION_ORDER = DEFAULT_ORDER   # re-export for convenience
+
+
+def attach_layout_gear(window, settings, *,
+                       tooltip="Report layout — order and show/hide the "
+                               "report's sections"):
+    """
+    The gear in a module window's header that opens this dialog, in one call.
+
+    Window chrome rather than report chrome on purpose: add_header_action is a
+    ModuleWindowBase service that a plain QWidget cannot reach, and the dialog
+    talks to every open report through LAYOUT_BUS anyway — it never needs a
+    reference to the one it was opened from.
+    """
+    from modules.common.ui.widgets import gear_button
+
+    gear = gear_button(tooltip)
+    gear.clicked.connect(
+        lambda: ReportLayoutDialog(settings, parent=window).exec())
+    window.add_header_action(gear)
+    return gear
