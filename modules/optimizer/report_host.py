@@ -17,12 +17,12 @@ import pandas as pd
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 
 from modules.common.backend.trade_stats import DAY_TYPE_ORDER
-from modules.common.ui.dataframe_model import make_table_view, update_table_view
 from modules.common.ui.trade_report.actions_row import TradeActionsRow
 from modules.common.ui.trade_report.entry_section import EntryBreakdownSection
 from modules.common.ui.trade_report.filters import (CheckboxFilterRow,
                                                     make_day_type_filter)
 from modules.common.ui.trade_report.news_section import NewsBreakdownTable
+from modules.common.ui.trade_report.notes_table_section import TradeNotesSection
 from modules.common.ui.trade_report.panel import TradeReportPanel
 from modules.common.ui.trade_report.regime_section import (FILTER_COLUMN,
                                                            RegimeSection)
@@ -36,6 +36,13 @@ def _entry_frame(frame, column: str, selected):
     if selected is None or column not in frame.columns:
         return frame
     return frame[frame[column].isin(selected)]
+
+
+def _entry_mask(frame, notes_section):
+    """The trade-notes query applied to the same frame. _entry_frame's
+    column+isin shape cannot express an arbitrary predicate."""
+    mask = notes_section.mask_for(frame)
+    return frame if mask is None else frame[mask]
 
 
 class TradeReportHost(QWidget):
@@ -55,6 +62,9 @@ class TradeReportHost(QWidget):
         self._selected_day_types: list = []
         self._selected_trade_types_meta = "all"
         self._asset = None
+        # the notes section is a filter stage AND lives inside the report it
+        # filters; the latch makes a re-entrant _apply_filters impossible
+        self._in_apply = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -94,7 +104,8 @@ class TradeReportHost(QWidget):
         self._regime = RegimeSection(settings, self._track_worker)
         self._regime.sourceChanged.connect(self._on_regime_source_changed)
         self._regime.selectionChanged.connect(self._apply_filters)
-        self._table = make_table_view(pd.DataFrame(), height=380)
+        self._notes = TradeNotesSection(settings, self._track_worker)
+        self._notes.queryChanged.connect(self._apply_filters)
 
         self._actions_row = TradeActionsRow(settings, self._actions_context,
                                             self._banner)
@@ -110,7 +121,7 @@ class TradeReportHost(QWidget):
                             ("news", self._news),
                             ("entry_breakdown", self._entry),
                             ("regime", self._regime),
-                            ("trades_table", self._table),
+                            ("trades_table", self._notes),
                             ("actions", actions_holder)):
             self._panel.attach_host_section(key, widget)
         self._panel.build_sections()
@@ -149,6 +160,7 @@ class TradeReportHost(QWidget):
             self._source_df = None
             self._regime_df = None
             self._filtered_trades = None
+            self._notes.set_source(None)
             return
 
         # backtester-shaped columns: ticks alias + historical day_type names
@@ -193,12 +205,14 @@ class TradeReportHost(QWidget):
         self._dt_holder.addWidget(self._dt_filter)
 
         self._regime_df = self._regime.annotate(df)
+        self._notes.set_source(self._regime_df)
         self._apply_filters()
 
     def hide_detail(self) -> None:
         self.setVisible(False)
         self._source_df = None
         self._filtered_trades = None
+        self._notes.set_source(None)
 
     # ── filters (verbatim backtester ordering) ────────────────────────────────
     def _on_regime_source_changed(self) -> None:
@@ -206,11 +220,20 @@ class TradeReportHost(QWidget):
         if self._source_df is None:
             return
         self._regime_df = self._regime.annotate(self._source_df)
+        self._notes.set_source(self._regime_df)
         self._apply_filters()
 
     def _apply_filters(self) -> None:
-        if self._source_df is None:
+        if self._source_df is None or self._in_apply:
             return
+        self._in_apply = True
+        try:
+            self._run_filters()
+        finally:
+            self._in_apply = False
+
+    def _run_filters(self) -> None:
+        self._panel.set_section_forced_visible("trades_table", False)
         df = self._regime_df
         if df is None or len(df) != len(self._source_df):
             df = self._source_df
@@ -268,7 +291,27 @@ class TradeReportHost(QWidget):
             df["cumulative_ticks"] = df["ticks"].cumsum()
             regime_filtered = len(selected_regimes) < len(regime_states) + 1
 
+        # ── trade-notes query — LAST, so a condition can reference every
+        #    derived column, day_type and regime included ───────────────────
+        notes_filtered = False
+        notes_mask = self._notes.report_mask(df)
+        if notes_mask is not None:
+            df = df[notes_mask].copy()
+            df["cumulative_ticks"] = df["ticks"].cumsum()
+            all_entries = _entry_mask(all_entries, self._notes)
+            if df.empty:
+                self._banner.show_message(
+                    "warning", "No trades match the trade-notes query.")
+                self._set_report_visible(False)
+                # keep the section itself on screen — it holds the query the
+                # user needs to undo
+                self._panel.set_section_forced_visible("trades_table", True)
+                self._notes.set_trades(df)
+                return
+            notes_filtered = self._notes.is_narrowing()
+
         self._filtered = (trade_type_filtered or regime_filtered
+                          or notes_filtered
                           or len(selected_day_types) < len(DAY_TYPE_ORDER))
         self._selected_day_types = selected_day_types
         self._filtered_trades = df
@@ -279,13 +322,7 @@ class TradeReportHost(QWidget):
         self._set_report_visible(True)
         self._panel.set_trades(df)
 
-        display_cols = [c for c in ["date", "direction", "entry_time",
-                                    "exit_time", "entry_price", "exit_price",
-                                    "exit_reason", "ticks", "trade_type",
-                                    "day_type", "regime"] if c in df.columns]
-        table = df[display_cols].copy()
-        table["date"] = pd.to_datetime(table["date"]).dt.date
-        update_table_view(self._table, table)
+        self._notes.set_trades(df)
 
     def _set_report_visible(self, visible: bool) -> None:
         self._panel.set_report_visible(visible)

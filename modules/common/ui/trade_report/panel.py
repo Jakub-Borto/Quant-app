@@ -105,6 +105,9 @@ class TradeReportPanel(QWidget):
     def set_section_visible(self, key: str, visible: bool) -> None:
         self.sections.set_frame_visible(key, visible)
 
+    def set_section_forced_visible(self, key: str, forced: bool) -> None:
+        self.sections.set_frame_forced_visible(key, forced)
+
     # ── context / data ────────────────────────────────────────────────────────
     def set_context(self, asset: str, tick_size: float, ticks_per_point: float,
                     candles_folder, parquet_root) -> None:

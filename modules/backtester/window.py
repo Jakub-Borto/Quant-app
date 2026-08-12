@@ -35,7 +35,6 @@ from modules.common.backend.data_roots import (DatasetRef, available_dates,
                                                scan_structure)
 from modules.common.backend.plugins import PluginRef, list_strategies, load_strategy
 from modules.common.backend.trade_stats import DAY_TYPE_ORDER
-from modules.common.ui.dataframe_model import make_table_view, update_table_view
 from modules.common.ui.module_window import ModuleWindowBase
 from modules.common.ui.params_form import ParamsForm
 from modules.common.ui.trade_report.filters import (make_day_type_filter,
@@ -44,6 +43,7 @@ from modules.common.ui.trade_report.actions_row import TradeActionsRow
 from modules.common.ui.trade_report.layout_dialog import ReportLayoutDialog
 from modules.common.ui.trade_report.entry_section import EntryBreakdownSection
 from modules.common.ui.trade_report.news_section import NewsBreakdownTable
+from modules.common.ui.trade_report.notes_table_section import TradeNotesSection
 from modules.common.ui.trade_report.panel import TradeReportPanel
 from modules.common.ui.trade_report.regime_section import (FILTER_COLUMN,
                                                            RegimeSection)
@@ -67,6 +67,14 @@ def _entry_frame(frame, column: str, selected) -> "pd.DataFrame":
     return frame[frame[column].isin(selected)]
 
 
+def _entry_mask(frame, notes_section) -> "pd.DataFrame":
+    """The trade-notes query applied to the same entry-breakdown frame.
+    _entry_frame's column+isin shape cannot express an arbitrary predicate,
+    so this is a sibling rather than another parameter."""
+    mask = notes_section.mask_for(frame)
+    return frame if mask is None else frame[mask]
+
+
 class BacktesterWindow(ModuleWindowBase):
     def __init__(self, settings, parent=None):
         super().__init__(settings, "Backtester",
@@ -83,6 +91,9 @@ class BacktesterWindow(ModuleWindowBase):
         self._structure: dict = {}
         self._params_form: ParamsForm | None = None
         self._regime_tagged: pd.DataFrame | None = None   # _tagged + regime
+        # the notes section is a filter stage AND lives inside the report it
+        # filters; the latch makes a re-entrant _apply_filters impossible
+        self._in_apply = False
 
         self._layout_gear = gear_button("Report layout — order and show/hide "
                                         "the report's sections")
@@ -190,7 +201,8 @@ class BacktesterWindow(ModuleWindowBase):
         self._regime = RegimeSection(self.settings, self.track_worker)
         self._regime.sourceChanged.connect(self._on_regime_source_changed)
         self._regime.selectionChanged.connect(self._apply_filters)
-        self._table = make_table_view(pd.DataFrame(), height=420)
+        self._notes = TradeNotesSection(self.settings, self.track_worker)
+        self._notes.queryChanged.connect(self._apply_filters)
 
         actions_holder = QWidget()
         save_col = QVBoxLayout(actions_holder)
@@ -210,7 +222,7 @@ class BacktesterWindow(ModuleWindowBase):
                             ("news", self._news),
                             ("entry_breakdown", self._entry),
                             ("regime", self._regime),
-                            ("trades_table", self._table),
+                            ("trades_table", self._notes),
                             ("actions", actions_holder)):
             self._panel.attach_host_section(key, widget)
         self._panel.build_sections()
@@ -388,6 +400,7 @@ class BacktesterWindow(ModuleWindowBase):
                                  dates.min().strftime("%Y-%m-%d"),
                                  dates.max().strftime("%Y-%m-%d"))
         self._regime_tagged = self._regime.annotate(self._tagged)
+        self._notes.set_source(self._regime_tagged)
 
         self._results.setVisible(True)
         self._apply_filters()
@@ -399,11 +412,20 @@ class BacktesterWindow(ModuleWindowBase):
         if self._tagged is None:
             return
         self._regime_tagged = self._regime.annotate(self._tagged)
+        self._notes.set_source(self._regime_tagged)
         self._apply_filters()
 
     def _apply_filters(self) -> None:
-        if self._tagged is None:
+        if self._tagged is None or self._in_apply:
             return
+        self._in_apply = True
+        try:
+            self._run_filters()
+        finally:
+            self._in_apply = False
+
+    def _run_filters(self) -> None:
+        self._panel.set_section_forced_visible("trades_table", False)
         trades = getattr(self, "_regime_tagged", None)
         if trades is None or len(trades) != len(self._tagged):
             trades = self._tagged
@@ -474,8 +496,27 @@ class BacktesterWindow(ModuleWindowBase):
                 return
             regime_filtered = len(selected_regimes) < len(regime_states) + 1
 
+        # ── trade-notes query — LAST, so a condition can reference every
+        #    derived column, day_type and regime included ───────────────────
+        notes_filtered = False
+        notes_mask = self._notes.report_mask(trades)
+        if notes_mask is not None:
+            trades = trades[notes_mask].copy()
+            trades["cumulative_ticks"] = trades["ticks"].cumsum()
+            all_entries = _entry_mask(all_entries, self._notes)
+            if trades.empty:
+                self._filter_banner.show_message(
+                    "warning", "No trades match the trade-notes query.")
+                self._set_report_visible(False)
+                # keep the section itself on screen — it holds the query the
+                # user needs to undo
+                self._panel.set_section_forced_visible("trades_table", True)
+                self._notes.set_trades(trades)
+                return
+            notes_filtered = self._notes.is_narrowing()
+
         self._filtered = (day_type_filtered or trade_type_filtered
-                          or regime_filtered)
+                          or regime_filtered or notes_filtered)
         self._selected_day_types = selected_day_types
         self._filtered_trades = trades
 
@@ -486,15 +527,11 @@ class BacktesterWindow(ModuleWindowBase):
         self._set_report_visible(True)
         self._panel.set_trades(trades)
 
-        display_cols = ["date", "direction", "entry_time", "exit_time",
-                        "entry_price", "exit_price", "exit_reason", "ticks"]
-        for optional in ("trade_type", "day_type", "regime"):
-            if optional in trades.columns:
-                display_cols.append(optional)
         # only worth a column of its own when it can disagree with `regime`
-        if self._regime.timings_differ() and FILTER_COLUMN in trades.columns:
-            display_cols.append(FILTER_COLUMN)
-        update_table_view(self._table, trades[display_cols])
+        self._notes.set_display_hints(
+            show_regime_filter=(self._regime.timings_differ()
+                                and FILTER_COLUMN in trades.columns))
+        self._notes.set_trades(trades)
 
     def _set_report_visible(self, visible: bool) -> None:
         self._panel.set_report_visible(visible)

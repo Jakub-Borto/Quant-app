@@ -76,7 +76,7 @@ DEFAULT_SECTIONS = (
     SectionSpec("exposure", "Market Exposure (α/β regression)", MODE_COLLAPSED),
     SectionSpec("exit_breakdown", "Exit Breakdown", MODE_COLLAPSED),
     SectionSpec("rr", "RR Distribution", MODE_COLLAPSED),
-    SectionSpec("trades_table", "Trades", MODE_COLLAPSED),
+    SectionSpec("trades_table", "Trades & Notes", MODE_COLLAPSED),
     SectionSpec("actions", "Save / Go to…", MODE_VISIBLE),
 )
 
@@ -240,6 +240,7 @@ class SectionStack(QWidget):
         self._pending: dict[str, QWidget] = {}
         self._has_tail = False          # the surplus-absorbing trailing stretch
         self._hidden_by_host: set[str] = set()
+        self._forced_visible: set[str] = set()
         self._report_visible = True
 
         self._lay = QVBoxLayout(self)
@@ -312,7 +313,9 @@ class SectionStack(QWidget):
             return
         visible = (frame.mode != MODE_HIDDEN
                    and key not in self._hidden_by_host
-                   and (self._report_visible or key not in REPORT_KEYS))
+                   and (key in self._forced_visible
+                        or self._report_visible
+                        or key not in REPORT_KEYS))
         frame.setVisible(visible)
 
     def set_report_visible(self, visible: bool) -> None:
@@ -321,6 +324,18 @@ class SectionStack(QWidget):
         self._report_visible = visible
         for key in self._frames:
             self._apply_visibility(key)
+
+    def set_frame_forced_visible(self, key: str, forced: bool) -> None:
+        """Keep one section on screen even when set_report_visible(False) hid
+        the rest. The trades-and-notes section owns its own filter, so a query
+        that matches nothing must not hide the widget holding that query —
+        the user would have no way to undo it. MODE_HIDDEN and a host override
+        still win, so a section the user hid stays hidden."""
+        if forced:
+            self._forced_visible.add(key)
+        else:
+            self._forced_visible.discard(key)
+        self._apply_visibility(key)
 
     def set_frame_visible(self, key: str, visible: bool) -> None:
         """Host override for one section (e.g. no trade_type column this run,

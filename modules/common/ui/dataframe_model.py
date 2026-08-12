@@ -48,13 +48,20 @@ def _sort_key(series: pd.Series):
         try:
             parsed.append(float(body.replace(",", "")))
         except ValueError:
-            return series.astype(str).str.lower().to_numpy(), False
+            # through _fmt, not astype(str): a list cell must sort by what it
+            # DISPLAYS ("10:53, 10:54"), not by "['10:53', '10:54']"
+            return series.map(_fmt).str.lower().to_numpy(), False
     return np.asarray(parsed, dtype=float), True
 
 
 def _fmt(value) -> str:
     if value is None:
         return ""
+    # trade-notes values are JSON, so a cell can hold a list ("absorption_time"
+    # is one on some trades). Joining here keeps formatting lazy per visible
+    # cell — kept in lockstep with backend.trade_notes.display_text.
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_fmt(v) for v in value)
     if isinstance(value, float):
         if math.isnan(value):
             return ""
