@@ -5,7 +5,7 @@ __pycache__/
 
 # C++ extension build artifacts
 orderbook_replay_cpp/build/
-orderbook_replay_cpp/*.egg-info/
+orderbook_replay_cpp/**/*.egg-info/
 *.pyd
 *.so
 
