@@ -280,6 +280,15 @@ fallback.
 
 ## Where to read more
 
+- `STRATEGY_GUIDE.md` / `Strategy_Guide.pdf` — the complete strategy-author
+  reference (engine contract, data, caching, examples). Generated: edit
+  `docs/strategy_guide/GUIDE_TEMPLATE.md`, then run
+  `python docs/strategy_guide/build_guide.py` (tests/test_strategy_guide.py
+  fails when the committed guide is stale). Its two worked examples are real
+  strategies (`strategies/example_first_hour_breakout.py`,
+  `strategies/example_prev_day_levels/`) tested in
+  tests/test_strategy_examples.py.
+
 - `Quant_app_documentation.pdf` — module contracts & schemas (Streamlit-era
   UI sections outdated).
 - `IVB_Model_Documentation.pdf` + `strategies/ivb_model/CLAUDE.md` — the

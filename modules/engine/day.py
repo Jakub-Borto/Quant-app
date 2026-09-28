@@ -9,6 +9,7 @@ declared dataset, the cached prepare_day() result, and handles to earlier days.
                               strategy has no prepare_day)
     day.previous              the previous trading day (a Day) or None
     day.previous_days(n)      up to n earlier trading days, oldest first
+    day.missing               additional slots with NO file for this day ([] = complete)
 
 Everything is lazy: a slot's DataFrame is read (or fetched from the RAM cache)
 the first time it is touched, and earlier days only when asked for. Earlier
@@ -66,6 +67,14 @@ class Day:
     @property
     def prepared(self):
         return self._ctx.prepared(self._i)
+
+    @property
+    def missing(self) -> list:
+        """Additional DATA slots whose file does not exist for this day. Always
+        [] for the day being processed (the engine skips incomplete days);
+        check it before reading a slot of an EARLIER day — reading a missing
+        slot raises EngineError."""
+        return self._ctx.missing_slots(self._i)
 
     @property
     def previous(self):

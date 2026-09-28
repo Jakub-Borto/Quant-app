@@ -60,6 +60,11 @@ def test_trade_rejects_bad_direction():
         Trade("Long", ts(DAYS[0], "10:00"), ts(DAYS[0], "11:00"), 1.0, 2.0, "tp")
 
 
+def test_trade_rejects_exit_before_entry():
+    with pytest.raises(ValueError, match="before"):
+        Trade("long", ts(DAYS[0], "11:00"), ts(DAYS[0], "10:00"), 1.0, 2.0, "tp")
+
+
 def test_pnl_points_sign():
     t0, t1 = ts(DAYS[0], "10:00"), ts(DAYS[0], "11:00")
     assert Trade("long", t0, t1, 100.0, 103.5, "tp").pnl_points == 3.5
@@ -227,6 +232,27 @@ def test_previous_days_cross_the_start_date_and_cover_every_slot(tmp_path):
     assert out["2026-01-08"][1] == ["2026-01-05", "2026-01-06", "2026-01-07"]
     assert out["2026-01-06"][2] == 501.0                          # yesterday's indicators
     assert out["2026-01-06"][3] == 103.0                          # yesterday's last close
+
+
+def test_missing_slot_on_a_previous_day(tmp_path):
+    from modules.engine import EngineError
+    main = write_dataset(tmp_path / "ES_1m")
+    ind = write_dataset(tmp_path / "ES_1m_indicators", columns=("cvd",))
+    (ind / "2026-01-05.parquet").unlink()
+    seen = {}
+
+    def process_day(day, params):
+        prev = day.previous
+        seen[day.date.day] = (day.missing, prev.missing if prev else None)
+        if prev is not None and prev.missing:
+            with pytest.raises(EngineError, match="does not exist"):
+                prev.data["indicators"]
+
+    mod = strategy(DATA={"main": ["close"], "indicators": ["cvd"]},
+                   process_day=process_day)
+    run(mod, main, extra_folders={"indicators": ind})
+    assert seen[6] == ([], ["indicators"])        # yesterday (01-05) lacks indicators
+    assert 5 not in seen                          # 01-05 itself was skipped
 
 
 def test_first_file_has_no_previous(tmp_path):

@@ -70,6 +70,9 @@ class Trade:
         if self.direction not in DIRECTIONS:
             raise ValueError(f"Trade.direction must be 'long' or 'short', "
                              f"got {self.direction!r}")
+        if self.exit_time < self.entry_time:
+            raise ValueError(f"Trade.exit_time ({self.exit_time}) is before "
+                             f"entry_time ({self.entry_time})")
 
     @property
     def pnl_points(self) -> float:
