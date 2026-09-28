@@ -4,6 +4,16 @@ import numpy as np
 
 from ..absorption import absorption_scan, wick_bounds
 
+# ── this finder's declarations (collected by ..params; see STRATEGY_GUIDE.md) ──
+SECTION    = "Passive Absorption (Size Only)"   # its box in the params form
+DEFAULT_ON = True   # its default bit in valid_entries / trail_entries
+BASELINES  = ('rolling', 'passive')   # day-level baselines core builds when it is enabled
+PARAMS = {
+    "passive_size_order_mult":      2.0,   # raw resting size must be >= this x rolling baseline
+    "passive_size_absorption_mult": 1.5,   # absorption mult for size-only passive finder
+    "passive_size_wick_threshold":  0.4,   # wick threshold for size-only passive finder
+}
+
 _NO_ENTRY = (None, None, None, None, None)
 
 

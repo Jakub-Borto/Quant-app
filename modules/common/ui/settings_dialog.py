@@ -14,12 +14,13 @@ OK writes settings.json and accepts; Cancel discards edits.
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog,
-                               QGroupBox, QHBoxLayout, QLabel, QListWidget,
-                               QListWidgetItem, QPushButton, QVBoxLayout)
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox,
+                               QFileDialog, QGroupBox, QHBoxLayout, QLabel,
+                               QListWidget, QListWidgetItem, QPushButton,
+                               QVBoxLayout)
 from PySide6.QtGui import QColor
 
-from modules.common.backend.settings import (CATEGORY_LABELS,
+from modules.common.backend.settings import (CACHE_GB_RANGE, CATEGORY_LABELS,
                                              PLUGIN_CATEGORIES, SETTINGS_PATH,
                                              Settings,
                                              _resolve)
@@ -142,6 +143,26 @@ class SettingsDialog(QDialog):
                                        orderable=True, min_rows=1)
         lay.addWidget(self._roots_list)
 
+        # engine RAM cache budget (explicit range: Qt's 0..99.99 default would
+        # silently clamp large budgets)
+        cache_box = QGroupBox("Engine day cache")
+        cache_row = QHBoxLayout(cache_box)
+        cache_row.addWidget(QLabel("RAM budget (GB)"))
+        self._cache_gb = QDoubleSpinBox()
+        self._cache_gb.setRange(*CACHE_GB_RANGE)
+        self._cache_gb.setDecimals(1)
+        self._cache_gb.setSingleStep(1.0)
+        self._cache_gb.setValue(settings.cache_gb)
+        cache_row.addWidget(self._cache_gb)
+        hint = QLabel("Day data kept in memory between runs (Backtester and serial "
+                      "Optimizer runs). Least-recently-used days are dropped when "
+                      "full. Parallel optimizer workers use the Optimizer's own "
+                      "memory budget.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+        cache_row.addWidget(hint, 1)
+        lay.addWidget(cache_box)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._on_ok)
         buttons.rejected.connect(self.reject)
@@ -152,5 +173,6 @@ class SettingsDialog(QDialog):
             self._settings.extra_plugin_dirs[category] = fl.entries()
         roots = self._roots_list.entries()
         self._settings.data_roots_raw = roots or ["data"]
+        self._settings.cache_gb = float(self._cache_gb.value())
         self._settings.save(self._settings_path)
         self.accept()

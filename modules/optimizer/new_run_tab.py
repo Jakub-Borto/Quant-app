@@ -21,17 +21,19 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDateEdit, QDoubleSpinBox,
                                QGridLayout, QGroupBox, QHBoxLayout, QLabel,
                                QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
-from modules.common.backend.asset_info import ASSET_INFO, HIDDEN_PARAMS
+from modules.common.backend.asset_info import (ASSET_INFO, AUTO_PARAMS,
+                                               auto_param_values)
 from modules.common.backend.data_roots import (DatasetRef, available_dates,
                                                resolve_ff_events,
                                                scan_structure)
 from modules.common.backend.plugins import PluginRef, list_strategies, load_strategy
+from modules.common.ui.additional_data import AdditionalDataPanel
 from modules.common.ui.widgets import (Banner, Caption, ProgressLogPanel,
                                        pin_minimum_height, wrap_card)
 from modules.common.ui.workers import FunctionWorker
+from modules.engine import GB, additional_slots, clear_cache, set_budget_gb
 from modules.optimizer.backend.engine import (check_param_columns,
-                                              estimate_worker_memory,
-                                              sibling_dataset_folders)
+                                              estimate_worker_memory)
 from modules.optimizer.backend.heatmap_model import (COMBO_CONFIRM_THRESHOLD,
                                                      MIN_TRADES_DEFAULT,
                                                      NON_US_CALENDAR_ASSETS)
@@ -41,11 +43,12 @@ from modules.optimizer.backend.run_setup import run_grid_job
 from modules.optimizer.sweep_panel import SweepPanel
 
 _SPEED_CAPTION = (
-    "Serial grid speed rides on the strategy's internal day cache being "
-    "param-independent (ivb_model_optimized: yes). With parallel workers, "
-    "each worker pays its own cold start before running warm — serial can "
-    "beat parallel on small grids. Stopping a parallel run waits for the "
-    "in-flight combo on each worker before releasing."
+    "Serial runs use the app's engine cache (Settings → cache_gb), so data "
+    "read by earlier runs — here or in the Backtester — stays warm. With "
+    "parallel workers, each worker fills its own cache (the memory budget "
+    "above is split across them) and pays one cold start before running "
+    "warm — serial can beat parallel on small grids. Stopping a parallel run "
+    "waits for the in-flight combo on each worker before releasing."
 )
 
 
@@ -91,6 +94,11 @@ class NewRunTab(QWidget):
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
         lay.addWidget(wrap_card(grid))
+
+        # one row per additional DATA slot of the selected strategy
+        self._additional = AdditionalDataPanel()
+        self._additional.changed.connect(lambda: self._refresh_readout())
+        lay.addWidget(self._additional)
 
         self._banner = Banner()
         lay.addWidget(self._banner)
@@ -162,10 +170,16 @@ class NewRunTab(QWidget):
         self._cancel_btn.clicked.connect(self._on_cancel)
         refresh_btn = QPushButton("Refresh folders")
         refresh_btn.clicked.connect(self.rescan)
+        free_btn = QPushButton("Free cached data")
+        free_btn.setToolTip("Empty the app's engine RAM cache (used by serial "
+                            "runs and the Backtester). Parallel workers' caches "
+                            "are freed automatically when their run ends.")
+        free_btn.clicked.connect(self._on_free_cache)
         btn_row.addStretch()
         btn_row.addWidget(self._run_btn)
         btn_row.addWidget(self._cancel_btn)
         btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(free_btn)
         btn_row.addStretch()
         lay.addLayout(btn_row)
 
@@ -191,6 +205,7 @@ class NewRunTab(QWidget):
         self._strategy.blockSignals(False)
 
         self._structure = scan_structure(self.settings.data_roots, source="parquet")
+        self._additional.set_structure(self._structure)
         self._type.blockSignals(True)
         self._type.clear()
         self._type.addItems(list(self._structure.keys()))
@@ -218,6 +233,10 @@ class NewRunTab(QWidget):
 
     def _on_dataset_changed(self) -> None:
         ref: DatasetRef | None = self._dataset.currentData()
+        self._additional.follow_main(self._type.currentText(),
+                                     self._asset.currentText(),
+                                     ref.root if ref is not None else None)
+        self._sync_auto_params()
         if ref is None:
             return
         dates = available_dates(ref.path)
@@ -242,6 +261,7 @@ class NewRunTab(QWidget):
         self._strategy_module = None
         self._strategy_ref = None
         self._banner.clear_message()
+        self._additional.set_slots([])
         if self._strategy.currentIndex() < 0:
             return
         self._strategy_ref = self._strategies[self._strategy.currentIndex()]
@@ -252,9 +272,15 @@ class NewRunTab(QWidget):
                                                f"'{self._strategy_ref.name}': {e}")
             return
 
+        self._additional.set_slots(additional_slots(self._strategy_module))
+        ref = self._dataset.currentData()
+        self._additional.follow_main(self._type.currentText(),
+                                     self._asset.currentText(),
+                                     ref.root if ref is not None else None)
+
         visible = {k: v for k, v in
                    getattr(self._strategy_module, "PARAMS", {}).items()
-                   if k not in HIDDEN_PARAMS}
+                   if k not in AUTO_PARAMS}
         opts = getattr(self._strategy_module, "PARAMS_OPTIONS", {}) or {}
         if not any(sweep_kind(v, opts.get(k)) is not None
                    for k, v in visible.items()):
@@ -266,7 +292,20 @@ class NewRunTab(QWidget):
         self._sweep_panel = SweepPanel(self._strategy_module)
         self._sweep_panel.changed.connect(self._refresh_readout)
         self._panel_holder.addWidget(self._sweep_panel)
+        self._sync_auto_params()
         self._refresh_readout()
+
+    def _sync_auto_params(self) -> None:
+        """Show the selected asset's AUTO_PARAMS (tick_size) in the panel."""
+        if self._sweep_panel is None:
+            return
+        for key, value in auto_param_values(self._asset.currentText()).items():
+            self._sweep_panel.set_auto_value(key, value)
+
+    def _on_free_cache(self) -> None:
+        freed = clear_cache()
+        self._banner.show_message("info", f"Freed {freed / GB:.2f} GB of cached "
+                                          f"day data.")
 
     # ── live readout (the old inline info/warning block) ──────────────────────
     def _current_axes(self) -> list | None:
@@ -327,8 +366,8 @@ class NewRunTab(QWidget):
         # memory estimate + worker clamp (verbatim math)
         ref: DatasetRef | None = self._dataset.currentData()
         if ref is not None:
-            siblings = sibling_dataset_folders(ref.path,
-                                               self._sweep_panel.fixed_params())
+            extra = self._additional.folders()
+            siblings = list(extra.values())
             est = estimate_worker_memory(ref.path, self._start.date().toPython(),
                                          self._end.date().toPython(),
                                          extra_folders=siblings)
@@ -336,9 +375,13 @@ class NewRunTab(QWidget):
                 if est["est_mb"] > 0 else 1
             self._effective_workers = min(int(self._workers.value()), allowed)
             datasets_desc = ref.dataset + "".join(f" + {p.name}" for p in siblings)
+            per_worker_gb = self._mem_budget.value() / max(1, self._effective_workers)
             text = (f"≈ {est['est_mb']:.0f} MB/worker for {est['n_days']} days "
                     f"({est['disk_mb']:.0f} MB on disk: {datasets_desc}) → "
-                    f"budget allows {allowed} worker(s). Rough estimate.")
+                    f"budget allows {allowed} worker(s). Rough estimate. "
+                    f"Parallel runs cap each worker's day cache at "
+                    f"{per_worker_gb:.2f} GB (the budget is the TOTAL across "
+                    f"workers).")
             if self._effective_workers < int(self._workers.value()):
                 text += (f"  ⚠ Worker count clamped to "
                          f"{self._effective_workers} by the memory budget.")
@@ -369,6 +412,9 @@ class NewRunTab(QWidget):
         axes = self._current_axes()
         if ref is None or axes is None or self._strategy_module is None:
             return
+        if not self._additional.ok():
+            self._banner.show_message("error", " ".join(self._additional.problems()))
+            return
         asset = ref.asset
         if asset not in ASSET_INFO:
             self._banner.show_message("error", f"Unknown asset: {asset}. "
@@ -391,6 +437,7 @@ class NewRunTab(QWidget):
                                                  "— every day is bucketed 'normal'.")
         self._run_root = ref.root
 
+        set_budget_gb(self.settings.cache_gb)      # the serial path's (in-process) cache
         self._progress.reset()
         self._run_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
@@ -407,6 +454,9 @@ class NewRunTab(QWidget):
             n_workers=self._effective_workers,
             ff_events_path=ff,
             strategies_dir=self._strategy_ref.dir,
+            extra_folders=self._additional.folders(),
+            additional_data=self._additional.descriptions(),
+            cache_bytes=int(self._mem_budget.value() * GB),
             needs_progress=True,
         )
         worker.signals.progress.connect(self._progress.on_progress)
@@ -429,6 +479,8 @@ class NewRunTab(QWidget):
     def _on_finished(self, result) -> None:
         trades, meta = result
         self._reset_buttons()
+        if meta.get("data_warnings"):
+            self._banner.show_message("warning", "⚠ " + "  ⚠ ".join(meta["data_warnings"]))
         self.runFinished.emit(trades, meta, self._run_root)
 
     def _on_error(self, message: str, _tb: str) -> None:

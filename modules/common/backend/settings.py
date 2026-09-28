@@ -23,6 +23,9 @@ Rules:
   Each data root is a full tree: raw_dbn/, parquet/, trades/, optimizations/,
   news_and_holidays/. Relative entries resolve against the repo root (the
   shipped default is the in-repo "data" folder).
+- cache_gb is the engine's RAM day-cache budget in GB for the app process
+  (the Backtester and serial Optimizer runs; parallel optimizer workers use
+  the Optimizer tab's own memory budget instead).
 - ui_prefs is a free-form namespace for per-module UI preferences (section
   order/visibility, ...), keyed by a UI_PREF_* constant. Read/write it through
   ui_pref()/set_ui_pref() rather than touching the dict.
@@ -64,12 +67,27 @@ DEFAULT_DATA_ROOT = "D:/market_data"
 # ui_prefs keys (one per preference blob; see the module docstring).
 UI_PREF_TRADE_REPORT = "trade_report_sections"
 
+# Engine RAM cache budget (GB) — the default and the settings-dialog range.
+DEFAULT_CACHE_GB = 4.0
+CACHE_GB_RANGE = (0.5, 512.0)
+
 _DEFAULTS = {
     "version": 1,
     "extra_plugin_dirs": {key: [] for key in PLUGIN_CATEGORIES},
     "data_roots": [DEFAULT_DATA_ROOT],
     "ui_prefs": {},
+    "cache_gb": DEFAULT_CACHE_GB,
 }
+
+
+def _cache_gb(value) -> float:
+    """A stored cache_gb clamped into CACHE_GB_RANGE (bad values -> default)."""
+    try:
+        gb = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_CACHE_GB
+    lo, hi = CACHE_GB_RANGE
+    return min(max(gb, lo), hi)
 
 
 def _resolve(entry: str) -> Path:
@@ -82,7 +100,8 @@ class Settings:
     """In-memory settings. Mutate extra_plugin_dirs / data_roots_raw, then save()."""
 
     def __init__(self, extra_plugin_dirs: dict[str, list[str]],
-                 data_roots_raw: list[str], ui_prefs: dict | None = None):
+                 data_roots_raw: list[str], ui_prefs: dict | None = None,
+                 cache_gb: float = DEFAULT_CACHE_GB):
         self.extra_plugin_dirs = {
             key: list(extra_plugin_dirs.get(key, [])) for key in PLUGIN_CATEGORIES
         }
@@ -90,6 +109,7 @@ class Settings:
         # keyword-with-default so every existing Settings(dirs, roots) call
         # site (including the tests) keeps working untouched
         self.ui_prefs = copy.deepcopy(dict(ui_prefs or {}))
+        self.cache_gb = _cache_gb(cache_gb)
 
     # ── plugin folders ────────────────────────────────────────────────────────
     def default_plugin_dir(self, category: str) -> Path:
@@ -123,6 +143,7 @@ class Settings:
             "extra_plugin_dirs": {k: list(v) for k, v in self.extra_plugin_dirs.items()},
             "data_roots": list(self.data_roots_raw),
             "ui_prefs": copy.deepcopy(self.ui_prefs),
+            "cache_gb": self.cache_gb,
         }
 
     def save(self, path: Path = SETTINGS_PATH) -> None:
@@ -136,7 +157,7 @@ def load_settings(path: Path = SETTINGS_PATH) -> Settings:
     path = Path(path)
     if not path.exists():
         settings = Settings(_DEFAULTS["extra_plugin_dirs"], _DEFAULTS["data_roots"],
-                            _DEFAULTS["ui_prefs"])
+                            _DEFAULTS["ui_prefs"], _DEFAULTS["cache_gb"])
         settings.save(path)
         return settings
 
@@ -144,7 +165,8 @@ def load_settings(path: Path = SETTINGS_PATH) -> Settings:
         raw = json.loads(path.read_text(encoding="utf-8"))
         return Settings(raw.get("extra_plugin_dirs", {}),
                         raw.get("data_roots", [DEFAULT_DATA_ROOT]),
-                        raw.get("ui_prefs", {}))
+                        raw.get("ui_prefs", {}),
+                        raw.get("cache_gb", DEFAULT_CACHE_GB))
     except (json.JSONDecodeError, OSError):
         return Settings(_DEFAULTS["extra_plugin_dirs"], _DEFAULTS["data_roots"],
-                        _DEFAULTS["ui_prefs"])
+                        _DEFAULTS["ui_prefs"], _DEFAULTS["cache_gb"])

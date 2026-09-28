@@ -8,6 +8,16 @@ list of qualifying levels is never cleared.
 
 import numpy as np
 
+# ── this finder's declarations (collected by ..params; see STRATEGY_GUIDE.md) ──
+SECTION    = "Passive Wall"   # its box in the params form
+DEFAULT_ON = True   # its default bit in valid_entries / trail_entries
+BASELINES  = ('passive',)   # day-level baselines core builds when it is enabled
+PARAMS = {
+    "passive_wall_n":     3,     # number of big passive orders required to form a wall
+    "passive_wall_mult":  2.0,   # raw resting size >= this x rolling baseline to count as "big"
+    "passive_wall_ticks": 8,     # ±ticks tolerance for clustering wall levels
+}
+
 _NO_ENTRY = (None, None, None, None, None)
 
 

@@ -157,11 +157,16 @@ class ParamsForm(QWidget):
     def __init__(self, params: dict, sections: dict | None = None,
                  hidden=frozenset(), excluded=frozenset(),
                  numeric_only: bool = False, per_row: int = 10,
-                 options: dict | None = None, parent=None):
+                 options: dict | None = None, readonly=frozenset(),
+                 parent=None):
+        """readonly: params shown but not editable (the AUTO_PARAMS the app
+        fills from ASSET_INFO); update them with set_value()."""
         super().__init__(parent)
         self._getters: dict[str, callable] = {}
+        self._widgets: dict[str, QWidget] = {}
         self._passthrough: dict[str, object] = {}
         self._options = options or {}   # the plugin's PARAMS_OPTIONS dict
+        readonly = set(readonly)
 
         visible = {k: v for k, v in params.items()
                    if k not in hidden and k not in excluded}
@@ -199,8 +204,13 @@ class ParamsForm(QWidget):
                     grid.addWidget(warn, row + 1, col)
                     self._passthrough[key] = default
                 else:
+                    if key in readonly:
+                        widget.setEnabled(False)
+                        widget.setToolTip("Filled automatically from the selected "
+                                          "asset (ASSET_INFO) — not editable")
                     grid.addWidget(widget, row + 1, col)
                     self._getters[key] = getter
+                    self._widgets[key] = widget
             return box
 
         if sections and not numeric_only:
@@ -233,3 +243,28 @@ class ParamsForm(QWidget):
         out = {k: g() for k, g in self._getters.items()}
         out.update(self._passthrough)
         return out
+
+    def set_value(self, key: str, value) -> None:
+        """Programmatically set one param's widget (no-op for unknown keys) —
+        how the windows keep the read-only AUTO_PARAMS in sync with the asset."""
+        w = self._widgets.get(key)
+        if w is not None:
+            set_widget_value(w, value)
+
+
+def set_widget_value(w, value) -> None:
+    """Set a make_param_widget() widget to `value` (typed like its default)."""
+    if isinstance(w, QCheckBox):
+        w.setChecked(bool(value))
+    elif isinstance(w, QComboBox):
+        i = w.findData(value)
+        if i >= 0:
+            w.setCurrentIndex(i)
+    elif isinstance(w, QDoubleSpinBox):
+        if w.decimals() < 8:
+            w.setDecimals(8)            # tick sizes like 0.0000005 must not round
+        w.setValue(float(value))
+    elif isinstance(w, QSpinBox):
+        w.setValue(int(value))
+    elif isinstance(w, QLineEdit):
+        w.setText(str(value))

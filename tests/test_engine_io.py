@@ -2,18 +2,25 @@
 Grid engine + run persistence: combo enumeration/injection, enrichment,
 golden heatmap on a toy deterministic strategy, round-trip / partition
 invariants, save/load (spec §14).
+
+The toy strategies follow the engine contract (DATA + process_day) and run on
+a tiny on-disk dataset (TOY_FOLDER: one parquet per DAYS entry), because every
+optimizer combo is a real modules.engine.run_strategy() call.
 """
 
+import datetime
 import math
+import tempfile
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from modules.engine import Trade
 from modules.optimizer.backend.engine import (
     WORKER_BASELINE_MB, WORKER_MB_PER_DISK_MB, check_param_columns,
     estimate_worker_memory, median_split_date, run_grid,
-    sibling_dataset_folders,
 )
 from modules.optimizer.backend.io import list_runs, load_run, save_run
 from modules.optimizer.backend.loader import load_strategy
@@ -23,37 +30,46 @@ TICKS_PER_POINT = 4
 DAYS = ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
 
 
+def _make_toy_folder() -> Path:
+    """A 4-day dataset: DAYS as YYYY-MM-DD.parquet with a tz-aware 1m index."""
+    folder = Path(tempfile.mkdtemp(prefix="toy_engine_io_")) / "TOY_1m"
+    folder.mkdir()
+    for day in DAYS:
+        idx = pd.date_range(f"{day} 09:30", periods=3, freq="1min",
+                            tz="America/New_York")
+        pd.DataFrame({"close": [100.0, 100.5, 101.0]}, index=idx) \
+            .to_parquet(folder / f"{day}.parquet")
+    return folder
+
+
+TOY_FOLDER = _make_toy_folder()
+
+
+def toy_trade(day: datetime.date, a) -> Trade:
+    t0 = pd.Timestamp(f"{day} 10:00", tz="America/New_York")
+    return Trade("long", t0, t0 + pd.Timedelta(hours=1), 100.0, 100.0 + a, "tp",
+                 sl=99.0, tp=100.0 + a)
+
+
 class ToyStrategy:
     """
     Deterministic, analytically known: `b` trades on the first `b` DAYS, each
     with pnl_points == a. a == 99 -> zero trades (masked-cell path).
-    Records every params dict it is called with.
+    Records the params dict of every RUN (process_day on the first day).
     """
     PARAMS = {"a": 1, "b": 2, "hold": "x"}
+    DATA = {"main": ["close"]}
 
     def __init__(self):
         self.calls = []
 
-    def run(self, folder_path, start_date, end_date, params):
-        self.calls.append(dict(params))
+    def process_day(self, day, params):
+        if day.date.isoformat() == DAYS[0]:
+            self.calls.append(dict(params))
         a, b = params["a"], params["b"]
-        if a == 99:
-            return pd.DataFrame()
-        rows = []
-        for day in DAYS[:b]:
-            rows.append({
-                "date":        day,
-                "direction":   "long",
-                "entry_time":  pd.Timestamp(f"{day} 10:00", tz="America/New_York"),
-                "exit_time":   pd.Timestamp(f"{day} 11:00", tz="America/New_York"),
-                "entry_price": 100.0,
-                "exit_price":  100.0 + a,
-                "sl":          99.0,
-                "tp":          100.0 + a,
-                "exit_reason": "tp",
-                "pnl_points":  float(a),
-            })
-        return pd.DataFrame(rows)
+        if a == 99 or day.date.isoformat() not in DAYS[:b]:
+            return None
+        return toy_trade(day.date, a)
 
 
 AXES = [
@@ -66,7 +82,7 @@ BUCKET_MAP = {"2026-01-05": "cpi", "2026-01-08": "holiday"}
 def grid_run(strategy=None, axes=AXES, bucket_map=BUCKET_MAP, on_progress=None):
     strategy = strategy or ToyStrategy()
     trades = run_grid(
-        strategy, "unused_folder", "2026-01-01", "2026-12-31",
+        strategy, TOY_FOLDER, "2026-01-01", "2026-12-31",
         base_params=dict(ToyStrategy.PARAMS), axes=axes,
         tick_size=0.25, ticks_per_point=TICKS_PER_POINT,
         bucket_map=bucket_map, on_progress=on_progress,
@@ -178,29 +194,20 @@ def test_all_empty_grid():
 TOY_STRATEGY_SOURCE = '''
 import pandas as pd
 
+from modules.engine import Trade
+
 PARAMS = {"a": 1, "b": 2, "hold": "x"}
+DATA = {"main": ["close"]}
 DAYS = ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
 
 
-def run(folder_path, start_date, end_date, params):
+def process_day(day, params):
     a, b = params["a"], params["b"]
-    if a == 99:
-        return pd.DataFrame()
-    rows = []
-    for day in DAYS[:b]:
-        rows.append({
-            "date":        day,
-            "direction":   "long",
-            "entry_time":  pd.Timestamp(f"{day} 10:00", tz="America/New_York"),
-            "exit_time":   pd.Timestamp(f"{day} 11:00", tz="America/New_York"),
-            "entry_price": 100.0,
-            "exit_price":  100.0 + a,
-            "sl":          99.0,
-            "tp":          100.0 + a,
-            "exit_reason": "tp",
-            "pnl_points":  float(a),
-        })
-    return pd.DataFrame(rows)
+    if a == 99 or day.date.isoformat() not in DAYS[:b]:
+        return None
+    t0 = pd.Timestamp(f"{day.date} 10:00", tz="America/New_York")
+    return Trade("long", t0, t0 + pd.Timedelta(hours=1), 100.0, 100.0 + a, "tp",
+                 sl=99.0, tp=100.0 + a)
 '''
 
 
@@ -219,7 +226,7 @@ def test_parallel_matches_serial(toy_strategy_dir):
 
     progress = []
     parallel = run_grid(
-        None, "unused_folder", "2026-01-01", "2026-12-31",
+        None, TOY_FOLDER, "2026-01-01", "2026-12-31",
         base_params=dict(ToyStrategy.PARAMS), axes=AXES,
         tick_size=0.25, ticks_per_point=TICKS_PER_POINT,
         bucket_map=BUCKET_MAP,
@@ -258,7 +265,7 @@ def test_estimate_worker_memory(tmp_path):
     assert est["est_mb"] == pytest.approx(
         WORKER_BASELINE_MB + 1.5 * WORKER_MB_PER_DISK_MB)
 
-    # sibling datasets the strategy also reads count toward the estimate
+    # additional-data folders the strategy also reads count toward the estimate
     indicators = tmp_path / "ES_indicators"
     indicators.mkdir()
     (indicators / "2026-01-05.parquet").write_bytes(b"i" * 400_000)
@@ -271,34 +278,17 @@ def test_estimate_worker_memory(tmp_path):
         WORKER_BASELINE_MB + 1.9 * WORKER_MB_PER_DISK_MB)
 
 
-def test_sibling_dataset_folders(tmp_path):
-    data = tmp_path / "ES_1m"
-    indicators = tmp_path / "ES_indicators"
-    data.mkdir()
-    indicators.mkdir()
-    params = {
-        "indicators_folder": "ES_indicators",   # exists -> included
-        "big_trades_folder": "ES_missing",      # doesn't exist -> skipped
-        "vwap_session": "globex",               # not a folder -> skipped
-        "dup": "ES_indicators",                 # deduped
-        "self": "ES_1m",                        # the dataset itself -> skipped
-        "rr": 1.0,
-        "empty": "",
-    }
-    assert sibling_dataset_folders(data, params) == [indicators]
-
-
 def test_loader_custom_dir(toy_strategy_dir):
     mod = load_strategy("toy_grid", toy_strategy_dir)
-    assert callable(mod.run)
+    assert callable(mod.process_day)
     assert mod.PARAMS["b"] == 2
     with pytest.raises(FileNotFoundError):
         load_strategy("does_not_exist", toy_strategy_dir)
 
 
 def test_loader_default_dir_finds_real_strategies():
-    mod = load_strategy("orb")          # repo strategies/, cwd-independent
-    assert callable(mod.run)
+    mod = load_strategy("orb")          # repo strategies/ (a package), cwd-independent
+    assert callable(mod.process_day) and callable(mod.prepare_day)
 
 
 # ── persistence ───────────────────────────────────────────────────────────────
@@ -383,25 +373,16 @@ def test_bool_axis_end_to_end(tmp_path):
     the explore-style equality filter."""
     class BoolToyStrategy:
         PARAMS = {"a": 1, "flag": True}
+        DATA = {"main": ["close"]}
 
-        def run(self, folder_path, start_date, end_date, params):
-            pnl = 2.0 if params["flag"] else 1.0
-            return pd.DataFrame([{
-                "date":        DAYS[0],
-                "direction":   "long",
-                "entry_time":  pd.Timestamp(f"{DAYS[0]} 10:00", tz="America/New_York"),
-                "exit_time":   pd.Timestamp(f"{DAYS[0]} 11:00", tz="America/New_York"),
-                "entry_price": 100.0,
-                "exit_price":  100.0 + pnl,
-                "sl":          99.0,
-                "tp":          100.0 + pnl,
-                "exit_reason": "tp",
-                "pnl_points":  pnl,
-            }])
+        def process_day(self, day, params):
+            if day.date.isoformat() != DAYS[0]:
+                return None
+            return toy_trade(day.date, 2.0 if params["flag"] else 1.0)
 
     axes = [{"param": "flag", "values": [False, True], "role": "x"}]
     trades = run_grid(
-        BoolToyStrategy(), "unused_folder", "2026-01-01", "2026-12-31",
+        BoolToyStrategy(), TOY_FOLDER, "2026-01-01", "2026-12-31",
         base_params=dict(BoolToyStrategy.PARAMS), axes=axes,
         tick_size=0.25, ticks_per_point=TICKS_PER_POINT,
         bucket_map={},

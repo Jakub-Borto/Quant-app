@@ -10,6 +10,19 @@ Zones (value area, sl_type="zone_logic"): VAL = bottom, POC = middle, VAH = top.
 """
 
 
+
+# ── this script's declarations (collected by ..params; see STRATEGY_GUIDE.md) ──
+SECTION          = "Basic Risk Management"
+NEEDS_VWAP_BANDS = False        # core attaches the day's VWAP bands only when True
+PARAMS = {
+    "basic_rr":            1.0,        # fixed risk to reward ratio
+    "basic_sl_type":       "VAL/VAH",  # stop mode: "VAL/VAH", "swing_low" or "zone_logic"
+    "basic_trade_timeout": 999,        # bars before timeout logic kicks in
+}
+OPTIONS = {
+    "basic_sl_type": ["VAL/VAH", "swing_low", "zone_logic"],
+}
+
 def _zone_sl(entry_win, entry_pos, direction, levels):
     """Pick the stop from the pullback window's extremes vs the VAL/POC/VAH zones."""
     poc = levels["poc"]
@@ -50,7 +63,7 @@ def _zone_sl(entry_win, entry_pos, direction, levels):
 def _compute_sl_tp(entry_win, entry_pos, entry_price, direction, levels, params) -> tuple:
     """Returns (sl, tp). (None, None) if risk is non-positive."""
     val, vah = levels["val"], levels["vah"]
-    sl_type = params["sl_type"]
+    sl_type = params["basic_sl_type"]
     if sl_type == "swing_low":
         # swing stop from the post_retest bars up to and including the entry bar
         # (the original label-slice .loc[:entry_ts] was inclusive)
@@ -69,15 +82,15 @@ def _compute_sl_tp(entry_win, entry_pos, entry_price, direction, levels, params)
     if risk <= 0:
         return None, None
 
-    tp = entry_price + risk * params["rr"] if direction == "long" \
-    else entry_price - risk * params["rr"]
+    tp = entry_price + risk * params["basic_rr"] if direction == "long" \
+    else entry_price - risk * params["basic_rr"]
 
     return sl, tp
 
 
 def _run_trade(trade_win, entry_ts, entry_price, direction, sl, tp, params) -> dict:
     """Simulate the trade from entry to exit. Returns the trade dict (no trade_type/notes)."""
-    timeout = params["trade_timeout"]
+    timeout = params["basic_trade_timeout"]
     n_all   = trade_win.n
     t_end   = min(timeout, n_all)              # len(pre_timeout)
     low     = trade_win.l

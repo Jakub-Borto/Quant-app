@@ -7,6 +7,15 @@ risk-script convention).
 
 import numpy as np
 
+# ── this finder's declarations (collected by ..params; see STRATEGY_GUIDE.md) ──
+SECTION    = "Two Bar Absorption"   # its box in the params form
+DEFAULT_ON = True   # its default bit in valid_entries / trail_entries
+BASELINES  = ()   # day-level baselines core builds when it is enabled
+PARAMS = {
+    "two_bar_wick_ticks": 8,     # max wick size in ticks on defended side for both candles
+    "two_bar_abs_mult":   2.0,   # absorption multiplier for merged 2-bar candle
+}
+
 _NO_ENTRY = (None, None, None, None, None)
 
 

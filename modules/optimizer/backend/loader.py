@@ -19,7 +19,7 @@ STRATEGIES_DIR = REPO_ROOT / "strategies"
 
 
 def load_strategy(name: str, strategies_dir=None):
-    """Import a strategy by name — flat file or package — and validate run()."""
+    """Import a strategy by name — flat file or package — and validate process_day()."""
     strategies_dir = STRATEGIES_DIR if strategies_dir is None \
         else Path(strategies_dir)
 
@@ -47,6 +47,7 @@ def load_strategy(name: str, strategies_dir=None):
     sys.modules[name] = module          # register so relative imports resolve
     spec.loader.exec_module(module)
 
-    if not hasattr(module, "run") or not callable(module.run):
-        raise ValueError(f"Strategy '{name}' has no callable run()")
+    if not callable(getattr(module, "process_day", None)):
+        raise ValueError(f"Strategy '{name}' has no process_day(day, params) function "
+                         f"(see STRATEGY_GUIDE.md)")
     return module

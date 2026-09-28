@@ -50,10 +50,43 @@ late trails), so every value renders as a plain note tile.
 
 import numpy as np
 
-from .._timing    import timed
+from modules.engine import timed
 from .._daydata   import prev_rolling_max, prev_rolling_min
 from ..absorption import absorption_scan, wick_bounds
 
+
+
+from ..entries import DEFAULT_FLAGS, FINDER_NAMES
+
+# ── this script's declarations (collected by ..params; see STRATEGY_GUIDE.md) ──
+SECTION          = "VWAP Trailing Risk"
+NEEDS_VWAP_BANDS = True         # core attaches the day's VWAP bands only when True
+PARAMS = {
+    "trail_sl_placement":  "zone_logic",  # stop mode: "VAL/VAH", "zone_logic" or "swing_low"
+    "trail_vwap_std":      2,             # which sigma band for TP (2 or 3)
+    "trail_vwap_session":  "globex",      # vwap band session: "globex" or "rth"
+    "trail_tp_mode":       "now",         # "now" (band frozen at entry) or "trailing" (live)
+    "trail_trade_timeout": 999,           # bars before timeout logic kicks in
+    # which signals may trail the stop (one bit per finder, same order as valid_entries)
+    "trail_entries":       DEFAULT_FLAGS,
+    "trail_in_profit":     True,   # True = only breakeven-or-better levels trail (in-loss signals not even logged); False = trail everything
+    "trail_late":          False,  # True = trail to the PREVIOUS logged signal's level (lag one signal); False = trail immediately
+    "trail_is_over_rr":    False,  # True = push the target to a higher band when it can't clear trail_minimal_rr
+    "trail_minimal_rr":    2.0,    # required reward:risk when trail_is_over_rr is on
+    "trail_force_trade":   True,   # no usable vwap band => True: fixed-RR target (trail_minimal_rr if trail_is_over_rr, else 1:1); False: no trade
+}
+OPTIONS = {
+    "trail_entries":      list(FINDER_NAMES),
+    "trail_sl_placement": ["VAL/VAH", "zone_logic", "swing_low"],
+    "trail_vwap_session": ["globex", "rth"],
+    "trail_tp_mode":      ["now", "trailing"],
+}
+
+
+def extra_active_finders(params: dict, n_finders: int) -> str:
+    """Flag string of the finders this script re-runs in-trade (core builds their
+    baselines too)."""
+    return str(params.get("trail_entries", "0" * n_finders)).ljust(n_finders, "0")
 
 def _tick_tp(price, direction, tick):
     """Snap a vwap target to the tick grid TOWARD the entry (long: floor, short: ceil), so the
@@ -658,11 +691,11 @@ def _build_trailing_sl(tw, base_sl, entry_price, params):
     """
     n     = tw.n
     long_ = tw.direction == "long"
-    flags = str(params.get("trailing_entries", "0" * len(_TRAIL_DETECTORS)))
+    flags = str(params.get("trail_entries", "0" * len(_TRAIL_DETECTORS)))
     flags = flags.ljust(len(_TRAIL_DETECTORS), "0")
 
-    in_profit_only = int(params.get("trailing_in_profit", 1)) == 1
-    late           = int(params.get("late_trailing", 0)) == 1
+    in_profit_only = int(params.get("trail_in_profit", 1)) == 1
+    late           = int(params.get("trail_late", 0)) == 1
 
     events = []
     for (label, detector), flag in zip(_TRAIL_DETECTORS, flags):
@@ -731,7 +764,7 @@ def _run_trade(trade_win, entry_ts, entry_price, direction, base_sl,
     """Like vwap_tp_risk._run_trade (fixed TP), but the stop is the per-bar sl_series.
     A stop hit at a trailed level (trail_flags True) reports exit_reason = "trailing_sl" and
     exits at the trailed level; the recorded `sl` stays the original base_sl."""
-    timeout = params["trade_timeout"]
+    timeout = params["trail_trade_timeout"]
     n_all   = trade_win.n
     t_end   = min(timeout, n_all)              # len(pre_timeout)
     low     = trade_win.l
@@ -850,7 +883,7 @@ def _run_trade_trailing(trade_win, entry_ts, entry_price, direction, base_sl,
     Only a real band TP hit reports the level actually filled; every other pre-timeout exit records
     tp = the band AT ENTRY (b[0]) — the target the trade opened with, not wherever the live band
     had drifted to by the exit bar."""
-    timeout = params["trade_timeout"]
+    timeout = params["trail_trade_timeout"]
     n_all   = trade_win.n
     t_end   = min(timeout, n_all)              # len(pre_timeout)
     low     = trade_win.l
@@ -973,7 +1006,7 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
         return None
 
     # --- SL placement (the trailing ratchet starts from here) ---
-    placement = params["sl_placement"]
+    placement = params["trail_sl_placement"]
     if placement == "VAL/VAH":
         sl = levels["val"] if direction == "long" else levels["vah"]
     elif placement == "swing_low":
@@ -986,7 +1019,7 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
         return None
 
     # --- band selection: pick the σ2 and σ3 columns for this session + direction ---
-    session = params["vwap_session"]
+    session = params["trail_vwap_session"]
     ud      = "up" if direction == "long" else "dn"
     col2    = f"vwap_tick_{session}_std2_{ud}"
     col3    = f"vwap_tick_{session}_std3_{ud}"
@@ -1007,7 +1040,7 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
         past2 = entry_price <= band2_e
         past3 = entry_price <= band3_e
 
-    eff_std  = params["vwap_std"]
+    eff_std  = params["trail_vwap_std"]
     fallback = False
     if eff_std == 2:
         if past3:
@@ -1023,8 +1056,8 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
     # The RR is measured on the ROUNDED target (that is the level actually traded), so the check is
     # conservative. Running out of bands joins the same `fallback` path as price-past-3σ.
     tick    = params["tick_size"]
-    over_rr = bool(params.get("trailing_is_over_rr", False))
-    min_rr  = float(params.get("trailing_minimal_rr", 0.0))
+    over_rr = bool(params.get("trail_is_over_rr", False))
+    min_rr  = float(params.get("trail_minimal_rr", 0.0))
     rr_push = False
 
     if over_rr and not fallback:
@@ -1046,10 +1079,10 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
     # --- no usable vwap band (price past 3σ, or none of them clears trailing_minimal_rr) ---
     # trailing_force_trade is the single switch: fixed-RR target, or skip. Decided before the
     # trail detectors run, so a skipped trade costs nothing.
-    if fallback and not bool(params.get("trailing_force_trade", True)):
+    if fallback and not bool(params.get("trail_force_trade", True)):
         return None
 
-    escalated = fallback or (eff_std != params["vwap_std"])
+    escalated = fallback or (eff_std != params["trail_vwap_std"])
 
     # --- trailing stop series (shared by all TP modes) ---
     with timed("risk4:build_trailing_sl"):
@@ -1074,7 +1107,7 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
             col_eff = col3 if eff_std == 3 else col2
             tp_type = f"tp_vwap_{eff_std}"
 
-            if params["vwap_tp_mode"] == "trailing":
+            if params["trail_tp_mode"] == "trailing":
                 band  = _tick_tp_array(vwap_bands[col_eff][entry_pos:], direction, tick)
                 trade = _run_trade_trailing(trade_win, entry_ts, entry_price, direction,
                                             sl, sl_series, trail_flags, band, params)

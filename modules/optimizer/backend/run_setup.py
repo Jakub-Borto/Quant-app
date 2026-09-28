@@ -26,13 +26,21 @@ def run_grid_job(strategy, folder_path, start_date, end_date, *,
                  tick_size: float, ticks_per_point: float,
                  be_band_ticks: float, min_trades_default: int,
                  n_workers: int, ff_events_path,
-                 strategies_dir=None, on_progress=None) -> tuple[pd.DataFrame, dict]:
+                 strategies_dir=None, on_progress=None,
+                 extra_folders: dict | None = None,
+                 additional_data: dict | None = None,
+                 cache_bytes: int | None = None) -> tuple[pd.DataFrame, dict]:
     """
     Run the whole grid and return (trades, meta). Raises RuntimeError from the
     engine on a broken pool (the window shows it as an error banner, exactly
     like the old st.error path).
+
+    extra_folders    {slot: folder} for the strategy's additional DATA slots
+    additional_data  {slot: "type/asset/dataset"} — recorded in meta.json
+    cache_bytes      the optimizer memory budget, split across the workers
     """
     ff_found   = ff_events_path is not None and Path(ff_events_path).exists()
+    warnings: list = []
     bucket_map = load_bucket_map(ff_events_path) if ff_events_path else {}
 
     trades = run_grid(
@@ -45,6 +53,9 @@ def run_grid_job(strategy, folder_path, start_date, end_date, *,
         n_workers=n_workers,
         strategy_name=strategy_name,
         strategies_dir=strategies_dir,
+        extra_folders=extra_folders,
+        cache_bytes=cache_bytes,
+        warnings_out=warnings,
     )
 
     split = median_split_date(trades)
@@ -68,5 +79,7 @@ def run_grid_job(strategy, folder_path, start_date, end_date, *,
         "n_combos":           combo_count(axes),
         "n_trades":           len(trades),
         "created_at":         pd.Timestamp.now().isoformat(),
+        "additional_data":    dict(additional_data or {}),
+        "data_warnings":      warnings,
     }
     return trades, meta

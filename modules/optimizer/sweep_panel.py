@@ -25,9 +25,9 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QSpinBox, QVBoxLayout, QWidget)
 
-from modules.common.backend.asset_info import HIDDEN_PARAMS
+from modules.common.backend.asset_info import AUTO_PARAMS
 from modules.common.ui import theme
-from modules.common.ui.params_form import make_param_widget
+from modules.common.ui.params_form import make_param_widget, set_widget_value
 from modules.common.ui.widgets import Caption, CollapsibleSection
 from modules.optimizer.backend.param_space import (BOOL_SWEEP_VALUES,
                                                    MAX_SWEPT, ROLE_LABELS,
@@ -153,12 +153,16 @@ class _ParamCell(QWidget):
     edited = Signal()
 
     def __init__(self, param: str, default, kind: str | None,
-                 options: list | None = None, parent=None):
+                 options: list | None = None, readonly: bool = False,
+                 parent=None):
         super().__init__(parent)
         self.param = param
-        self.kind = kind
+        self.readonly = readonly
+        self.kind = None if readonly else kind       # auto params never sweep
+        kind = self.kind
         self._default = default
         self._options = options
+        self._fixed_widget = None
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -200,6 +204,11 @@ class _ParamCell(QWidget):
         else:
             self._holder.addWidget(widget)
             self._fixed_getter = getter
+            self._fixed_widget = widget
+            if self.readonly:
+                widget.setEnabled(False)
+                widget.setToolTip("Filled automatically from the selected asset "
+                                  "(ASSET_INFO) — not editable, never swept")
             if hasattr(widget, "valueChanged"):
                 widget.valueChanged.connect(lambda _=None: self.edited.emit())
             elif hasattr(widget, "textChanged"):
@@ -232,6 +241,11 @@ class _ParamCell(QWidget):
     def fixed_value(self):
         return self._fixed_getter() if self._fixed_getter else self._default
 
+    def set_fixed_value(self, value) -> None:
+        """Show `value` in the fixed widget (used for the read-only auto params)."""
+        if self._fixed_widget is not None:
+            set_widget_value(self._fixed_widget, value)
+
     def swept_values(self) -> list | None:
         return self.sweep_editor.values() if self.sweep_editor else None
 
@@ -241,8 +255,7 @@ class SweepPanel(QWidget):
 
     def __init__(self, strategy, parent=None):
         super().__init__(parent)
-        visible = {k: v for k, v in getattr(strategy, "PARAMS", {}).items()
-                   if k not in HIDDEN_PARAMS}
+        visible = dict(getattr(strategy, "PARAMS", {}))
         opts = getattr(strategy, "PARAMS_OPTIONS", {}) or {}
         self._cells: dict[str, _ParamCell] = {}
         self._sweep_order: list[str] = []
@@ -273,7 +286,7 @@ class SweepPanel(QWidget):
             for n, param in enumerate(keys):
                 cell = _ParamCell(param, visible[param],
                                   sweep_kind(visible[param], opts.get(param)),
-                                  opts.get(param))
+                                  opts.get(param), readonly=param in AUTO_PARAMS)
                 cell.toggled.connect(lambda p=param: self._on_cell_toggled(p))
                 cell.edited.connect(self.changed)
                 self._cells[param] = cell
@@ -352,8 +365,17 @@ class SweepPanel(QWidget):
         return list(self._sweep_order)
 
     def fixed_params(self) -> dict:
+        """Non-swept params' values. AUTO_PARAMS (tick_size) are left out:
+        the engine injects them from ASSET_INFO, and meta.json records them
+        at top level."""
         return {p: cell.fixed_value() for p, cell in self._cells.items()
-                if not cell.is_swept}
+                if not cell.is_swept and not cell.readonly}
+
+    def set_auto_value(self, param: str, value) -> None:
+        """Show an AUTO_PARAMS value (e.g. the asset's tick_size) read-only."""
+        cell = self._cells.get(param)
+        if cell is not None and cell.readonly:
+            cell.set_fixed_value(value)
 
     def swept_values(self) -> dict:
         return {p: self._cells[p].swept_values() for p in self._sweep_order}

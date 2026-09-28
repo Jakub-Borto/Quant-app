@@ -368,12 +368,64 @@ def test_sweep_panel_new_kinds(qtbot):
     assert panel.swept_values()["entries"] is None
 
 
+def test_auto_params_are_read_only(qtbot):
+    """tick_size (AUTO_PARAMS) is shown but disabled, follows set_value(), and
+    the Optimizer never sweeps it nor records it among fixed params."""
+    import types
+    from modules.common.backend.asset_info import AUTO_PARAMS, auto_param_values
+    from modules.common.ui.params_form import ParamsForm
+    from modules.optimizer.sweep_panel import SweepPanel
+
+    assert auto_param_values("ZN") == {"tick_size": 0.015625}
+    form = ParamsForm({"tick_size": 0.25, "n": 3}, readonly=AUTO_PARAMS)
+    qtbot.addWidget(form)
+    assert not form._widgets["tick_size"].isEnabled()
+    assert form._widgets["n"].isEnabled()
+    form.set_value("tick_size", 0.015625)             # must not round to 0.02
+    assert form.values() == {"tick_size": 0.015625, "n": 3}
+
+    stub = types.SimpleNamespace(PARAMS={"tick_size": 0.25, "n": 3})
+    panel = SweepPanel(stub)
+    qtbot.addWidget(panel)
+    cell = panel._cells["tick_size"]
+    assert cell.readonly and cell.check is None       # not sweepable
+    panel.set_auto_value("tick_size", 0.5)
+    assert cell.fixed_value() == 0.5
+    assert panel.fixed_params() == {"n": 3}           # engine injects tick_size
+
+
+def test_additional_data_panel_auto_picks_by_name(qtbot, tmp_path):
+    from modules.common.backend.data_roots import scan_structure
+    from modules.common.ui.additional_data import AdditionalDataPanel
+    for ds in ("ES_1m_advanced", "ES_1m_indicators", "ES_big_trades"):
+        (tmp_path / "parquet" / "Futures" / "ES" / ds).mkdir(parents=True)
+    (tmp_path / "parquet" / "Futures" / "NQ" / "NQ_1m_advanced").mkdir(parents=True)
+
+    panel = AdditionalDataPanel()
+    qtbot.addWidget(panel)
+    panel.set_structure(scan_structure([tmp_path]))
+    panel.set_slots(["indicators", "big_trades"])
+    panel.follow_main("Futures", "ES", tmp_path)
+    assert panel.ok()
+    assert {k: v.name for k, v in panel.folders().items()} == {
+        "indicators": "ES_1m_indicators", "big_trades": "ES_big_trades"}
+    assert panel.descriptions()["indicators"] == "Futures/ES/ES_1m_indicators"
+
+    panel.follow_main("Futures", "NQ", tmp_path)      # NQ has neither
+    assert not panel.ok() and len(panel.problems()) == 2
+    assert "indicators" in panel.problems()[0]
+
+    panel.set_slots([])                               # strategy without extra data
+    assert panel.ok() and panel.isHidden()
+
+
 def test_worker_import_chain_is_qt_free():
     """Pool workers import the engine module by name — Qt must never come
     along (each worker would load ~100 MB of GUI)."""
     code = (
         "import sys; "
         "import modules.optimizer.backend.engine; "
+        "import modules.engine; "
         "import modules.optimizer.backend.run_setup; "
         "import modules.common.backend.regime_join; "
         "import modules.regime_detector.backend.runner; "

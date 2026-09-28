@@ -4,9 +4,14 @@ Backtester window — run a strategy on a dataset and inspect the results.
 This window owns the run: the pickers, the params form, the worker thread and
 the day-type tagging.
 
-    controls -> params form -> Run (worker thread)
+    controls -> params form -> additional data rows -> Run (worker thread,
+    modules.engine.run_strategy through backend/run.py)
     -> tag day types (FF events from the dataset's data root)
     -> TradeReport.show_trades()
+
+The engine keeps the day data in a RAM cache (Settings -> cache_gb) across
+runs; "Free cached data" empties it. tick_size (AUTO_PARAMS) is shown
+read-only and follows the selected asset.
 
 Everything after that — the filter chain, every section, Save Trades and the
 Analytics / Monte Carlo handoff — is modules.common.trade_report, the same
@@ -28,10 +33,13 @@ from PySide6.QtWidgets import (QComboBox, QDateEdit, QGridLayout, QHBoxLayout,
 from modules.backtester.backend.day_types import (load_day_classifications,
                                                   tag_trades)
 from modules.backtester.backend.run import run_backtest
-from modules.common.backend.asset_info import ASSET_INFO, HIDDEN_PARAMS
+from modules.common.backend.asset_info import (ASSET_INFO, AUTO_PARAMS,
+                                               auto_param_values)
 from modules.common.backend.data_roots import (DatasetRef, available_dates,
                                                resolve_ff_events,
                                                scan_structure)
+from modules.common.ui.additional_data import AdditionalDataPanel
+from modules.engine import GB, additional_slots, clear_cache, set_budget_gb
 from modules.common.backend.plugins import PluginRef, list_strategies, load_strategy
 from modules.common.trade_report.ui import (ReportContext, SaveTarget,
                                             TradeReport, attach_layout_gear)
@@ -99,6 +107,10 @@ class BacktesterWindow(ModuleWindowBase):
         grid.setColumnStretch(3, 1)
         self.content.addWidget(wrap_card(grid))
 
+        # one row per additional DATA slot of the selected strategy
+        self._additional = AdditionalDataPanel()
+        self.content.addWidget(self._additional)
+
         # params form placeholder (rebuilt per strategy)
         self._params_header = SectionHeader("Parameters")
         self._params_header.setVisible(False)
@@ -114,9 +126,15 @@ class BacktesterWindow(ModuleWindowBase):
         self._status = Caption("")
         refresh_btn = QPushButton("Refresh folders")
         refresh_btn.clicked.connect(self._rescan)
+        free_btn = QPushButton("Free cached data")
+        free_btn.setToolTip("Empty the engine's RAM day cache (data + prepared "
+                            "days). Do this after changing a strategy's "
+                            "prepare_day() or to release memory.")
+        free_btn.clicked.connect(self._on_free_cache)
         btn_row.addStretch()
         btn_row.addWidget(self._run_btn)
         btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(free_btn)
         btn_row.addStretch()
         self.content.addLayout(btn_row)
         self.content.addWidget(self._status)
@@ -147,6 +165,7 @@ class BacktesterWindow(ModuleWindowBase):
         self._strategy.blockSignals(False)
 
         self._structure = scan_structure(self.settings.data_roots, source="parquet")
+        self._additional.set_structure(self._structure)
         self._type.blockSignals(True)
         self._type.clear()
         self._type.addItems(list(self._structure.keys()))
@@ -181,6 +200,10 @@ class BacktesterWindow(ModuleWindowBase):
 
     def _on_dataset_changed(self) -> None:
         ref: DatasetRef | None = self._dataset.currentData()
+        self._additional.follow_main(self._type.currentText(),
+                                     self._asset.currentText(),
+                                     ref.root if ref is not None else None)
+        self._sync_auto_params()
         if ref is None:
             return
         dates = available_dates(ref.path)
@@ -216,14 +239,30 @@ class BacktesterWindow(ModuleWindowBase):
             return
         self._banner.clear_message()
         params = getattr(self._strategy_module, "PARAMS", {})
-        visible = {k: v for k, v in params.items() if k not in HIDDEN_PARAMS}
-        self._params_header.setVisible(bool(visible))
-        if visible:
+        self._params_header.setVisible(bool(params))
+        if params:
             self._params_form = ParamsForm(
                 params, sections=getattr(self._strategy_module, "PARAM_SECTIONS", None),
-                hidden=HIDDEN_PARAMS,
+                readonly=AUTO_PARAMS,
                 options=getattr(self._strategy_module, "PARAMS_OPTIONS", None))
             self._params_container.addWidget(self._params_form)
+            self._sync_auto_params()
+        self._additional.set_slots(additional_slots(self._strategy_module))
+        ref = self._dataset.currentData()
+        self._additional.follow_main(self._type.currentText(),
+                                     self._asset.currentText(),
+                                     ref.root if ref is not None else None)
+
+    def _sync_auto_params(self) -> None:
+        """Show the selected asset's AUTO_PARAMS (tick_size) in the form."""
+        if self._params_form is None:
+            return
+        for key, value in auto_param_values(self._asset.currentText()).items():
+            self._params_form.set_value(key, value)
+
+    def _on_free_cache(self) -> None:
+        freed = clear_cache()
+        self._status.setText(f"Freed {freed / GB:.2f} GB of cached day data.")
 
     # ══ run flow ═══════════════════════════════════════════════════════════════
     def _on_run(self) -> None:
@@ -244,6 +283,9 @@ class BacktesterWindow(ModuleWindowBase):
                                                f"Add it to ASSET_INFO.")
             return
 
+        if not self._additional.ok():
+            self._banner.show_message("error", " ".join(self._additional.problems()))
+            return
         info = ASSET_INFO[asset]
         params = self._params_form.values() if self._params_form else {}
         strategy_ref = self._strategies[self._strategy.currentIndex()]
@@ -254,9 +296,15 @@ class BacktesterWindow(ModuleWindowBase):
 
         self._run_btn.setEnabled(False)
         self._status.setText("Running strategy…")
+        set_budget_gb(self.settings.cache_gb)
         worker = FunctionWorker(run_backtest, self._strategy_module, ref.path,
                                 start_date, end_date, params,
-                                info["tick_size"], info["ticks_per_point"])
+                                info["tick_size"], info["ticks_per_point"],
+                                extra_folders=self._additional.folders(),
+                                needs_progress=True)
+        worker.signals.progress.connect(
+            lambda cur, total, _msg: self._status.setText(
+                f"Running strategy… day {cur}/{total}"))
         worker.signals.finished.connect(self._on_run_finished)
         worker.signals.error.connect(self._on_run_error)
         self.track_worker(worker)
@@ -266,12 +314,19 @@ class BacktesterWindow(ModuleWindowBase):
         self._status.setText("")
         self._banner.show_message("error", message)
 
-    def _on_run_finished(self, trades: pd.DataFrame) -> None:
+    def _on_run_finished(self, result) -> None:
         self._run_btn.setEnabled(True)
         self._status.setText("")
+        trades: pd.DataFrame = result.trades
+        # data problems (e.g. days skipped for a missing additional-data file)
+        # are shown loudly — a result computed on a subset of days must never
+        # look complete
+        if result.warnings:
+            self._banner.show_message("warning", "⚠ " + "  ⚠ ".join(result.warnings))
         if trades.empty:
             self._report.setVisible(False)
-            self._banner.show_message("warning", "Strategy produced no trades.")
+            if not result.warnings:
+                self._banner.show_message("warning", "Strategy produced no trades.")
             return
 
         self._trades = trades

@@ -4,6 +4,17 @@ import numpy as np
 
 from ..absorption import absorption_scan, wick_bounds
 
+# ── this finder's declarations (collected by ..params; see STRATEGY_GUIDE.md) ──
+SECTION    = "Consecutive Absorption"   # its box in the params form
+DEFAULT_ON = True   # its default bit in valid_entries / trail_entries
+BASELINES  = ('rolling',)   # day-level baselines core builds when it is enabled
+PARAMS = {
+    "consec_abs_n":          2,     # number of absorption candles required at same level
+    "consec_abs_mult":       2.0,   # absorption multiplier
+    "consec_abs_ticks":      4,     # ±ticks tolerance for grouping absorption levels
+    "consec_wick_threshold": 0.4,   # wick threshold independent of absorption + delta
+}
+
 _NO_ENTRY = (None, None, None, None, None)
 
 

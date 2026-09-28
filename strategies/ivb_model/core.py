@@ -3,22 +3,23 @@
 Rewritten on positional numpy windows (see _daydata.DayData): a day is materialized once as
 arrays + pre-parsed JSON, breakout/retest/flip bookkeeping is plain integer positions, and the
 finders / risk scripts receive EntryWindow / TradeWindow contexts instead of DataFrame slices.
-Every stage is wrapped in an accumulating timer (_timing) reported once per backtest run.
+Every stage is wrapped in an accumulating timer (modules.engine.timed), reported in the
+engine's one timing table per run.
 """
 
-import json
 import numpy as np
 from datetime import time
 
-from ._timing   import timed
+from modules.engine import timed
+
 from ._daydata  import DayData, EntryWindow, TradeWindow
 from .profile   import compute_ivb_profile
 from .baselines import (
     build_rolling_baseline, build_passive_baseline, build_cvd_change_baseline,
     BASELINE_WARMUP_MINUTES,
 )
-from .entries   import FINDER_REGISTRY, FINDER_NAMES
-from .risk      import RISK_REGISTRY
+from .entries   import FINDER_MODULES, FINDER_REGISTRY, FINDER_NAMES
+from .risk      import RISK_SCRIPTS
 
 
 # The session START is the `session_start` param ("HH:MM" NY wall time, default "09:30");
@@ -230,17 +231,18 @@ def process_day(day: DayData, params: dict):
     n_finders   = len(FINDER_REGISTRY)
     entry_flags = params.get("valid_entries", "1" * n_finders).ljust(n_finders, "0")
     risk_name   = params.get("risk_script", "basic_risk")
-    if risk_name not in RISK_REGISTRY:      # unknown / legacy int -> basic_risk
+    if risk_name not in RISK_SCRIPTS:       # unknown / legacy int -> basic_risk
         risk_name = "basic_risk"            # (mirrors the old out-of-range -> script 1)
-    if risk_name == "vwap_trailing_risk":   # re-detects signals in-trade
-        trail_flags = str(params.get("trailing_entries", "0" * n_finders)).ljust(n_finders, "0")
-    else:
-        trail_flags = "0" * n_finders
+    risk_mod = RISK_SCRIPTS[risk_name]
+    extra = getattr(risk_mod, "extra_active_finders", None)   # e.g. in-trade re-detection
+    trail_flags = extra(params, n_finders) if extra is not None else "0" * n_finders
     active = [e == "1" or t == "1" for e, t in zip(entry_flags, trail_flags)]
 
-    need_rolling = active[0] or active[1] or active[3]   # absorption_delta / consec / passive_size
-    need_passive = active[3] or active[4]                # passive_size / passive_wall
-    need_cvd     = active[5] or active[6]                # the two cvd_divergence flavours
+    # which day-level baselines to build: every active finder declares its BASELINES
+    needed = {b for on, mod in zip(active, FINDER_MODULES) if on for b in mod.BASELINES}
+    need_rolling = "rolling" in needed
+    need_passive = "passive" in needed
+    need_cvd     = "cvd" in needed
 
     with timed("day:baselines"):
         valid_pos = day.warmup_pos
@@ -257,8 +259,8 @@ def process_day(day: DayData, params: dict):
             day.cvd     = day.cvd_raw
             day.cvd_std = build_cvd_change_baseline(day, valid_pos, params)
 
-    # VWAP deviation bands: only the two vwap risk scripts read them
-    if risk_name in ("vwap_tp_risk", "vwap_trailing_risk"):
+    # VWAP deviation bands: only risk scripts that declare NEEDS_VWAP_BANDS read them
+    if getattr(risk_mod, "NEEDS_VWAP_BANDS", False):
         day.vwap_bands = day.bands_raw
 
     max_flips  = params["max_flips"]
@@ -315,7 +317,7 @@ def process_day(day: DayData, params: dict):
         if direction_found != direction:
             return None
 
-    # --- risk script dispatch (risk_script name -> RISK_REGISTRY) ---
+    # --- risk script dispatch (risk_script name -> RISK_SCRIPTS) ---
     # the day context carries the baselines + CVD series so risk scripts can re-detect
     # entry-style signals on the live trade bars (vwap_trailing_risk); others ignore them.
     levels = {"val": val, "vah": vah, "poc": poc}
@@ -323,7 +325,7 @@ def process_day(day: DayData, params: dict):
     with timed("day:trade_window_build"):
         trade_win = TradeWindow(day, entry_pos, direction, params)
 
-    risk_fn = RISK_REGISTRY[risk_name]
+    risk_fn = risk_mod.run
 
     with timed(f"risk:{risk_name}"):
         trade = risk_fn(
@@ -358,10 +360,11 @@ def process_day(day: DayData, params: dict):
         # it never becomes a stray column); scripts that don't set it leave notes byte-identical.
         risk_notes = trade.pop("risk_notes", None)
 
-        trade["notes"] = json.dumps({
+        # a plain dict — the engine stores json.dumps(notes), keys in this order
+        trade["notes"] = {
             **process_day_notes,
             **(entry_notes or {}),
             **(risk_notes or {}),
-        })
+        }
 
     return trade

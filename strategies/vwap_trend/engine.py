@@ -10,9 +10,9 @@ of the window is flattened at that bar's close ('eod'); a side change decided
 on the last bar has no next open and is discarded.
 """
 
-import json
-
 import numpy as np
+
+from modules.engine import Trade
 
 from .signals import classify, resolve
 
@@ -25,16 +25,17 @@ def _jval(x):
     return x if np.isfinite(x) else None
 
 
-def _make_trade(index, open_, close, volume, vwap, date, cfg,
-                direction_code: int, u_entry: int, u_exit: int, is_eod: bool) -> dict:
+def _make_trade(index, open_, close, volume, vwap, cfg, direction_code: int,
+                u_entry: int, u_exit: int, exit_reason: str) -> Trade:
+    """exit_reason "eod" exits at the last bar's CLOSE; any other reason exits
+    at the OPEN of bar u_exit (the fill after the deciding close)."""
     direction = "long" if direction_code > 0 else "short"
     entry_price = open_[u_entry]
-    if is_eod:
-        exit_price, exit_reason = close[u_exit], "eod"
+    if exit_reason == "eod":
+        exit_price = close[u_exit]
         bars_held = u_exit - u_entry + 1          # entry bar .. last bar inclusive
     else:
         exit_price = open_[u_exit]
-        exit_reason = None                        # caller fills in flip/flat/exclusion
         bars_held = u_exit - u_entry
 
     pnl_points = exit_price - entry_price if direction_code > 0 else entry_price - exit_price
@@ -62,24 +63,22 @@ def _make_trade(index, open_, close, volume, vwap, date, cfg,
         "filled_on_zero_volume_bar": bool(volume[u_entry] == 0 or volume[u_exit] == 0),
     }
 
-    return {
-        "date":        date,
-        "direction":   direction,
-        "trade_type":  TRADE_TYPE,
-        "entry_time":  index[u_entry],
-        "exit_time":   index[u_exit],
-        "entry_price": entry_price,
-        "exit_price":  exit_price,
-        "sl":          sl,
-        "tp":          tp,
-        "exit_reason": exit_reason,
-        "pnl_points":  pnl_points,
-        "notes":       json.dumps(notes),
-    }
+    return Trade(
+        direction=direction,
+        entry_time=index[u_entry],
+        exit_time=index[u_exit],
+        entry_price=entry_price,
+        exit_price=exit_price,
+        exit_reason=exit_reason,
+        sl=sl,
+        tp=tp,
+        trade_type=TRADE_TYPE,
+        notes=notes,
+    )
 
 
-def run_day(index, open_, close, volume, vwap, excl, date, cfg) -> list:
-    """One session window -> list of trade dicts.
+def run_day(index, open_, close, volume, vwap, excl, cfg) -> list:
+    """One session window -> list of Trades.
 
     All arrays are already restricted to [signal_start .. trade_end]: bar 0 is
     the bar BEFORE the first fill-eligible bar when one exists (its close is
@@ -103,17 +102,16 @@ def run_day(index, open_, close, volume, vwap, excl, date, cfg) -> list:
         if new == current:
             continue
         if current != 0:
-            trade = _make_trade(index, open_, close, volume, vwap, date, cfg,
-                                current, u_entry, u, is_eod=False)
-            trade["exit_reason"] = ("exclusion" if excl_l[u]
-                                    else "vwap_flip" if new != 0
-                                    else "band_flat")
-            trades.append(trade)
+            reason = ("exclusion" if excl_l[u]
+                      else "vwap_flip" if new != 0
+                      else "band_flat")
+            trades.append(_make_trade(index, open_, close, volume, vwap, cfg,
+                                      current, u_entry, u, reason))
         if new != 0:
             u_entry = u
         current = new
 
     if current != 0:    # forced flat at the close of the window's last bar
-        trades.append(_make_trade(index, open_, close, volume, vwap, date, cfg,
-                                  current, u_entry, n - 1, is_eod=True))
+        trades.append(_make_trade(index, open_, close, volume, vwap, cfg,
+                                  current, u_entry, n - 1, "eod"))
     return trades

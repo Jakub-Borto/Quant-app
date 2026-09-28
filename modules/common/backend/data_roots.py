@@ -88,6 +88,31 @@ def scan_structure(roots: list[Path], source: str = "parquet") -> dict:
     return merged
 
 
+def _norm(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def default_dataset_for_slot(refs: list[DatasetRef], slot: str,
+                             prefer_root: Path | None = None) -> DatasetRef | None:
+    """
+    The dataset a strategy's additional DATA slot defaults to: the first of
+    `refs` (the datasets of one type/asset, as scan_structure lists them)
+    whose folder name CONTAINS the slot name, compared case-, underscore- and
+    dash-insensitively ("indicators" -> ES_1m_indicators, "big_trades" ->
+    ES_big_trades). Datasets in `prefer_root` (the main dataset's root) win.
+    None when nothing matches — the UI then shows the row as an error.
+    """
+    key = _norm(slot)
+    if not key:
+        return None
+    matches = [r for r in refs if key in _norm(r.dataset)]
+    if prefer_root is not None:
+        same_root = [r for r in matches if Path(r.root) == Path(prefer_root)]
+        if same_root:
+            return same_root[0]
+    return matches[0] if matches else None
+
+
 def available_dates(folder_path: Path) -> list[pd.Timestamp]:
     """Sorted trading dates from a dataset folder's YYYY-MM-DD.parquet files
     (verbatim digit-stem filter from the old render_controls)."""

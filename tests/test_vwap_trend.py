@@ -4,7 +4,8 @@ exclusion / zero-volume / NaN-VWAP handling, output schema, param validation,
 day-cache param-independence (spec §14/§15).
 
 All data is synthetic and written to tmp_path as candle + indicator parquet
-siblings, mirroring parquet/{type}/{asset}/{dataset}/YYYY-MM-DD.parquet.
+siblings, mirroring parquet/{type}/{asset}/{dataset}/YYYY-MM-DD.parquet. Runs
+go through the engine (modules.engine.run_strategy) exactly as the app does.
 """
 
 import json
@@ -13,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from modules.engine import DayCache, EngineError, run_strategy
 from modules.optimizer.backend.loader import load_strategy
 from modules.optimizer.backend.param_space import sweep_kind
 
@@ -22,7 +24,6 @@ DATE       = "2026-01-05"
 TZ         = "America/New_York"
 
 BASE_PARAMS = {
-    "indicators_dataset": IND_DS,
     "vwap_anchor":        "rth",
     "vwap_band_ticks":    0.0,
     "band_rule":          "carry_forward",
@@ -32,7 +33,6 @@ BASE_PARAMS = {
     "exclude_end":        "",
     "skip_zero_volume":   True,
     "sl_convention":      "vwap_at_entry",
-    "tick_size":          0.25,
 }
 
 START, END = pd.Timestamp("2026-01-01"), pd.Timestamp("2026-12-31")
@@ -70,8 +70,15 @@ def write_day(root, opens, closes, vwaps, volumes=None, date=DATE,
     return root / CANDLES_DS
 
 
+def run_result(strat, folder, cache=None, ind_folder=None, **overrides):
+    ind = ind_folder if ind_folder is not None else folder.parent / IND_DS
+    return run_strategy(strat, folder, START, END, {**BASE_PARAMS, **overrides},
+                        tick_size=0.25, extra_folders={"indicators": ind},
+                        cache=cache or DayCache(), verbose=False)
+
+
 def run(strat, folder, **overrides):
-    return strat.run(folder, START, END, {**BASE_PARAMS, **overrides})
+    return run_result(strat, folder, **overrides).trades
 
 
 # ── golden session (hand-computed) ───────────────────────────────────────────
@@ -293,7 +300,6 @@ def test_param_validation_errors(strat, tmp_path):
         {"exclude_start": "12:00"},                          # one-sided
         {"exclude_start": "15:00", "exclude_end": "12:00"},  # inverted
         {"exclude_start": "08:00", "exclude_end": "12:00"},  # outside window
-        {"indicators_dataset": ""},
     ]:
         with pytest.raises(ValueError):
             run(strat, folder, **bad)
@@ -301,14 +307,15 @@ def test_param_validation_errors(strat, tmp_path):
 
 def test_missing_indicators_folder_errors(strat, tmp_path):
     folder = write_day(tmp_path, G_OPENS, G_CLOSES, G_VWAP)
-    with pytest.raises(FileNotFoundError, match="indicators folder"):
-        run(strat, folder, indicators_dataset="DOES_NOT_EXIST")
+    with pytest.raises(EngineError, match="does not exist"):
+        run(strat, folder, ind_folder=tmp_path / "DOES_NOT_EXIST")
 
 
 def test_missing_anchor_column_errors(strat, tmp_path):
+    # both vwap columns are declared in DATA, so a file without one is an error
     folder = write_day(tmp_path, G_OPENS, G_CLOSES, G_VWAP,
                        ind_columns=["vwap_bar_globex"])
-    with pytest.raises(ValueError, match="vwap_bar_rth"):
+    with pytest.raises(EngineError, match="vwap_bar_rth"):
         run(strat, folder, vwap_anchor="rth")
 
 
@@ -316,22 +323,21 @@ def test_missing_indicator_file_skips_day(strat, tmp_path):
     folder = write_day(tmp_path, G_OPENS, G_CLOSES, G_VWAP, date="2026-01-05")
     write_day(tmp_path, G_OPENS, G_CLOSES, G_VWAP, date="2026-01-06")
     (tmp_path / IND_DS / "2026-01-06.parquet").unlink()
-    df = run(strat, folder)
-    assert set(df["date"]) == {pd.Timestamp("2026-01-05").date()}
+    res = run_result(strat, folder)
+    assert set(res.trades["date"]) == {pd.Timestamp("2026-01-05").date()}
+    assert res.skipped == {"indicators": ["2026-01-06"]}
+    assert len(res.warnings) == 1 and "SKIPPED" in res.warnings[0]
 
 
-def test_day_cache_is_param_independent(strat, tmp_path, monkeypatch):
+def test_day_cache_is_param_independent(strat, tmp_path):
     folder = write_day(tmp_path, G_OPENS, G_CLOSES, G_VWAP)
-    calls = []
-    orig = strat.data.read_candles
-    monkeypatch.setattr(strat.data, "read_candles",
-                        lambda f: (calls.append(f), orig(f))[1])
-    a = run(strat, folder, vwap_band_ticks=0.0)
-    n_first = len(calls)
-    b = run(strat, folder, vwap_band_ticks=3.0, band_rule="flat", vwap_anchor="globex")
-    assert n_first == 1
-    assert len(calls) == n_first        # second run: zero reads, params differ
-    assert len(a) > 0 and len(b) > 0
+    cache = DayCache()
+    a = run_result(strat, folder, cache=cache, vwap_band_ticks=0.0)
+    b = run_result(strat, folder, cache=cache, vwap_band_ticks=3.0,
+                   band_rule="flat", vwap_anchor="globex")
+    assert (a.files_read, a.days_prepared) == (2, 1)    # candles + indicators, 1 day
+    assert (b.files_read, b.days_prepared) == (0, 0)    # second run: all from RAM
+    assert len(a.trades) > 0 and len(b.trades) > 0
 
 
 def test_optimizer_sweepability():

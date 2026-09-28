@@ -24,6 +24,18 @@ import numpy as np
 
 from .._daydata import prev_rolling_max, prev_rolling_min
 
+# ── this finder's declarations (collected by ..params; see STRATEGY_GUIDE.md) ──
+SECTION    = "CVD Divergence (Absorption)"   # its box in the params form
+DEFAULT_ON = False   # its default bit in valid_entries / trail_entries
+BASELINES  = ('cvd',)   # day-level baselines core builds when it is enabled
+PARAMS = {
+    "cvd_pivot_k":              2,     # bars on the left required to qualify a pivot (fractal)
+    "cvd_min_separation":       3,     # min bars between the two pivots
+    "cvd_max_separation":       20,    # max bars between the two pivots (older pivot stale beyond this)
+    "cvd_wick_tolerance_ticks": 2,     # tolerance (ticks) for lower/equal high (or higher/equal low)
+    "cvd_min_score":            0.3,   # z-score threshold for the CVD divergence
+}
+
 _NO_ENTRY = (None, None, None, None, None)
 
 

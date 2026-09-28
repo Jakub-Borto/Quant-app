@@ -20,7 +20,7 @@ real trades files:
   * The same key changes type between rows: `absorption_time` is a str for two
     entry finders and a list[str] for two others.
   * Values can be JSON null (vwap_at_entry on a degenerate session).
-  * Some strategies (orb, fvg_ifvg) emit NO notes column at all, and an
+  * Some strategies (orb) leave notes empty (None) on every trade, and an
     optimizer grid that produced zero trades has neither `notes` nor
     `trade_type`. Everything here must degrade, never raise.
 

@@ -32,8 +32,10 @@ Plugin folders are scanned dynamically (`importlib.util.spec_from_file_location`
 → `exec_module`) — **drop a file in the folder and it appears in the UI**.
 No registration. The filename stem becomes the UI display name;
 `__init__.py` / `base.py` are excluded. Strategies may also be **packages**
-(folder with `__init__.py` exposing `run`, `PARAMS`, `PARAM_SECTIONS`) — see
-`strategies/ivb_model/` and its own `CLAUDE.md`.
+(folder with `__init__.py` exposing the strategy contract) — see
+`strategies/ivb_model/`, `strategies/orb/`, `strategies/vwap_trend/`.
+**`STRATEGY_GUIDE.md` / `Strategy_Guide.pdf` (repo root) is the complete
+strategy-author reference** — keep it in sync with `modules/engine/`.
 
 Any plugin may also declare `PARAMS_OPTIONS = {param: [choice, ...]}`:
 default-in-list → dropdown; '0'/'1' bitstring default with one char per
@@ -44,7 +46,7 @@ the Optimizer) is the docstring of `modules/common/ui/params_form.py`.
 | Folder | Used by | Contract |
 |---|---|---|
 | `data_transforms/` | Data Formatter | `run_all(input_folder, output_folder, skip_existing, on_progress[, params]) -> None` (a transform MAY declare `PARAMS` like a strategy — the UI renders widgets from it and passes the values as `params`; transforms without `PARAMS` get the plain 4-arg call) |
-| `strategies/` | Backtester, Optimizer | `run(folder_path, start_date, end_date, params) -> pd.DataFrame` (+ `PARAMS`, optional `PARAMS_OPTIONS`; the Optimizer sweeps int/float params over min/max/step, str params over a value list, bool params over [False, True], dropdown params over a subset of their choices, bit-flag params over a bitstring list) |
+| `strategies/` | Backtester, Optimizer (through `modules.engine.run_strategy`) | `DATA = {"main": [cols], "slot": [cols]}` + `process_day(day, params) -> Trade \| list[Trade] \| None` (optional `prepare_day(date, data, params)` + `PREPARE_PARAMS`; `PARAMS`, optional `PARAM_SECTIONS` / `PARAMS_OPTIONS`; the Optimizer sweeps int/float params over min/max/step, str params over a value list, bool params over [False, True], dropdown params over a subset of their choices, bit-flag params over a bitstring list). The ENGINE owns the day loop, reads, RAM cache, lookback (`day.previous`), timing and the 12-column output; see `STRATEGY_GUIDE.md` |
 | `position_sizing/` | Analytics, Monte Carlo | `apply(trades, params) -> pd.DataFrame` (+ `PARAMS`) |
 | `modules/monte_carlo/methods/` | Monte Carlo | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`; a method needing more than a params form sets a panel flag — `PROP_FIRM = True` → prop-firm UI, `REGIME_PANEL = True` → regime-switching UI — and the window swaps the whole generic branch for it) |
 | `scripts/` | Scripts | no Python contract — any quick one-off script. A `# app: streamlit` comment (or `STREAMLIT = True`) in the first 30 lines → launched as `streamlit run` on a free port + opened in the dedicated scripts browser (Chrome/Edge with a private `--user-data-dir` profile — first run opens its window, later runs add tabs there; Opera ignores the flags, so it's never a candidate); otherwise run as `python -u` with output in the module's console. cwd is the script's own folder (NOT repo root — root `inspect.py` shadowing); repo imports via the sys.path.append idiom in `scripts/example_hello.py` |
@@ -84,10 +86,19 @@ moved out of the in-repo `data/` in July 2026).
 main.py                    entry point (spawn-safe __main__ guard only)
 modules/
   app.py                   QApplication bootstrap
+  engine/                  THE strategy engine (pure, Qt-free, imported by
+                           optimizer workers): trade.py (Trade + the 12
+                           OUTPUT_COLUMNS), runner.py (run_strategy: day loop,
+                           declared-column reads + prefetch, additional data
+                           slots, prepare_day, warnings), day.py (Day: data,
+                           prepared, previous / previous_days), cache.py (the
+                           process-wide LRU RAM cache with a byte budget —
+                           Settings cache_gb; Free cached data = clear_cache),
+                           timing.py (timed + the per-run table)
   main_menu/               launcher window (cards, settings gear)
   common/
     backend/               pure, Qt-free: settings, asset_info (THE single
-                           ASSET_INFO + HIDDEN_PARAMS), plugins (multi-folder
+                           ASSET_INFO + AUTO_PARAMS), plugins (multi-folder
                            discovery/loading), data_roots (multi-root scans,
                            output routing, ff-events resolution), trade_files
                            (save_trades + save_temp_trades + filter
@@ -148,7 +159,8 @@ modules/
                            explore_tab, regime_chart, window.py. Consumers
                            must join regimes AS-OF the trade's entry time,
                            never on date (module __init__ docstring).
-strategies/                strategy plugins (single-file or package)
+strategies/                strategy plugins (single-file or package):
+                           ivb_model/, orb/, vwap_trend/
 data_transforms/           raw DBN -> enriched parquet plugins
 position_sizing/           fixed.py, kelly.py, risk_based.py
 scripts/                   quick-script plugins for the Scripts module
@@ -202,9 +214,19 @@ column schema, not Python imports.
   `America/New_York`. (Charts convert to NY-wall-clock epoch for pyqtgraph —
   display only.)
 - **`direction`** is lowercase `"long"` / `"short"` everywhere.
-- **`pnl_points`, not ticks.** Strategies output `pnl_points` only; the
-  backtester converts via `ticks = pnl_points * ticks_per_point` from
-  `ASSET_INFO`. Never store `ticks` in a strategy.
+- **`pnl_points`, not ticks.** Strategies return `Trade` objects with prices
+  in points; the engine computes `pnl_points` and the backtester converts via
+  `ticks = pnl_points * ticks_per_point` from `ASSET_INFO`. Never store
+  `ticks` in a strategy.
+- **Strategies never read files or cache data themselves.** Declare columns
+  in `DATA`, put param-independent per-day work in `prepare_day` (the engine
+  caches it; it must NOT depend on params outside `PREPARE_PARAMS`), and never
+  mutate cached frames/arrays. After changing a `prepare_day`, press "Free
+  cached data" — the cache is keyed by files + prepare-params, NOT by code.
+- **Additional datasets are DATA slots, not folder-name params** (the old
+  `indicators_folder` / `indicators_dataset` params are gone): each non-main
+  slot is a required "Additional data" row, auto-picked by folder name; a day
+  missing a slot file is skipped with a loud warning.
 - **OHLC is float64.**
 - **`volume_delta_pct`** = `volume_delta / volume * 100`, bounded ±100;
   zero-volume bars = `0.0`.
@@ -231,13 +253,15 @@ column schema, not Python imports.
   time. Normal imports (pytest) don't catch it — load plugins via
   `plugins.load_module` in tests (see tests/test_regime_runner.py).
 
-## ASSET_INFO / HIDDEN_PARAMS
+## ASSET_INFO / AUTO_PARAMS
 
 `modules/common/backend/asset_info.py` is the ONE copy (the old app had four)
 mapping ticker → `{tick_size, ticks_per_point, dollars_per_tick,
-commissions_per_contract, parent}` (`parent` links micros to full-size
-contracts). `HIDDEN_PARAMS = {"tick_size"}` lives there too — auto-injected
-into strategy params, never shown in the UI.
+commissions_per_contract, parent}` (`parent` links micros/nanos to the
+full-size contract; `root_asset` / `same_underlying` /
+`default_reference_asset` build on it). `AUTO_PARAMS = {"tick_size"}` lives
+there too — filled from the selected asset, shown READ-ONLY in the params
+forms, never swept, and always injected into `params` by the engine.
 
 ## C++ extension (`orderbook_replay_cpp`)
 

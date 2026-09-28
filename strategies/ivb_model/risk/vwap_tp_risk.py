@@ -37,6 +37,26 @@ for a forced trade while is_over_rr is on).
 import numpy as np
 
 
+
+# ── this script's declarations (collected by ..params; see STRATEGY_GUIDE.md) ──
+SECTION          = "VWAP Risk"
+NEEDS_VWAP_BANDS = True         # core attaches the day's VWAP bands only when True
+PARAMS = {
+    "vwap_tp_sl_placement":  "zone_logic",  # stop mode: "VAL/VAH", "zone_logic" or "swing_low"
+    "vwap_tp_std":           2,             # which sigma band for TP (2 or 3)
+    "vwap_tp_session":       "globex",      # vwap band session: "globex" or "rth"
+    "vwap_tp_mode":          "now",         # "now" (band frozen at entry) or "trailing" (live)
+    "vwap_tp_is_over_rr":    False,         # True = push the target to a higher band when it can't clear vwap_tp_minimal_rr
+    "vwap_tp_minimal_rr":    2.0,           # required reward:risk when vwap_tp_is_over_rr is on
+    "vwap_tp_force_trade":   True,          # no usable vwap band => True: fixed-RR target (vwap_tp_minimal_rr if vwap_tp_is_over_rr, else 1:1); False: no trade
+    "vwap_tp_trade_timeout": 999,           # bars before timeout logic kicks in
+}
+OPTIONS = {
+    "vwap_tp_sl_placement": ["VAL/VAH", "zone_logic", "swing_low"],
+    "vwap_tp_session":      ["globex", "rth"],
+    "vwap_tp_mode":         ["now", "trailing"],
+}
+
 def _tick_tp(price, direction, tick):
     """Snap a vwap target to the tick grid TOWARD the entry (long: floor, short: ceil), so the
     target never sits beyond the raw band. NaN passes through; the final round() kills binary
@@ -105,7 +125,7 @@ def _swing_sl(entry_win, entry_pos, direction, levels):
 
 def _run_trade(trade_win, entry_ts, entry_price, direction, sl, tp, params) -> dict:
     """Simulate the trade from entry to exit. Returns the trade dict (no trade_type/notes)."""
-    timeout = params["trade_timeout"]
+    timeout = params["vwap_tp_trade_timeout"]
     n_all   = trade_win.n
     t_end   = min(timeout, n_all)              # len(pre_timeout)
     low     = trade_win.l
@@ -199,7 +219,7 @@ def _run_trade_trailing(trade_win, entry_ts, entry_price, direction, sl, band, p
     tp = the band AT ENTRY (b[0]) — the target the trade opened with, not wherever the live band
     had drifted to by the exit bar.
     """
-    timeout = params["trade_timeout"]
+    timeout = params["vwap_tp_trade_timeout"]
     n_all   = trade_win.n
     t_end   = min(timeout, n_all)              # len(pre_timeout)
     low     = trade_win.l
@@ -306,7 +326,7 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
         return None
 
     # --- SL placement (fixed for the whole trade) ---
-    placement = params["sl_placement"]
+    placement = params["vwap_tp_sl_placement"]
     if placement == "VAL/VAH":
         sl = levels["val"] if direction == "long" else levels["vah"]
     elif placement == "swing_low":
@@ -319,7 +339,7 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
         return None
 
     # --- band selection: pick the σ2 and σ3 columns for this session + direction ---
-    session = params["vwap_session"]
+    session = params["vwap_tp_session"]
     ud      = "up" if direction == "long" else "dn"
     col2    = f"vwap_tick_{session}_std2_{ud}"
     col3    = f"vwap_tick_{session}_std3_{ud}"
@@ -340,7 +360,7 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
         past2 = entry_price <= band2_e
         past3 = entry_price <= band3_e
 
-    eff_std  = params["vwap_std"]
+    eff_std  = params["vwap_tp_std"]
     fallback = False
     if eff_std == 2:
         if past3:
@@ -355,8 +375,8 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
     # The RR is measured on the ROUNDED target (that is the level actually traded), so the check
     # is conservative. Running out of bands joins the same `fallback` path as price-past-3σ.
     tick    = params["tick_size"]
-    over_rr = bool(params.get("is_over_rr", False))
-    min_rr  = float(params.get("minimal_rr", 0.0))
+    over_rr = bool(params.get("vwap_tp_is_over_rr", False))
+    min_rr  = float(params.get("vwap_tp_minimal_rr", 0.0))
     rr_push = False
 
     if over_rr and not fallback:
@@ -377,10 +397,10 @@ def run(entry_win, trade_win, entry_pos, entry_price, direction, levels, params)
 
     # --- no usable vwap band (price past 3σ, or none of them clears minimal_rr) ---
     # force_trade is the single switch: take a fixed-RR target, or skip the trade.
-    if fallback and not bool(params.get("force_trade", True)):
+    if fallback and not bool(params.get("vwap_tp_force_trade", True)):
         return None
 
-    escalated = fallback or (eff_std != params["vwap_std"])
+    escalated = fallback or (eff_std != params["vwap_tp_std"])
 
     entry_ts = trade_win.day.index[entry_pos]
 

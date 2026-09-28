@@ -1,40 +1,32 @@
 """
 Strategy execution for the Backtester module.
 
-Extracted verbatim from legacy_streamlit/views/backtester.py::execute_run —
-the tick_size injection, the strategy.run() call and the pnl_points -> ticks
-conversion are the load-bearing logic; date validation and empty-result
-messaging stay in the window (they were st.error/st.warning calls).
+The day loop, reads, caching and the trade frame are the engine's
+(modules.engine.run_strategy); this adds the Backtester's derived columns.
 
-Contract reminder (CLAUDE.md): strategies output `pnl_points` only; the
+Contract reminder (CLAUDE.md): strategies output prices and pnl in POINTS; the
 backtester converts to ticks via `ticks = pnl_points * ticks_per_point`.
 """
 
-import pandas as pd
+from modules.engine import RunResult, run_strategy
 
 
 def run_backtest(strategy, folder_path, start_date, end_date, params: dict,
-                 tick_size: float, ticks_per_point: float) -> pd.DataFrame:
+                 tick_size: float, ticks_per_point: float, *,
+                 extra_folders: dict | None = None,
+                 on_progress=None) -> RunResult:
     """
-    Run `strategy` over the dataset folder and return its trades with the
-    derived `ticks` / `cumulative_ticks` columns appended.
-
-    `params` is mutated with the injected tick_size (same as the old view).
-    An empty DataFrame means the strategy produced no trades — the caller
-    decides how to surface that.
+    Run `strategy` over the dataset folder (plus its additional-data folders)
+    and return the engine's RunResult, whose `trades` carry the derived
+    `ticks` / `cumulative_ticks` columns. An empty `trades` frame means the
+    strategy produced no trades — the caller decides how to surface that, and
+    `warnings` (e.g. days skipped for a missing additional-data file) too.
     """
-    params["tick_size"] = tick_size
-
-    trades = strategy.run(
-        folder_path=folder_path,
-        start_date=pd.Timestamp(start_date),
-        end_date=pd.Timestamp(end_date),
-        params=params,
-    )
-
-    if trades.empty:
-        return trades
-
-    trades["ticks"]            = trades["pnl_points"] * ticks_per_point
-    trades["cumulative_ticks"] = trades["ticks"].cumsum()
-    return trades
+    result = run_strategy(strategy, folder_path, start_date, end_date, params,
+                          tick_size=tick_size, extra_folders=extra_folders,
+                          on_progress=on_progress)
+    trades = result.trades
+    if not trades.empty:
+        trades["ticks"]            = trades["pnl_points"] * ticks_per_point
+        trades["cumulative_ticks"] = trades["ticks"].cumsum()
+    return result

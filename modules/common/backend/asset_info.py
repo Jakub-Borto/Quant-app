@@ -15,15 +15,24 @@ keys, so this is the analytics superset copy, verbatim:
                             NOT necessarily the same tick size: NNQ ticks
                             0.50 where NQ/MNQ tick 0.25)
 
-HIDDEN_PARAMS lives here too: strategy params that are auto-injected from
-ASSET_INFO and therefore never get a UI widget.
+AUTO_PARAMS lives here too: strategy params the app fills from ASSET_INFO for
+the selected asset. They are shown READ-ONLY in the params forms (so you can
+see the value) and are never swept; the engine injects them into every run.
 
 (A 5th partial ASSET_INFO copy exists inside data_transforms/
 1m_advanced_indicators.py — that one is a self-contained plugin and is
 deliberately left alone.)
 """
 
-HIDDEN_PARAMS = {"tick_size"}
+AUTO_PARAMS = {"tick_size"}
+
+
+def auto_param_values(asset: str | None) -> dict:
+    """{param: value} of the AUTO_PARAMS for `asset` ({} for an unknown asset)."""
+    info = ASSET_INFO.get(asset or "")
+    if not info:
+        return {}
+    return {"tick_size": info["tick_size"]}
 
 ASSET_INFO = {
     # Equity Index

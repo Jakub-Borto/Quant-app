@@ -3,16 +3,18 @@ Grid engine: run one strategy across the cartesian product of the swept
 parameter values and return every trade of every cell in one long-format
 DataFrame (the run's source of truth).
 
-Serial by default (n_workers=1): the strategy module is loaded once by the
-caller and run() is called per combo — speed rides on the strategy's internal
-day cache being independent of params (true for ivb_model_optimized, whose
-day cores are keyed on files + session_start only).
+Every combo is one modules.engine.run_strategy() call. Serial by default
+(n_workers=1): the strategy module is loaded once by the caller and the runs
+share the app's in-process engine cache (modules.engine.cache — data and
+prepared days are param-independent, so every combo after the first runs
+warm, and so do later optimizer and backtester runs).
 
 n_workers > 1 runs combos on a ProcessPoolExecutor. Workers are long-lived
 for the whole grid and each loads the strategy ONCE by name (via
-optimization.loader — never through a view, so workers don't import
-Streamlit) and builds its own in-process day cache: every worker pays one
-cold start, then runs warm. Results are reassembled in combo order, so a
+.loader — never through a UI module, so workers stay Qt-free) and fills its
+OWN engine cache, capped at `cache_bytes` (the optimizer's memory budget
+divided by the worker count, so the budget is the total across all
+workers): every worker pays one cold start, then runs warm. Results are reassembled in combo order, so a
 parallel run produces the exact same trades table as a serial one. Cleanup is
 a hard shutdown(cancel_futures=True) in a finally — a Streamlit Stop (raised
 inside the caller's on_progress st.* call) cancels everything queued and
@@ -27,16 +29,15 @@ from pathlib import Path
 
 import pandas as pd
 
+from modules.engine import OUTPUT_COLUMNS, get_cache, run_strategy
+
 from .buckets import tag_day_bucket
 from .loader import load_strategy
 from .param_space import enumerate_combos
 
-# Standard trade columns every strategy returns (see strategies/base.py);
-# used to build the empty frame when a whole grid produces zero trades.
-TRADE_COLUMNS = [
-    "date", "direction", "entry_time", "exit_time", "entry_price",
-    "exit_price", "sl", "tp", "exit_reason", "pnl_points",
-]
+# The engine's trade columns (every strategy returns exactly these); used to
+# build the empty frame when a whole grid produces zero trades.
+TRADE_COLUMNS = list(OUTPUT_COLUMNS)
 ENRICHED_COLUMNS = ["pnl_ticks", "day_bucket"]
 
 # Per-worker memory heuristic (see estimate_worker_memory): fixed
@@ -71,34 +72,15 @@ def _range_files(folder_path, start_date, end_date) -> list:
     ]
 
 
-def sibling_dataset_folders(folder_path, params: dict) -> list:
-    """
-    Sibling dataset folders the strategy will ALSO read, discovered from its
-    param values: any string param naming an existing directory next to the
-    selected dataset (that is exactly how ivb's indicators_folder /
-    big_trades_folder work). Their bytes belong in the memory estimate.
-    """
-    folder_path = Path(folder_path)
-    siblings = []
-    for value in params.values():
-        if not isinstance(value, str) or not value.strip():
-            continue
-        candidate = folder_path.parent / value.strip()
-        if candidate.is_dir() and candidate != folder_path \
-                and candidate not in siblings:
-            siblings.append(candidate)
-    return siblings
-
-
 def estimate_worker_memory(folder_path, start_date, end_date,
                            extra_folders=()) -> dict:
     """
     Rough per-worker memory need: fixed process baseline + a multiple of the
     date-filtered parquet bytes the strategy will read/cache — summed over
-    the selected dataset AND any `extra_folders` (sibling datasets the
-    strategy also loads, see sibling_dataset_folders). Still a heuristic
-    (in-memory size per byte varies by strategy; strategy-internal caches
-    have their own caps), but good enough to budget a worker count.
+    the selected dataset AND `extra_folders` (the folders chosen for the
+    strategy's additional DATA slots). Still a heuristic (in-memory size per
+    byte varies by strategy; the engine cache is capped separately), but good
+    enough to budget a worker count.
     Returns {"n_days", "disk_mb", "est_mb"} — n_days counts the primary
     dataset only.
     """
@@ -141,25 +123,24 @@ def _combo_desc(combo: dict) -> str:
 _WORKER_STRATEGY = None
 
 
-def _init_worker(strategy_name: str, strategies_dir) -> None:
-    """Runs once per worker process: load the strategy, keep it warm."""
+def _init_worker(strategy_name: str, strategies_dir, cache_bytes) -> None:
+    """Runs once per worker process: load the strategy, size this process's
+    engine cache to its share of the optimizer budget, keep both warm."""
     global _WORKER_STRATEGY
     _WORKER_STRATEGY = load_strategy(strategy_name, strategies_dir)
+    if cache_bytes:
+        get_cache().set_budget(int(cache_bytes))
 
 
 def _run_combo(index: int, folder_path: str, start_iso: str, end_iso: str,
-               params: dict):
-    """One backtest in a worker. Returns (index, trades|None, elapsed_s)."""
+               params: dict, tick_size: float, extra_folders: dict):
+    """One backtest in a worker. Returns (index, trades|None, warnings, elapsed_s)."""
     t0 = time.perf_counter()
-    trades = _WORKER_STRATEGY.run(
-        folder_path=Path(folder_path),
-        start_date=pd.Timestamp(start_iso),
-        end_date=pd.Timestamp(end_iso),
-        params=params,
-    )
-    if trades is not None and len(trades) == 0:
-        trades = None                       # don't ship empty frames back
-    return index, trades, time.perf_counter() - t0
+    result = run_strategy(_WORKER_STRATEGY, folder_path, start_iso, end_iso, params,
+                          tick_size=tick_size, extra_folders=extra_folders,
+                          verbose=False)
+    trades = result.trades if len(result.trades) else None   # don't ship empty frames
+    return index, trades, result.warnings, time.perf_counter() - t0
 
 
 # ── grid runners ──────────────────────────────────────────────────────────────
@@ -167,7 +148,9 @@ def _run_combo(index: int, folder_path: str, start_iso: str, end_iso: str,
 def run_grid(strategy, folder_path, start_date, end_date, base_params: dict,
              axes: list, *, tick_size: float, ticks_per_point: float,
              bucket_map: dict, on_progress=None, n_workers: int = 1,
-             strategy_name: str = None, strategies_dir=None) -> pd.DataFrame:
+             strategy_name: str = None, strategies_dir=None,
+             extra_folders: dict | None = None, cache_bytes: int | None = None,
+             warnings_out: list | None = None) -> pd.DataFrame:
     """
     Long-format trades table: one row per trade, carrying the swept-param
     values as extra columns. Combos with zero trades contribute zero rows
@@ -175,10 +158,14 @@ def run_grid(strategy, folder_path, start_date, end_date, base_params: dict,
     the output is identical for ANY n_workers — parallel results are
     reassembled in combo order.
 
-    n_workers <= 1: serial, calls `strategy.run()` in-process (reusing its
-    warm cache across optimizer runs). n_workers > 1: process pool; requires
-    `strategy_name` (each worker loads the strategy itself); `strategy` may
-    be None. NOTE for headless scripts: Windows spawn re-imports __main__
+    n_workers <= 1: serial, runs `strategy` in-process through the engine
+    (reusing the app's warm engine cache). n_workers > 1: process pool;
+    requires `strategy_name` (each worker loads the strategy itself);
+    `strategy` may be None; each worker's engine cache is capped at
+    `cache_bytes`. `extra_folders` = {slot: folder} for the strategy's
+    additional DATA slots. The engine's data warnings (e.g. days skipped for
+    a missing additional-data file — identical for every combo) are appended
+    once to `warnings_out`. NOTE for headless scripts: Windows spawn re-imports __main__
     when Python is launched as `python script.py`, so such callers must
     guard their entry point with `if __name__ == "__main__":` (Streamlit and
     pytest launches are unaffected).
@@ -191,19 +178,22 @@ def run_grid(strategy, folder_path, start_date, end_date, base_params: dict,
         if not strategy_name:
             raise ValueError("n_workers > 1 requires strategy_name — "
                              "workers load the strategy themselves")
-        frames = _run_grid_parallel(
+        frames, warnings = _run_grid_parallel(
             strategy_name, strategies_dir, folder_path, start_date, end_date,
             base_params, combos, axis_names, tick_size=tick_size,
             ticks_per_point=ticks_per_point, bucket_map=bucket_map,
             on_progress=on_progress, n_workers=n_workers,
+            extra_folders=extra_folders or {}, cache_bytes=cache_bytes,
         )
     else:
-        frames = _run_grid_serial(
+        frames, warnings = _run_grid_serial(
             strategy, folder_path, start_date, end_date,
             base_params, combos, axis_names, tick_size=tick_size,
             ticks_per_point=ticks_per_point, bucket_map=bucket_map,
-            on_progress=on_progress,
+            on_progress=on_progress, extra_folders=extra_folders or {},
         )
+    if warnings_out is not None:
+        warnings_out.extend(warnings)
 
     frames = [f for f in frames if f is not None]     # index order preserved
     if not frames:
@@ -217,18 +207,19 @@ def run_grid(strategy, folder_path, start_date, end_date, base_params: dict,
 
 def _run_grid_serial(strategy, folder_path, start_date, end_date,
                      base_params, combos, axis_names, *, tick_size,
-                     ticks_per_point, bucket_map, on_progress):
+                     ticks_per_point, bucket_map, on_progress, extra_folders):
     total = len(combos)
     frames = []
+    warnings: list = []
     for i, combo in enumerate(combos, start=1):
         t0 = time.perf_counter()
         params = {**base_params, **combo, "tick_size": tick_size}
-        trades = strategy.run(
-            folder_path=Path(folder_path),
-            start_date=pd.Timestamp(start_date),
-            end_date=pd.Timestamp(end_date),
-            params=params,
-        )
+        result = run_strategy(strategy, folder_path, start_date, end_date, params,
+                              tick_size=tick_size, extra_folders=extra_folders,
+                              verbose=False)
+        trades = result.trades if len(result.trades) else None
+        if not warnings:
+            warnings = list(result.warnings)
         n = 0 if trades is None else len(trades)
         frames.append(_enrich(trades, combo, axis_names, ticks_per_point,
                               bucket_map))
@@ -236,13 +227,13 @@ def _run_grid_serial(strategy, folder_path, start_date, end_date,
             on_progress(i, total,
                         f"[{i}/{total}] {_combo_desc(combo)} -> {n} trades "
                         f"({time.perf_counter() - t0:.2f}s)")
-    return frames
+    return frames, warnings
 
 
 def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
                        end_date, base_params, combos, axis_names, *,
                        tick_size, ticks_per_point, bucket_map, on_progress,
-                       n_workers):
+                       n_workers, extra_folders, cache_bytes):
     total   = len(combos)
     workers = max(1, min(n_workers, total, _MAX_POOL_WORKERS,
                          os.process_cpu_count() or 1))
@@ -252,8 +243,11 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
     start_iso = str(pd.Timestamp(start_date))
     end_iso   = str(pd.Timestamp(end_date))
     dir_arg   = str(strategies_dir) if strategies_dir is not None else None
+    extras    = {slot: str(Path(f).resolve()) for slot, f in extra_folders.items()}
+    per_worker = int(cache_bytes // workers) if cache_bytes else None
 
     results = [None] * total
+    warnings: list = []
     done = 0
 
     # NOT a `with` block: Executor.__exit__ is shutdown(wait=True) WITHOUT
@@ -263,14 +257,14 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
     executor = ProcessPoolExecutor(
         max_workers=workers,
         initializer=_init_worker,
-        initargs=(strategy_name, dir_arg),
+        initargs=(strategy_name, dir_arg, per_worker),
     )
     try:
         pending = set()
         for i, combo in enumerate(combos):
             params = {**base_params, **combo, "tick_size": tick_size}
             pending.add(executor.submit(_run_combo, i, folder, start_iso,
-                                        end_iso, params))
+                                        end_iso, params, tick_size, extras))
 
         while pending:
             finished, pending = wait(pending, timeout=0.5,
@@ -283,13 +277,15 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
                 continue
             for fut in finished:
                 try:
-                    index, trades, elapsed = fut.result()
+                    index, trades, run_warnings, elapsed = fut.result()
                 except BrokenProcessPool as e:
                     raise RuntimeError(
                         f"worker pool died while running '{strategy_name}' — "
                         f"usually the strategy failed to load in a worker or "
                         f"a worker ran out of memory ({e})"
                     ) from e
+                if not warnings:
+                    warnings = list(run_warnings)
                 combo = combos[index]
                 results[index] = _enrich(trades, combo, axis_names,
                                          ticks_per_point, bucket_map)
@@ -303,7 +299,7 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
 
-    return results
+    return results, warnings
 
 
 def median_split_date(trades: pd.DataFrame):
