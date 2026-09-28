@@ -10,7 +10,10 @@ keys, so this is the analytics superset copy, verbatim:
   ticks_per_point           ticks in one full point (pnl_points * this = ticks)
   dollars_per_tick          $ value of one tick for one contract
   commissions_per_contract  round-turn/2 commission (per side), where known
-  parent                    for micro contracts: the full-size ticker
+  parent                    for micro/nano contracts: the full-size ticker
+                            (same underlying index, same price level —
+                            NOT necessarily the same tick size: NNQ ticks
+                            0.50 where NQ/MNQ tick 0.25)
 
 HIDDEN_PARAMS lives here too: strategy params that are auto-injected from
 ASSET_INFO and therefore never get a UI widget.
@@ -30,6 +33,10 @@ ASSET_INFO = {
     "YM":  {"tick_size": 1.00, "ticks_per_point": 1,   "dollars_per_tick": 5.00,    "commissions_per_contract": 2.88},
     "MES": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 1.25,    "commissions_per_contract": 0.95, "parent": "ES"},
     "MNQ": {"tick_size": 0.25, "ticks_per_point": 4,   "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95, "parent": "NQ"},
+    # E-nano Nasdaq-100: $0.20 x index, outright tick 0.50 pts = $0.10 (CME
+    # contract specs). Commission unknown -> omitted (costs degrade to 0 +
+    # warn). Keep it AFTER MNQ: _micro_child("NQ") returns the first child.
+    "NNQ": {"tick_size": 0.50, "ticks_per_point": 2,   "dollars_per_tick": 0.10,    "parent": "NQ"},
     "M2K": {"tick_size": 0.10, "ticks_per_point": 10,  "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95, "parent": "RTY"},
     "MYM": {"tick_size": 1.00, "ticks_per_point": 1,   "dollars_per_tick": 0.50,    "commissions_per_contract": 0.95, "parent": "YM"},
 
@@ -67,6 +74,33 @@ ASSET_INFO = {
     # Crypto
     "BTC": {"tick_size": 5.00, "ticks_per_point": 0.2, "dollars_per_tick": 25.00,   "commissions_per_contract": 8.00},
 }
+
+
+def root_asset(asset: str) -> str:
+    """Follow `parent` links to the full-size ticker (MES -> ES, NNQ -> NQ);
+    an asset without a parent is its own root."""
+    seen = set()
+    while asset in ASSET_INFO and ASSET_INFO[asset].get("parent")             and asset not in seen:
+        seen.add(asset)
+        asset = ASSET_INFO[asset]["parent"]
+    return asset
+
+
+def same_underlying(a: str | None, b: str | None) -> bool:
+    """True for contract sizes of one index (ES/MES, NQ/MNQ/NNQ)."""
+    return bool(a) and bool(b) and root_asset(a) == root_asset(b)
+
+
+def default_reference_asset(asset: str | None, available) -> str | None:
+    """The asset whose reference data (regime runs, statistics) a report on
+    `asset` should use by default: the asset itself when it has data, else
+    its full-size parent when THAT has data (an MES backtest reads ES), else
+    the asset itself (the caller then says there is no data)."""
+    available = set(available)
+    if not asset or asset in available:
+        return asset
+    root = root_asset(asset)
+    return root if root in available else asset
 
 
 def get_dollars_per_tick(trades_filename: str) -> float:

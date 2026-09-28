@@ -9,17 +9,26 @@ The coefficient tables are built as real QGridLayout rows, NOT Markdown
 QLabels: QLabel's Markdown table renderer reports a size hint that ignores the
 rendered table, so cells drew on top of each other and the whole section was
 unreadable. Plain labels in a grid measure correctly at any width.
+
+The benchmark is pickable: it defaults to the backtest's asset, or to its
+full-size parent when only the parent has a statistics file (an MES backtest
+reads ES — same index, same price level). A manual pick sticks for re-runs on
+the same asset and resets when the backtest's asset changes. The benchmark's
+price move is always converted with the BACKTEST asset's tick size, so the
+strategy P&L and the benchmark move share one tick unit (NNQ ticks 0.50, NQ
+0.25 — dividing each by its own tick would scale β by 2).
 """
 
 import pandas as pd
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout,
+                               QLabel, QVBoxLayout, QWidget)
 
-from ..backend.benchmark import (_ALPHA_BETA_TOOLTIP,
-                                              _TSTAT_TOOLTIP,
-                                              load_asset_statistics,
-                                              market_exposure_data)
+from modules.common.backend.asset_info import (default_reference_asset,
+                                               same_underlying)
+from ..backend.benchmark import (_ALPHA_BETA_TOOLTIP, _TSTAT_TOOLTIP,
+                                 list_statistics_assets,
+                                 load_asset_statistics, market_exposure_data)
 from modules.common.ui import theme
 from modules.common.ui.charts.scatter_fit import ScatterFitChart
 from modules.common.ui.widgets import Caption
@@ -102,18 +111,83 @@ def _clear_layout(layout) -> None:
 class ExposureSection(ReportSection):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.content_layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(10)
+
+        # ── benchmark picker (survives every rebuild of the body) ─────────────
+        picker = QHBoxLayout()
+        picker.addWidget(QLabel("Benchmark asset"))
+        self._bench = QComboBox()
+        self._bench.setMinimumWidth(110)
+        self._bench.setToolTip(
+            "Whose daily statistics file the strategy is regressed against. "
+            "Defaults to the backtest's asset, or its full-size parent when "
+            "only that has a statistics file (MES → ES).")
+        self._bench.currentIndexChanged.connect(self._on_bench_picked)
+        picker.addWidget(self._bench)
+        self._bench_note = Caption("")
+        picker.addWidget(self._bench_note)
+        picker.addStretch()
+        outer.addLayout(picker)
+
+        self.content_layout = QVBoxLayout()
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(10)
+        outer.addLayout(self.content_layout)
+
+        self._trades: pd.DataFrame | None = None
+        self._asset: str | None = None
+        self._tick_size: float | None = None
+        self._parquet_root = None
+        self._picked: str | None = None     # manual pick, for this asset only
+
+    def benchmark_asset(self) -> str | None:
+        return self._bench.currentText() or None
 
     def update_exposure(self, trades: pd.DataFrame, asset: str,
                         tick_size: float, parquet_root) -> None:
-        _clear_layout(self.content_layout)      # rebuild from scratch
+        if asset != self._asset:
+            self._picked = None                 # a new instrument: back to default
+        self._trades, self._asset = trades, asset
+        self._tick_size, self._parquet_root = tick_size, parquet_root
+        self._refresh_choices()
+        self._rebuild()
 
-        stats = load_asset_statistics(parquet_root, asset)
+    def _refresh_choices(self) -> None:
+        available = list_statistics_assets(self._parquet_root)
+        choices = list(available)
+        if self._asset and self._asset not in choices:
+            choices.append(self._asset)        # selectable, reports "no file"
+        want = self._picked if self._picked in choices else             default_reference_asset(self._asset, available)
+        self._bench.blockSignals(True)
+        self._bench.clear()
+        self._bench.addItems(sorted(choices))
+        index = self._bench.findText(want or "")
+        self._bench.setCurrentIndex(max(index, 0))
+        self._bench.blockSignals(False)
+
+    def _on_bench_picked(self) -> None:
+        self._picked = self.benchmark_asset()
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        _clear_layout(self.content_layout)      # rebuild from scratch
+        bench = self.benchmark_asset()
+        if bench and self._asset and bench != self._asset:
+            self._bench_note.setText(
+                f"backtest is {self._asset}"
+                + ("" if same_underlying(bench, self._asset)
+                   else " — a DIFFERENT underlying"))
+        else:
+            self._bench_note.setText("")
+        if self._trades is None or not bench:
+            return
+
+        stats = load_asset_statistics(self._parquet_root, bench)
         if stats is None:
             self.content_layout.addWidget(Caption(
-                f"No statistics file for {asset}; regression unavailable."))
+                f"No statistics file for {bench}; regression unavailable."))
             return
 
         try:
@@ -123,17 +197,18 @@ class ExposureSection(ReportSection):
                 "`statsmodels` is not installed; regression unavailable."))
             return
 
-        data = market_exposure_data(trades, stats, tick_size)
+        # the BACKTEST's tick size: P&L and benchmark move in one tick unit
+        data = market_exposure_data(self._trades, stats, self._tick_size)
         if data is None:
             self.content_layout.addWidget(Caption(
                 "Statistics file has no overlap with the backtest window."))
             return
 
-        bench = data["bench"]
+        bench_data = data["bench"]
         excluded = Caption(
-            f"Excluded: {bench['n_roll']} roll days · "
-            f"{bench['n_missing_settle']} missing settlement move · "
-            f"{bench['n_missing_rth']} missing RTH · "
+            f"Excluded: {bench_data['n_roll']} roll days · "
+            f"{bench_data['n_missing_settle']} missing settlement move · "
+            f"{bench_data['n_missing_rth']} missing RTH · "
             f"{data['n_absent']} traded days absent from stats file")
         excluded.setToolTip(_ALPHA_BETA_TOOLTIP)
         self.content_layout.addWidget(excluded)

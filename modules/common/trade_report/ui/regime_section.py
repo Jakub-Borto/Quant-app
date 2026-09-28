@@ -25,6 +25,13 @@ refuses to exceed a budget you can raise. Frames are dropped when the run
 changes or when the backtest moves to a different asset — but NOT when the
 same asset is re-run, because the loaded days do not depend on which days the
 strategy happened to trade.
+
+REGIME ASSET: runs are listed for one asset, picked in the "Regime asset"
+dropdown (every asset that has runs, plus the backtest's own). It defaults to
+the backtest's asset, or to its full-size parent when only the parent has runs
+(an MES backtest reads ES — same index, see asset_info.default_reference_asset).
+A manual pick sticks for re-runs on the same asset and resets when the
+backtest's asset changes. "Show runs from all assets" still lists everything.
 """
 
 import pandas as pd
@@ -33,7 +40,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
                                QGridLayout, QHBoxLayout, QLabel, QPushButton,
                                QVBoxLayout, QWidget)
 
-from modules.common.backend.asset_info import ASSET_INFO
+from modules.common.backend.asset_info import (default_reference_asset,
+                                               same_underlying)
 from modules.common.backend.data_roots import RegimeRunRef, list_regime_runs
 from modules.common.backend.regime_join import (MODE_ASOF, MODE_EXACT,
                                                 MODE_FINAL, MODE_LABELS,
@@ -74,6 +82,7 @@ class RegimeSection(ReportSection):
         self._frames: dict = {}
         self._loaded_range: tuple[str | None, str | None] = (None, None)
         self._asset: str | None = None
+        self._picked_asset: str | None = None   # manual pick, this asset only
         self._range: tuple[str | None, str | None] = (None, None)
         self._filter = None
 
@@ -86,6 +95,10 @@ class RegimeSection(ReportSection):
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(6)
 
+        self._regime_asset = QComboBox()
+        self._regime_asset.setToolTip(
+            "Whose regime runs to use. Defaults to the backtest's asset, or its "
+            "full-size parent when only that has runs (MES → ES).")
         self._run = QComboBox()
         self._all_assets = QCheckBox("Show runs from all assets")
         self._column = QComboBox()
@@ -95,14 +108,16 @@ class RegimeSection(ReportSection):
         self._at = QComboBox()
         self._at.setEnabled(False)
 
-        grid.addWidget(QLabel("Regime run"), 0, 0)
-        grid.addWidget(self._run, 0, 1)
-        grid.addWidget(self._all_assets, 0, 2)
-        grid.addWidget(QLabel("Regime column"), 1, 0)
-        grid.addWidget(self._column, 1, 1)
-        grid.addWidget(QLabel("Table labels at"), 2, 0)
-        grid.addWidget(self._mode, 2, 1)
-        grid.addWidget(self._at, 2, 2)
+        grid.addWidget(QLabel("Regime asset"), 0, 0)
+        grid.addWidget(self._regime_asset, 0, 1)
+        grid.addWidget(QLabel("Regime run"), 1, 0)
+        grid.addWidget(self._run, 1, 1)
+        grid.addWidget(self._all_assets, 1, 2)
+        grid.addWidget(QLabel("Regime column"), 2, 0)
+        grid.addWidget(self._column, 2, 1)
+        grid.addWidget(QLabel("Table labels at"), 3, 0)
+        grid.addWidget(self._mode, 3, 1)
+        grid.addWidget(self._at, 3, 2)
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
 
@@ -168,6 +183,7 @@ class RegimeSection(ReportSection):
 
         self._run.currentIndexChanged.connect(self._on_run_changed)
         self._all_assets.toggled.connect(self.rescan)
+        self._regime_asset.currentIndexChanged.connect(self._on_asset_picked)
         self._column.currentIndexChanged.connect(self._emit_source)
         self._mode.currentIndexChanged.connect(self._on_mode_changed)
         self._at.currentIndexChanged.connect(self._emit_source)
@@ -181,23 +197,49 @@ class RegimeSection(ReportSection):
         loaded frames (they label the wrong instrument); the same asset keeps
         them, since a re-run reads the same days regardless of which ones the
         strategy traded."""
-        if asset != self._asset and self._frames:
-            self._frames = {}
-            self._loaded_range = (None, None)
+        if asset != self._asset:
+            self._picked_asset = None           # new instrument: back to default
+            if self._frames:
+                self._frames = {}
+                self._loaded_range = (None, None)
         self._asset = asset
         self._range = (start, end)
         self.rescan()
 
+    def regime_asset(self) -> str | None:
+        return self._regime_asset.currentText() or None
+
     def _eligible(self, ref: RegimeRunRef) -> bool:
-        if self._all_assets.isChecked() or not self._asset:
+        if self._all_assets.isChecked():
             return True
-        parent = (ASSET_INFO.get(self._asset) or {}).get("parent")
-        return ref.asset == self._asset or (parent and ref.asset == parent)
+        asset = self.regime_asset()
+        return asset is None or ref.asset == asset
+
+    def _refresh_asset_choices(self, all_runs: list[RegimeRunRef]) -> None:
+        available = sorted({r.asset for r in all_runs})
+        choices = list(available)
+        if self._asset and self._asset not in choices:
+            choices.append(self._asset)          # selectable, shows "no runs"
+        want = self._picked_asset if self._picked_asset in choices else             default_reference_asset(self._asset, available)
+        if want is None and choices:
+            want = choices[0]
+        self._regime_asset.blockSignals(True)
+        self._regime_asset.clear()
+        self._regime_asset.addItems(sorted(choices))
+        self._regime_asset.setCurrentIndex(
+            max(self._regime_asset.findText(want or ""), 0))
+        self._regime_asset.setEnabled(not self._all_assets.isChecked())
+        self._regime_asset.blockSignals(False)
+
+    def _on_asset_picked(self) -> None:
+        self._picked_asset = self.regime_asset()
+        self.rescan()
 
     def rescan(self) -> None:
         previous = self.current_run()
-        self._runs = [r for r in list_regime_runs(self._settings.data_roots)
-                      if self._eligible(r)]
+        all_runs = list_regime_runs(self._settings.data_roots)
+        self._refresh_asset_choices(all_runs)
+        self._runs = [r for r in all_runs if self._eligible(r)]
         self._run.blockSignals(True)
         self._run.clear()
         for ref in self._runs:
@@ -224,8 +266,9 @@ class RegimeSection(ReportSection):
         self._column.blockSignals(False)
         self._set_states([])
         if ref is None:
-            self._status.setText("No regime runs found for this asset — "
-                                 "build one in the Regime Detector.")
+            self._status.setText(
+                f"No regime runs found for {self.regime_asset() or 'this asset'} "
+                f"— build one in the Regime Detector, or pick another asset.")
             self._emit_source()
             return
         try:
@@ -277,9 +320,12 @@ class RegimeSection(ReportSection):
                 "the day ended — useful for measuring hindsight, not for "
                 "filtering a backtest you intend to believe.")
         ref = self.current_run()
-        if ref is not None and self._asset and ref.asset != self._asset:
+        # a DIFFERENT index is worth a warning; another contract size of the
+        # same index (ES run on an MES backtest) is the intended use
+        if (ref is not None and self._asset and ref.asset != self._asset
+                and not same_underlying(ref.asset, self._asset)):
             messages.append(f"This run labels {ref.asset}, but the backtest is "
-                            f"on {self._asset}.")
+                            f"on {self._asset} — a different underlying.")
         if messages:
             self._banner.show_message("warning", "  ".join(messages))
         else:

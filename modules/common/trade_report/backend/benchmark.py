@@ -48,10 +48,25 @@ the exposure estimate.
 """
 
 
+def statistics_path(parquet_root: Path, asset: str) -> Path:
+    """`<data_root>/parquet/Futures/{A}/{A}_statistics/statistics.parquet`."""
+    return Path(parquet_root) / "Futures" / asset / f"{asset}_statistics" / "statistics.parquet"
+
+
+def list_statistics_assets(parquet_root: Path | None) -> list[str]:
+    """Every asset under `parquet_root` that has a statistics file — the
+    choices for the Market Exposure benchmark picker."""
+    futures = Path(parquet_root) / "Futures" if parquet_root else None
+    if futures is None or not futures.is_dir():
+        return []
+    return sorted(d.name for d in futures.iterdir()
+                  if d.is_dir() and statistics_path(parquet_root, d.name).exists())
+
+
 def load_asset_statistics(parquet_root: Path, asset: str) -> pd.DataFrame | None:
     """Per-asset daily statistics file, or None when unavailable.
     `parquet_root` is `<data_root>/parquet` (path shape below unchanged)."""
-    path = Path(parquet_root) / "Futures" / asset / f"{asset}_statistics" / "statistics.parquet"
+    path = statistics_path(parquet_root, asset)
     if not path.exists():
         return None
     stats = pd.read_parquet(path)
