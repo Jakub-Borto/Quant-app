@@ -76,7 +76,8 @@ def test_settings_dialog_round_trip(qtbot, tmp_path):
     from modules.common.backend.settings import DEFAULT_DATA_ROOT, load_settings
     from modules.common.ui.settings_dialog import SettingsDialog
     s = load_settings(tmp_path / "settings.json")
-    dlg = SettingsDialog(s)
+    # never the default path: that is the user's real repo settings.json
+    dlg = SettingsDialog(s, settings_path=tmp_path / "settings.json")
     qtbot.addWidget(dlg)
     dlg._on_ok()
     reloaded = load_settings(tmp_path / "settings.json")

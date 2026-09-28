@@ -919,7 +919,9 @@ def test_charts_in_collapsibles_have_one_unambiguous_height(qtbot):
                 ScatterFitChart, CombinePathChart, TradeChart):
         chart = cls()
         qtbot.addWidget(chart)
-        plot = chart._plot
+        # the equity chart's two plots share a splitter, and the SPLITTER is
+        # what carries the one fixed height (the plots split it freely)
+        plot = getattr(chart, "_splitter", None) or chart._plot
         assert plot.minimumHeight() == plot.maximumHeight(), (
             f"{cls.__name__} has a height RANGE, so the layout renegotiates "
             f"it on every pass (min {plot.minimumHeight()}, max "

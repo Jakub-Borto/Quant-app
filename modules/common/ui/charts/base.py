@@ -130,7 +130,9 @@ def attach_lock_button(host, viewboxes) -> ChartLockButton:
 # ── plot factory ──────────────────────────────────────────────────────────────
 
 def make_plot(x_label: str = "", y_label: str = "",
-              datetime_x: bool = False) -> pg.PlotWidget:
+              datetime_x: bool = False, lock: bool = True) -> pg.PlotWidget:
+    """lock=False skips the padlock — for linked plots that share ONE padlock
+    (attach_lock_button with all their viewboxes)."""
     axis_items = {"bottom": date_axis()} if datetime_x else None
     plot = pg.PlotWidget(axisItems=axis_items)
     plot.showGrid(x=True, y=True, alpha=0.18)
@@ -139,7 +141,8 @@ def make_plot(x_label: str = "", y_label: str = "",
     if y_label:
         plot.setLabel("left", y_label)
     plot.setMenuEnabled(False)
-    attach_lock_button(plot, plot.getPlotItem().getViewBox())
+    if lock:
+        attach_lock_button(plot, plot.getPlotItem().getViewBox())
     return plot
 
 

@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog,
 from PySide6.QtGui import QColor
 
 from modules.common.backend.settings import (CATEGORY_LABELS,
-                                             PLUGIN_CATEGORIES, Settings,
+                                             PLUGIN_CATEGORIES, SETTINGS_PATH,
+                                             Settings,
                                              _resolve)
 from . import theme
 
@@ -111,11 +112,13 @@ class _FolderList(QGroupBox):
 class SettingsDialog(QDialog):
     """Edit + persist the app settings. exec() == Accepted means saved."""
 
-    def __init__(self, settings: Settings, parent=None):
+    def __init__(self, settings: Settings, settings_path: Path = SETTINGS_PATH,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings — folders")
         self.setMinimumWidth(680)
         self._settings = settings
+        self._settings_path = settings_path   # tests pass a tmp path
 
         lay = QVBoxLayout(self)
         intro = QLabel(
@@ -149,5 +152,5 @@ class SettingsDialog(QDialog):
             self._settings.extra_plugin_dirs[category] = fl.entries()
         roots = self._roots_list.entries()
         self._settings.data_roots_raw = roots or ["data"]
-        self._settings.save()
+        self._settings.save(self._settings_path)
         self.accept()

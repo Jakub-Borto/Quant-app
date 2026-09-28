@@ -4,7 +4,7 @@ Trade statistics shared by the Backtester and the Optimizer's cell drill-down.
 Extracted verbatim from legacy_streamlit/views/trade_report.py — the pure
 computation behind the report panel: the full metric suite, the day-type
 catalogue, the news/holiday breakdown rows, the exit-breakdown table and the
-RR-distribution series/bins. Rendering lives in modules/common/ui/trade_report/.
+RR-distribution series/bins. Rendering lives in modules/common/trade_report/ui/.
 
 Every function expects backtester-shaped trades: a `ticks` column (the
 optimizer aliases pnl_ticks), `cumulative_ticks` for equity/drawdown,
@@ -14,7 +14,21 @@ columns (entry/exit prices & times, sl/tp, exit_reason, pnl_points).
 
 import math
 
+import numpy as np
 import pandas as pd
+
+def drawdown_series(cumulative) -> np.ndarray:
+    """Per-trade drawdown in ticks (always <= 0): cumulative minus its running
+    peak, where the starting balance (0) counts as the first peak — so a run
+    that opens with losses is in drawdown from its first trade. The ONE
+    definition: the metrics' Max Drawdown and the report's drawdown chart
+    both read it."""
+    cum = np.asarray(cumulative, dtype=float)
+    if cum.size == 0:
+        return cum
+    peak = np.maximum(np.maximum.accumulate(cum), 0.0)
+    return cum - peak
+
 
 # Day-type categories in precedence order — drives the filter UIs and the
 # news/holiday breakdown table in both modules.
@@ -80,8 +94,7 @@ def compute_metrics(trades: pd.DataFrame) -> dict:
     # Equity curve / drawdown
     cumulative   = trades["cumulative_ticks"]
     rolling_max  = cumulative.cummax()
-    drawdown     = cumulative - rolling_max
-    max_drawdown = drawdown.min()
+    max_drawdown = float(drawdown_series(cumulative).min())
 
     total       = trades["ticks"].sum()
     global_peak = rolling_max.max()
