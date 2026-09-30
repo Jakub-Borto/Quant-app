@@ -41,6 +41,7 @@ def run_grid_job(strategy, folder_path, start_date, end_date, *,
     """
     ff_found   = ff_events_path is not None and Path(ff_events_path).exists()
     warnings: list = []
+    notes: list = []
     bucket_map = load_bucket_map(ff_events_path) if ff_events_path else {}
 
     trades = run_grid(
@@ -56,6 +57,7 @@ def run_grid_job(strategy, folder_path, start_date, end_date, *,
         extra_folders=extra_folders,
         cache_bytes=cache_bytes,
         warnings_out=warnings,
+        notes_out=notes,
     )
 
     split = median_split_date(trades)
@@ -81,5 +83,6 @@ def run_grid_job(strategy, folder_path, start_date, end_date, *,
         "created_at":         pd.Timestamp.now().isoformat(),
         "additional_data":    dict(additional_data or {}),
         "data_warnings":      warnings,
+        "cache_note":         notes[0] if notes else None,
     }
     return trades, meta

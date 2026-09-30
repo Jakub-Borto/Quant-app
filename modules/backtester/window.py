@@ -321,11 +321,14 @@ class BacktesterWindow(ModuleWindowBase):
         # data problems (e.g. days skipped for a missing additional-data file)
         # are shown loudly — a result computed on a subset of days must never
         # look complete
-        if result.warnings:
-            self._banner.show_message("warning", "⚠ " + "  ⚠ ".join(result.warnings))
+        messages = list(result.warnings)
+        if result.cache_note:
+            messages.append(result.cache_note)
+        if messages:
+            self._banner.show_message("warning", "⚠ " + "  ⚠ ".join(messages))
         if trades.empty:
             self._report.setVisible(False)
-            if not result.warnings:
+            if not messages:
                 self._banner.show_message("warning", "Strategy produced no trades.")
             return
 

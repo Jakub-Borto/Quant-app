@@ -134,13 +134,14 @@ def _init_worker(strategy_name: str, strategies_dir, cache_bytes) -> None:
 
 def _run_combo(index: int, folder_path: str, start_iso: str, end_iso: str,
                params: dict, tick_size: float, extra_folders: dict):
-    """One backtest in a worker. Returns (index, trades|None, warnings, elapsed_s)."""
+    """One backtest in a worker. Returns (index, trades|None, warnings,
+    cache_note|None, elapsed_s)."""
     t0 = time.perf_counter()
     result = run_strategy(_WORKER_STRATEGY, folder_path, start_iso, end_iso, params,
                           tick_size=tick_size, extra_folders=extra_folders,
                           verbose=False)
     trades = result.trades if len(result.trades) else None   # don't ship empty frames
-    return index, trades, result.warnings, time.perf_counter() - t0
+    return index, trades, result.warnings, result.cache_note, time.perf_counter() - t0
 
 
 # ── grid runners ──────────────────────────────────────────────────────────────
@@ -150,7 +151,8 @@ def run_grid(strategy, folder_path, start_date, end_date, base_params: dict,
              bucket_map: dict, on_progress=None, n_workers: int = 1,
              strategy_name: str = None, strategies_dir=None,
              extra_folders: dict | None = None, cache_bytes: int | None = None,
-             warnings_out: list | None = None) -> pd.DataFrame:
+             warnings_out: list | None = None,
+             notes_out: list | None = None) -> pd.DataFrame:
     """
     Long-format trades table: one row per trade, carrying the swept-param
     values as extra columns. Combos with zero trades contribute zero rows
@@ -165,7 +167,8 @@ def run_grid(strategy, folder_path, start_date, end_date, base_params: dict,
     `cache_bytes`. `extra_folders` = {slot: folder} for the strategy's
     additional DATA slots. The engine's data warnings (e.g. days skipped for
     a missing additional-data file — identical for every combo) are appended
-    once to `warnings_out`. NOTE for headless scripts: Windows spawn re-imports __main__
+    once to `warnings_out`; a cache-too-small note (identical in spirit for
+    every combo of a worker) is appended once to `notes_out`. NOTE for headless scripts: Windows spawn re-imports __main__
     when Python is launched as `python script.py`, so such callers must
     guard their entry point with `if __name__ == "__main__":` (Streamlit and
     pytest launches are unaffected).
@@ -192,8 +195,11 @@ def run_grid(strategy, folder_path, start_date, end_date, base_params: dict,
             ticks_per_point=ticks_per_point, bucket_map=bucket_map,
             on_progress=on_progress, extra_folders=extra_folders or {},
         )
+    warnings, cache_note = warnings
     if warnings_out is not None:
         warnings_out.extend(warnings)
+    if notes_out is not None and cache_note:
+        notes_out.append(cache_note)
 
     frames = [f for f in frames if f is not None]     # index order preserved
     if not frames:
@@ -211,6 +217,7 @@ def _run_grid_serial(strategy, folder_path, start_date, end_date,
     total = len(combos)
     frames = []
     warnings: list = []
+    cache_note = None
     for i, combo in enumerate(combos, start=1):
         t0 = time.perf_counter()
         params = {**base_params, **combo, "tick_size": tick_size}
@@ -220,6 +227,7 @@ def _run_grid_serial(strategy, folder_path, start_date, end_date,
         trades = result.trades if len(result.trades) else None
         if not warnings:
             warnings = list(result.warnings)
+        cache_note = cache_note or result.cache_note
         n = 0 if trades is None else len(trades)
         frames.append(_enrich(trades, combo, axis_names, ticks_per_point,
                               bucket_map))
@@ -227,7 +235,7 @@ def _run_grid_serial(strategy, folder_path, start_date, end_date,
             on_progress(i, total,
                         f"[{i}/{total}] {_combo_desc(combo)} -> {n} trades "
                         f"({time.perf_counter() - t0:.2f}s)")
-    return frames, warnings
+    return frames, (warnings, cache_note)
 
 
 def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
@@ -248,6 +256,7 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
 
     results = [None] * total
     warnings: list = []
+    cache_note = None
     done = 0
 
     # NOT a `with` block: Executor.__exit__ is shutdown(wait=True) WITHOUT
@@ -277,7 +286,7 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
                 continue
             for fut in finished:
                 try:
-                    index, trades, run_warnings, elapsed = fut.result()
+                    index, trades, run_warnings, run_note, elapsed = fut.result()
                 except BrokenProcessPool as e:
                     raise RuntimeError(
                         f"worker pool died while running '{strategy_name}' — "
@@ -286,6 +295,7 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
                     ) from e
                 if not warnings:
                     warnings = list(run_warnings)
+                cache_note = cache_note or run_note
                 combo = combos[index]
                 results[index] = _enrich(trades, combo, axis_names,
                                          ticks_per_point, bucket_map)
@@ -299,7 +309,7 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
 
-    return results, warnings
+    return results, (warnings, cache_note)
 
 
 def median_split_date(trades: pd.DataFrame):

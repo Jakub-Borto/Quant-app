@@ -479,8 +479,11 @@ class NewRunTab(QWidget):
     def _on_finished(self, result) -> None:
         trades, meta = result
         self._reset_buttons()
-        if meta.get("data_warnings"):
-            self._banner.show_message("warning", "⚠ " + "  ⚠ ".join(meta["data_warnings"]))
+        messages = list(meta.get("data_warnings") or [])
+        if meta.get("cache_note"):
+            messages.append(meta["cache_note"])
+        if messages:
+            self._banner.show_message("warning", "⚠ " + "  ⚠ ".join(messages))
         self.runFinished.emit(trades, meta, self._run_root)
 
     def _on_error(self, message: str, _tb: str) -> None:

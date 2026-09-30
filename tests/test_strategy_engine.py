@@ -310,21 +310,73 @@ def test_changed_file_is_reread(tmp_path):
 
 
 # ── the cache itself ─────────────────────────────────────────────────────────
-def test_cache_lru_budget_and_clear():
+def test_cache_lru_across_runs_and_clear():
     cache = DayCache(budget_bytes=300)
+    cache.begin_run()
     for k in "abc":
         cache.put(("raw", k), k, nbytes=100)
     assert cache.stats()["entries"] == 3
-    cache.get(("raw", "a"))                   # refresh 'a' -> 'b' is now the oldest
-    cache.put(("raw", "d"), "d", nbytes=100)  # over budget -> evict 'b'
+    cache.begin_run()                         # a new run: a/b/c are from the old one
+    cache.get(("raw", "a"))                   # 'a' used by this run -> kept
+    assert cache.put(("raw", "d"), "d", nbytes=100)   # evicts the LRU old entry 'b'
     assert not cache.contains(("raw", "b"))
     assert all(cache.contains(("raw", k)) for k in "acd")
     cache.set_budget(150)                     # shrinking evicts immediately
     assert cache.stats()["bytes"] <= 150
-    big = DayCache(budget_bytes=10)
-    big.put(("raw", "x"), "x", nbytes=1000)   # one oversize entry stays
-    assert big.contains(("raw", "x"))
     assert cache.clear() > 0 and cache.stats()["entries"] == 0
+
+
+def test_cache_is_scan_resistant():
+    """A run bigger than the budget keeps its FIRST days instead of cycling
+    everything out (plain LRU would leave the next run nothing to hit)."""
+    cache = DayCache(budget_bytes=300)
+    for run in range(2):
+        cache.begin_run()
+        hits = 0
+        for day in range(5):                  # 5 x 100 bytes > 300 budget
+            key = ("raw", day)
+            if cache.get(key, None) is not None:
+                hits += 1
+            else:
+                cache.put(key, day, nbytes=100)
+    assert hits == 3                          # days 0-2 served the second run
+    assert cache.stats()["rejected"] == 4     # days 3-4, in both runs
+    big = DayCache(budget_bytes=10)
+    assert not big.put(("raw", "x"), "x", nbytes=1000)   # larger than everything: not kept
+
+
+def test_cache_evicts_demoted_entries_first():
+    cache = DayCache(budget_bytes=300)
+    cache.begin_run()
+    cache.put(("raw", 1), 1, nbytes=100)
+    cache.put(("prep", 1), "p1", nbytes=100)
+    cache.demote([("raw", 1)])                # raw frame already turned into prep
+    cache.put(("raw", 2), 2, nbytes=100)
+    assert cache.put(("prep", 2), "p2", nbytes=100)   # same run, full: raw 1 goes
+    assert not cache.contains(("raw", 1))
+    assert all(cache.contains(k) for k in (("prep", 1), ("raw", 2), ("prep", 2)))
+
+
+def test_full_cache_reads_each_file_once_and_says_so(tmp_path):
+    """Frames the cache declined to keep are still used for their day (no
+    second read) and the run reports the cache was too small."""
+    main = write_dataset(tmp_path / "ES_1m")
+    mod = strategy(prepare_day=lambda date, data, p: data["main"]["close"].to_numpy().copy(),
+                   process_day=lambda day, p: None)
+    res = run(mod, main, cache=DayCache(budget_bytes=1))
+    assert res.files_read == len(DAYS) and res.days_prepared == len(DAYS)
+    assert res.cache_rejected > 0 and "too small" in res.cache_note
+    ok = run(mod, main, cache=DayCache())
+    assert ok.cache_rejected == 0 and ok.cache_note is None
+
+
+def test_prepared_days_demote_their_raw_frames(tmp_path):
+    main = write_dataset(tmp_path / "ES_1m")
+    mod = strategy(prepare_day=lambda date, data, p: float(data["main"]["close"].iloc[-1]),
+                   process_day=lambda day, p: None)
+    cache = DayCache()
+    run(mod, main, cache=cache)
+    assert len(cache._demoted) == len(DAYS)   # every raw frame is first in line
 
 
 def test_cache_sizes_frames_and_arrays():

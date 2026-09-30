@@ -92,8 +92,12 @@ modules/
                            declared-column reads + prefetch, additional data
                            slots, prepare_day, warnings), day.py (Day: data,
                            prepared, previous / previous_days), cache.py (the
-                           process-wide LRU RAM cache with a byte budget —
-                           Settings cache_gb; Free cached data = clear_cache),
+                           process-wide scan-resistant LRU RAM cache with a
+                           byte budget — raw frames of prepared days evicted
+                           first, a full cache keeps a run's first days rather
+                           than thrashing; Settings cache_gb; parallel optimizer
+                           workers get budget ÷ workers; Free cached data =
+                           clear_cache),
                            timing.py (timed + the per-run table)
   main_menu/               launcher window (cards, settings gear)
   common/

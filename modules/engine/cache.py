@@ -12,9 +12,14 @@ entries:
              prepare-params)                             -> prepare_day result
             what a strategy's prepare_day() built for one day.
 
-When the budget is exceeded, the least recently USED entries are dropped
-(a hit refreshes an entry). An entry larger than the whole budget is still
-kept until the next insert pushes it out, so a run never thrashes forever.
+When the budget is exceeded, entries are dropped in this order (see
+DayCache): raw frames already turned into a cached prepared day, then entries
+the current run hasn't used (least recently used first). If everything left
+is in use by the current run, the NEW entry is not kept instead. That makes
+the cache scan-resistant: a run larger than the budget keeps its first days
+for the next run rather than evicting exactly the days the next run needs
+(a plain LRU would make every optimizer combo cold). The run then reports
+cache_rejected / cache_note.
 
 There is deliberately NO invalidation by source code: after changing a
 strategy's prepare_day(), press "Free cached data" (clear()). File changes
@@ -80,15 +85,31 @@ def estimate_nbytes(obj, _depth: int = 0) -> int:
 
 
 class DayCache:
-    """Thread-safe LRU keyed by tuples, bounded by an approximate byte budget."""
+    """Thread-safe, scan-resistant LRU keyed by tuples, bounded by an
+    approximate byte budget.
+
+    Eviction order when an insert pushes the cache over its budget:
+      1. DEMOTED entries (raw frames a prepared day was already built from —
+         the engine demotes them; they are only needed to rebuild it);
+      2. entries not touched during the CURRENT run (begin_run() starts one);
+      3. otherwise the INCOMING entry is not stored (rejected) — everything
+         left is in use by this run.
+    Step 3 is what makes the cache scan-resistant: a run walks the days in
+    order, and a plain LRU smaller than the run would evict exactly the days
+    the next run (optimizer combo) needs first — every run cold. Keeping the
+    first days instead means a too-small cache still serves most of them.
+    """
 
     def __init__(self, budget_bytes: int = int(DEFAULT_BUDGET_GB * GB)):
         self._lock = threading.Lock()
-        self._items: OrderedDict = OrderedDict()   # key -> (value, nbytes)
+        self._items: OrderedDict = OrderedDict()   # key -> [value, nbytes, epoch]
+        self._demoted: OrderedDict = OrderedDict() # keys to evict first
         self._bytes = 0
         self._budget = int(budget_bytes)
+        self._epoch = 0
         self.hits = 0
         self.misses = 0
+        self.rejected = 0
 
     # ── configuration ────────────────────────────────────────────────────────
     @property
@@ -96,10 +117,17 @@ class DayCache:
         return self._budget
 
     def set_budget(self, budget_bytes: int) -> None:
-        """Change the budget; shrinking evicts immediately."""
+        """Change the budget; shrinking evicts immediately (LRU)."""
         with self._lock:
             self._budget = max(0, int(budget_bytes))
-            self._evict_locked(keep=None)
+            self._make_room_locked(incoming=None)
+
+    def begin_run(self) -> int:
+        """Start a new run: entries touched before now become evictable
+        before anything the new run touches. Returns the run's epoch."""
+        with self._lock:
+            self._epoch += 1
+            return self._epoch
 
     # ── access ───────────────────────────────────────────────────────────────
     def get(self, key, default=_MISS):
@@ -110,6 +138,8 @@ class DayCache:
                 self.misses += 1
                 return default
             self._items.move_to_end(key)
+            item[2] = self._epoch
+            self._demoted.pop(key, None)       # used again -> worth keeping
             self.hits += 1
             return item[0]
 
@@ -117,26 +147,63 @@ class DayCache:
         with self._lock:
             return key in self._items
 
-    def put(self, key, value, nbytes: int | None = None) -> None:
+    def put(self, key, value, nbytes: int | None = None) -> bool:
+        """Store `value`; False when it was not kept (the cache is full of
+        entries the current run is using — see the class docstring)."""
         size = estimate_nbytes(value) if nbytes is None else int(nbytes)
         with self._lock:
             old = self._items.pop(key, None)
             if old is not None:
                 self._bytes -= old[1]
-            self._items[key] = (value, size)
+                self._demoted.pop(key, None)
+            self._items[key] = [value, size, self._epoch]
             self._bytes += size
-            self._evict_locked(keep=key)
+            kept = self._make_room_locked(incoming=key)
+            if not kept:
+                self.rejected += 1
+            return kept
 
-    def _evict_locked(self, keep) -> None:
-        # `keep` (the entry just inserted) is always the newest, so it is only
-        # ever the oldest when it is the last entry left — an oversize value
-        # stays until the next insert pushes it out
+    def demote(self, keys) -> None:
+        """Mark entries as first to evict (e.g. raw frames already turned into
+        a cached prepared day)."""
+        with self._lock:
+            for key in keys:
+                if key in self._items:
+                    self._demoted[key] = None
+
+    def _drop_locked(self, key) -> None:
+        item = self._items.pop(key)
+        self._bytes -= item[1]
+        self._demoted.pop(key, None)
+
+    def _make_room_locked(self, incoming) -> bool:
+        """Evict until within budget; returns False when `incoming` itself had
+        to be dropped."""
+        if self._bytes <= self._budget:
+            return True
+        # 1. demoted entries, in demotion order
+        while self._bytes > self._budget and self._demoted:
+            key = next(iter(self._demoted))
+            if key == incoming:
+                self._demoted.pop(key)
+                continue
+            self._drop_locked(key)
+        # 2. entries from earlier runs: they sit at the LRU front, because
+        #    touching an entry moves it to the end
         while self._bytes > self._budget and self._items:
-            oldest = next(iter(self._items))
-            if oldest == keep:
-                return
-            _value, size = self._items.pop(oldest)
-            self._bytes -= size
+            key = next(iter(self._items))
+            if key == incoming or self._items[key][2] >= self._epoch:
+                break
+            self._drop_locked(key)
+        if self._bytes <= self._budget:
+            return True
+        # 3. everything left is in use by this run
+        if incoming is not None:
+            self._drop_locked(incoming)
+            return False
+        while self._bytes > self._budget and self._items:   # budget shrink
+            self._drop_locked(next(iter(self._items)))
+        return True
 
     # ── housekeeping ─────────────────────────────────────────────────────────
     def clear(self) -> int:
@@ -144,8 +211,9 @@ class DayCache:
         with self._lock:
             freed = self._bytes
             self._items.clear()
+            self._demoted.clear()
             self._bytes = 0
-            self.hits = self.misses = 0
+            self.hits = self.misses = self.rejected = 0
         return freed
 
     def stats(self) -> dict:
@@ -155,7 +223,8 @@ class DayCache:
                 kinds[key[0]] = kinds.get(key[0], 0) + 1
             return {"entries": len(self._items), "bytes": self._bytes,
                     "budget": self._budget, "by_kind": kinds,
-                    "hits": self.hits, "misses": self.misses}
+                    "hits": self.hits, "misses": self.misses,
+                    "rejected": self.rejected}
 
 
 _CACHE = DayCache()

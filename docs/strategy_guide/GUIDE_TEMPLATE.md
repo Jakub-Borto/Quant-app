@@ -1000,9 +1000,25 @@ Consequences:
   its own cache. The **Memory budget (GB)** field of the Optimizer's New Run tab
   is the **total** for all workers: each gets `budget ÷ N`. Worker caches
   disappear when the run ends.
-- When a cache is full, the **least recently used** entries are dropped first
-  (reading an entry refreshes it). A single entry bigger than the whole budget is
-  still kept until the next entry pushes it out.
+- When a cache is full, entries are dropped in this order:
+  1. **raw frames whose day is already prepared and cached** (they're only
+     needed to rebuild it, and they're about two thirds of the cached bytes);
+  2. entries the **current run hasn't used**, least recently used first;
+  3. if everything left is in use by the current run, the **new** entry is simply
+     not kept.
+
+  Rule 3 makes the cache *scan-resistant*: a run walks the days in order, and a
+  plain "drop the oldest" cache smaller than the run would throw away exactly the
+  days the next run (the next Optimizer combination) needs first, so every run
+  would be cold. Keeping the first days instead means a too-small cache still
+  serves most of them.
+- When a run couldn't keep everything, the Backtester and the Optimizer show a
+  yellow note: *"The RAM cache (0.07 GB) was too small for this run: 276 item(s)
+  could not be kept and will be read or prepared again next run. Raise the budget
+  (Settings -> Engine day cache; the Optimizer's Memory budget for parallel
+  workers) or shorten the date range."* The same text is printed to the console,
+  saved in an Optimizer run's `meta.json` as `cache_note`, and returned as
+  `RunResult.cache_note` / `cache_rejected`.
 - Sizes are **estimates** (DataFrames exactly via pandas' deep memory usage;
   prepared objects by walking their numpy arrays, DataFrames, strings and
   containers). A prepared object can report its own size precisely by defining a
@@ -1068,6 +1084,11 @@ metric.
 - **Parallel workers**: 1 = everything in the app process, sharing the
   Backtester's cache. N > 1 = N processes, each loading the strategy once and
   filling its own cache, capped at `Memory budget ÷ N`.
+- **Parallel workers start empty on every run.** They are new processes, so they
+  can't see data the app already holds in RAM (from the Backtester or earlier
+  runs): each worker's first combination reads from disk, then its later
+  combinations run warm. With 1 worker, a grid reuses everything already in RAM,
+  so on small grids (tens of combinations) serial is often faster overall.
 - Additional data rows work exactly as in the Backtester.
 - A saved run (`<data root>/optimizations/{run}/`) contains `trades.parquet` (all
   combinations' trades, with the swept parameters as extra columns) and
@@ -1140,7 +1161,8 @@ if __name__ == "__main__":
 
 `run_strategy` returns a `RunResult` with: `trades` (the 12-column DataFrame),
 `warnings` (list of str), `days_in_range`, `days_run`, `skipped` (`{slot: [dates]}`),
-`files_read` (disk reads) and `days_prepared` (`prepare_day` calls). Useful keyword
+`files_read` (disk reads), `days_prepared` (`prepare_day` calls), and
+`cache_rejected` / `cache_note` (how many items the RAM cache was too full to keep). Useful keyword
 arguments: `cache=DayCache()` (a private cache, e.g. for tests), `verbose=False`
 (no console output), `on_progress=callback(i, n, msg)`.
 

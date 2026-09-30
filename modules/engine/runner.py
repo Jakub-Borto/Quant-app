@@ -61,6 +61,8 @@ class RunResult:
     skipped: dict = field(default_factory=dict)   # slot -> [dates missing a file]
     files_read: int = 0                  # day files read from DISK (cache misses)
     days_prepared: int = 0               # prepare_day() calls (prepared-cache misses)
+    cache_rejected: int = 0              # items the RAM cache was too full to keep
+    cache_note: str | None = None        # human-readable note when cache_rejected > 0
 
 
 # ══ strategy declarations ═════════════════════════════════════════════════════
@@ -160,6 +162,9 @@ class _RunContext:
         self._prep_items = tuple(sorted((k, _hashable(v)) for k, v in self.prep_params.items()))
         self.raw_hits = self.raw_reads = 0
         self.prep_hits = self.prep_builds = 0
+        # frames the prefetch read for the day in progress: used directly, so a
+        # full cache that declined to keep them never causes a second read
+        self.pending: dict[int, dict] = {}
 
     # ── files ────────────────────────────────────────────────────────────────
     def path(self, slot: str, i: int) -> Path:
@@ -210,6 +215,9 @@ class _RunContext:
         if slot not in self.spec.data:
             raise EngineError(f"No data slot '{slot}' — the strategy declares DATA slots "
                               f"{list(self.spec.data)}.")
+        pending = self.pending.get(i)
+        if pending is not None and slot in pending:
+            return pending[slot]
         key = self._raw_key(slot, i)
         if key is not None:
             frame = self.cache.get(key, _MISS)
@@ -239,7 +247,10 @@ class _RunContext:
         with timed("day:prepare"):
             value = self.module.prepare_day(self.dates[i], data, dict(self.prep_params))
         self.prep_builds += 1
-        self.cache.put(key, value)
+        if self.cache.put(key, value):
+            # the raw frames are now only needed to rebuild this prepared day:
+            # first in line for eviction (they are ~2/3 of the cached bytes)
+            self.cache.demote([self._raw_key(slot, i) for slot in self.slots])
         return value
 
 
@@ -296,6 +307,8 @@ def run_strategy(module, main_folder, start_date, end_date, params: dict, *,
     timing.reset()
     spec = strategy_spec(module)
     cache = cache or get_cache()
+    cache.begin_run()
+    rejected0 = cache.rejected
 
     folders = {MAIN_SLOT: Path(main_folder)}
     extra_folders = {k: Path(v) for k, v in (extra_folders or {}).items()}
@@ -361,7 +374,7 @@ def run_strategy(module, main_folder, start_date, end_date, params: dict, *,
             _submit_next()
             if fut is not None:
                 with timed("io:stall"):
-                    fut.result()                # re-raises read errors here
+                    ctx.pending[i] = fut.result()    # re-raises read errors here
             done += 1
             date = ctx.dates[i]
 
@@ -381,6 +394,7 @@ def run_strategy(module, main_folder, start_date, end_date, params: dict, *,
                 except KeyError as e:
                     raise _explain_key_error(e, spec, f"the day {date}") from e
 
+            ctx.pending.pop(i, None)
             if on_progress is not None:
                 on_progress(done, total, "")
 
@@ -392,6 +406,16 @@ def run_strategy(module, main_folder, start_date, end_date, params: dict, *,
         shown = ", ".join(dates[:10]) + (f" … (+{len(dates) - 10} more)" if len(dates) > 10 else "")
         warnings.append(f"The '{slot}' dataset ({folders[slot].name}) has no file for "
                         f"{len(dates)} day(s), so those days were SKIPPED: {shown}")
+
+    rejected = cache.rejected - rejected0
+    cache_note = None
+    if rejected:
+        cache_note = (f"The RAM cache ({cache.budget_bytes / GB:.2f} GB) was too small for "
+                      f"this run: {rejected} item(s) could not be kept and will be read or "
+                      f"prepared again next run. Raise the budget (Settings -> Engine day "
+                      f"cache; the Optimizer's Memory budget for parallel workers) or "
+                      f"shorten the date range.")
+        print(f"[engine] NOTE: {cache_note}", flush=True)
 
     if verbose:
         st = cache.stats()
@@ -405,4 +429,5 @@ def run_strategy(module, main_folder, start_date, end_date, params: dict, *,
         timing.report(spec.name, time.perf_counter() - t0)
     return RunResult(trades=trades, warnings=warnings, days_in_range=total,
                      days_run=days_run, skipped=skipped,
-                     files_read=ctx.raw_reads, days_prepared=ctx.prep_builds)
+                     files_read=ctx.raw_reads, days_prepared=ctx.prep_builds,
+                     cache_rejected=rejected, cache_note=cache_note)
