@@ -102,7 +102,10 @@ def _spans(text: str) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda m: codes[int(m.group(1))], p)
 
 
-def build_pdf(md: str) -> None:
+def build_pdf(md: str, out_pdf: Path = OUT_PDF,
+              doc_title: str = "Writing a Strategy from Scratch") -> None:
+    """Render `md` to `out_pdf`; the footer reads "Quant Research Platform —
+    <doc_title>". Also used by docs/app_documentation/build_app_doc.py."""
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_LEFT
     from reportlab.lib.pagesizes import A4
@@ -303,13 +306,13 @@ def build_pdf(md: str) -> None:
         canvas.saveState()
         canvas.setFont("Body", 7.5)
         canvas.setFillColor(colors.HexColor("#777777"))
-        canvas.drawString(margin, 10 * mm, "Quant Research Platform — Writing a Strategy from Scratch")
+        canvas.drawString(margin, 10 * mm, f"Quant Research Platform — {doc_title}")
         canvas.drawRightString(page_w - margin, 10 * mm, f"page {doc.page}")
         canvas.restoreState()
 
-    doc = SimpleDocTemplate(str(OUT_PDF), pagesize=A4, leftMargin=margin, rightMargin=margin,
+    doc = SimpleDocTemplate(str(out_pdf), pagesize=A4, leftMargin=margin, rightMargin=margin,
                             topMargin=16 * mm, bottomMargin=16 * mm,
-                            title="Writing a Strategy from Scratch",
+                            title=doc_title,
                             author="Quant Research Platform")
     doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
 

@@ -114,8 +114,16 @@ def test_enrichment_and_zero_trade_cells():
 
 def test_progress_stream():
     seen = []
-    grid_run(on_progress=lambda cur, total, msg: seen.append((cur, total)))
-    assert seen == [(i, 6) for i in range(1, 7)]
+    grid_run(on_progress=lambda cur, total, msg: seen.append((cur, total, msg)))
+    combo_lines = [(cur, total) for cur, total, msg in seen if msg.startswith("[")]
+    assert combo_lines == [(i, 6) for i in range(1, 7)]
+    # between combo lines the engine's per-day calls pass through (cancellation
+    # points) with the count of combos finished so far
+    assert all(cur <= 6 for cur, _, _ in seen) and len(seen) > 6
+    # each combo line says where its data came from (the shared cache may be warm)
+    assert all(("files read from disk" in m) or ("all data from RAM" in m)
+               for _, _, m in seen if m.startswith("["))
+    assert "all data from RAM" in next(m for _, _, m in seen if m.startswith("[2/6]"))
 
 
 def test_golden_heatmap():
@@ -236,10 +244,75 @@ def test_parallel_matches_serial(toy_strategy_dir):
 
     pd.testing.assert_frame_equal(serial, parallel)
 
-    counts = [cur for cur, _, msg in progress if msg]   # ignore idle ticks
+    counts = [cur for cur, _, msg in progress if msg.startswith("[")]   # combo lines
     assert counts == sorted(counts)                     # monotone
-    assert counts[-1] == 6 and len(counts) == 6         # every combo reported
+    assert counts == [1, 2, 3, 4, 5, 6]                 # every combo reported once
     assert all(total == 6 for _, total, _ in progress)
+    msgs = [m for _, _, m in progress if m]
+    assert msgs[0].startswith("Starting 3 worker processes: the 4 days are split into 3 chunks")
+    loaded = [m for m in msgs if " loaded its data in " in m]
+    assert len(loaded) == 3                             # once per worker
+    assert "worker 1/3 (2026-01-05 … 2026-01-06, 2 days)" in "".join(loaded)
+
+
+LOOKBACK_STRATEGY_SOURCE = '''
+import pandas as pd
+
+from modules.engine import Trade
+
+PARAMS = {"k": 1}
+DATA = {"main": ["close"], "indicators": ["vwap"]}
+
+
+def process_day(day, params):
+    prev = day.previous_days(2)          # reaches across a worker's chunk edge
+    t0 = pd.Timestamp(f"{day.date} 10:00", tz="America/New_York")
+    notes = {"prev": [d.date.isoformat() for d in prev], "k": params["k"]}
+    return Trade("long", t0, t0 + pd.Timedelta(hours=1), 100.0, 100.0 + len(prev), "tp",
+                 trade_type=None if day.date.day % 2 else "even", notes=notes)
+'''
+
+
+def test_parallel_date_chunks_match_serial_with_lookback_and_skips(tmp_path):
+    """Chunks of days per worker: lookback across a chunk edge, a mixed
+    None/str column and days skipped for a missing slot file all come out
+    exactly as in one serial run."""
+    main, ind = tmp_path / "ES_1m", tmp_path / "ES_ind"
+    days = pd.bdate_range("2026-02-02", periods=11)
+    for folder, col in ((main, "close"), (ind, "vwap")):
+        folder.mkdir()
+        for n, d in enumerate(days):
+            if folder is ind and n in (3, 8):             # two days without indicators
+                continue
+            idx = pd.date_range(f"{d.date()} 09:30", periods=3, freq="1min", tz="America/New_York")
+            pd.DataFrame({col: [1.0, 2.0, 3.0]}, index=idx).to_parquet(folder / f"{d.date()}.parquet")
+    (tmp_path / "lookback_toy.py").write_text(LOOKBACK_STRATEGY_SOURCE)
+    axes = [{"param": "k", "values": [1, 2], "role": "x"}]
+    kw = dict(base_params={"k": 1}, axes=axes, tick_size=0.25, ticks_per_point=4,
+              bucket_map={}, extra_folders={"indicators": ind})
+    serial_warn, parallel_warn = [], []
+    serial = run_grid(load_strategy("lookback_toy", tmp_path), main, "2026-01-01", "2026-12-31",
+                      warnings_out=serial_warn, **kw)
+    parallel = run_grid(None, main, "2026-01-01", "2026-12-31", n_workers=4,
+                        strategy_name="lookback_toy", strategies_dir=tmp_path,
+                        warnings_out=parallel_warn, **kw)
+    pd.testing.assert_frame_equal(serial, parallel)
+    assert len(serial) == 2 * 9
+    assert serial_warn == parallel_warn and "2 day(s), so those days were SKIPPED" in serial_warn[0]
+
+
+def test_day_chunks_are_contiguous_and_balanced(tmp_path):
+    from modules.optimizer.backend.engine import day_chunks
+    folder = tmp_path / "ES_1m"
+    folder.mkdir()
+    for d in pd.bdate_range("2026-03-02", periods=10):
+        (folder / f"{d.date()}.parquet").write_bytes(b"")
+    chunks = day_chunks(folder, "2026-01-01", "2026-12-31", 3)
+    assert [n for _, _, n in chunks] == [4, 3, 3]
+    assert chunks[0][0] == datetime.date(2026, 3, 2) and chunks[-1][1] == datetime.date(2026, 3, 13)
+    assert [c[1] < n[0] for c, n in zip(chunks, chunks[1:])] == [True, True]
+    assert len(day_chunks(folder, "2026-01-01", "2026-12-31", 50)) == 10   # <= one day each
+    assert day_chunks(folder, "2027-01-01", "2027-12-31", 4) == []
 
 
 def test_parallel_requires_strategy_name():
@@ -400,3 +473,25 @@ def test_bool_axis_end_to_end(tmp_path):
     # the explore/cell-detail filter pattern: meta value == trades column
     for v in loaded_meta["axes"]["x"]["values"]:
         assert len(loaded_trades[loaded_trades["flag"] == v]) == 1
+
+
+def test_parallel_cancel_stops_promptly(toy_strategy_dir):
+    """Raising inside on_progress (the app's Cancel) ends a parallel run: the
+    queued parts are cancelled and every pool is shut down."""
+    import time
+
+    class Stop(Exception):
+        pass
+
+    def on_progress(cur, total, msg):
+        if msg.startswith("["):
+            raise Stop
+    axes = [{"param": "a", "values": list(range(1, 41)), "role": "x"},
+            {"param": "b", "values": [2, 3], "role": "y"}]
+    t0 = time.perf_counter()
+    with pytest.raises(Stop):
+        run_grid(None, TOY_FOLDER, "2026-01-01", "2026-12-31",
+                 base_params=dict(ToyStrategy.PARAMS), axes=axes, tick_size=0.25,
+                 ticks_per_point=TICKS_PER_POINT, bucket_map={}, on_progress=on_progress,
+                 n_workers=2, strategy_name="toy_grid", strategies_dir=toy_strategy_dir)
+    assert time.perf_counter() - t0 < 60

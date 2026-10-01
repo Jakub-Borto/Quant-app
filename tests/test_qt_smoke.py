@@ -109,6 +109,53 @@ def test_backtester_window(qtbot, settings):
     assert win._header_actions is not None
 
 
+
+def test_engine_progress_panel_paints_latest_and_finishes(qtbot):
+    from modules.common.ui.engine_progress import EngineProgressPanel
+    panel = EngineProgressPanel()
+    qtbot.addWidget(panel)
+    panel.start("Starting toy on ES_1m…")
+    panel.on_progress(3, 10, "Day 4 of 10 · 2026-01-07 — preparing the day (prepare_day)\n"
+                             "Reading ahead: …\nSo far: 2 trades")
+    panel.on_progress(4, 10, "Day 5 of 10 · 2026-01-08 — running the strategy (process_day)\n"
+                             "Reading ahead: …\nSo far: 3 trades")
+    panel._paint()                                  # only the LATEST call is painted
+    bar, now, detail = panel.current_text()
+    assert bar.startswith("day 4 / 10") and now.endswith("running the strategy (process_day)")
+    assert detail.splitlines()[-1] == "So far: 3 trades"
+    panel.finish("toy: 10 days in range …", "[toy timing] wall 1.000s")
+    assert panel.current_text()[1:] == ("Finished", "toy: 10 days in range …")
+    assert not panel._timing.isHidden()
+
+
+def test_backtester_run_shows_progress_summary_and_timing(qtbot, tmp_path):
+    """A real run through the window: the progress panel ends on the engine's
+    summary and fills the timing table; Cancel is only visible while running."""
+    import numpy as np
+    import pandas as pd
+    from modules.backtester.window import BacktesterWindow
+    from modules.common.backend.settings import Settings
+    folder = tmp_path / "parquet" / "Futures" / "ES" / "ES_1m_test"
+    folder.mkdir(parents=True)
+    for day in ("2026-03-02", "2026-03-03", "2026-03-04"):
+        idx = pd.date_range(f"{day} 09:30", f"{day} 15:59", freq="1min", tz="America/New_York")
+        close = 100 + np.sin(np.arange(len(idx)) / 20)
+        pd.DataFrame({"open": close, "high": close + 0.5, "low": close - 0.5, "close": close},
+                     index=idx).to_parquet(folder / f"{day}.parquet")
+    win = BacktesterWindow(Settings({}, [str(tmp_path)]))
+    qtbot.addWidget(win)
+    win._strategy.setCurrentText("example_first_hour_breakout")
+    assert win._strategy.currentText() == "example_first_hour_breakout"
+    assert not win._cancel_btn.isVisibleTo(win)
+    win._on_run()
+    assert win._cancel_btn.isVisibleTo(win) and not win._run_btn.isEnabled()
+    qtbot.waitUntil(lambda: win._run_btn.isEnabled(), timeout=30000)
+    _bar, now, detail = win._progress.current_text()
+    assert now == "Finished", now
+    assert detail.startswith("example_first_hour_breakout: 3 days in range, 3 processed")
+    assert "day:process" in win._progress._timing_text.toPlainText()
+    assert not win._cancel_btn.isVisibleTo(win)
+
 @needs_data
 def test_optimizer_cell_detail_constructs(qtbot, settings):
     """The Optimizer smoke test never reaches the drill-down (it needs a

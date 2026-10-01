@@ -1,9 +1,11 @@
 # CLAUDE.md — Quant Research Platform
 
-Orientation for Claude Code working in this repo. A companion PDF
-(`Quant_app_documentation.pdf`) holds the long-form version of the ORIGINAL
-Streamlit-era design (module contracts and data schemas in it still apply;
-UI/file-layout sections are outdated since the PySide6 rebuild).
+Orientation for Claude Code working in this repo. The companion PDF
+(`Quant_app_documentation.pdf`) is the long-form platform documentation
+(module contracts, data schemas, the engine, every window, measured
+performance). It is GENERATED: edit `docs/app_documentation/APP_DOCUMENTATION.md`
+and run `python docs/app_documentation/build_app_doc.py` — keep it in sync
+when you change contracts, schemas, the engine or a module's behaviour.
 
 ## What this is
 
@@ -89,8 +91,13 @@ modules/
   engine/                  THE strategy engine (pure, Qt-free, imported by
                            optimizer workers): trade.py (Trade + the 12
                            OUTPUT_COLUMNS), runner.py (run_strategy: day loop,
-                           declared-column reads + prefetch, additional data
-                           slots, prepare_day, warnings), day.py (Day: data,
+                           declared-column reads via read_day_file — pyarrow
+                           direct, byte-identical to pd.read_parquet, ~2x
+                           faster — + prefetch (2 threads; 4 for "heavy" days
+                           such as full-book MBO), additional data slots,
+                           prepare_day, warnings, the step-by-step progress
+                           text, RunResult.summary / .timing / .rows,
+                           estimate_run_memory), day.py (Day: data,
                            prepared, previous / previous_days), cache.py (the
                            process-wide scan-resistant LRU RAM cache with a
                            byte budget — raw frames of prepared days evicted
@@ -108,10 +115,16 @@ modules/
                            (save_trades + save_temp_trades + filter
                            kv-metadata), regime_join
     ui/                    shared Qt: theme, workers (FunctionWorker +
-                           cancellation), widgets, params_form, dataframe
-                           model, settings dialog, charts/ (pyqtgraph:
-                           equity, candlestick, histogram, fan, heatmap,
-                           path)
+                           cancellation), widgets, params_form (readonly=
+                           AUTO_PARAMS), dataframe model, settings dialog
+                           (incl. the engine cache_gb), additional_data
+                           (AdditionalDataPanel: one row per extra DATA slot,
+                           auto-picked by folder name), engine_progress
+                           (EngineProgressPanel: stores the engine's latest
+                           progress call, paints on a 60 ms timer, then shows
+                           RunResult.summary + the timing table), charts/
+                           (pyqtgraph: equity (+ the joined drawdown chart),
+                           candlestick, histogram, fan, heatmap, path)
     trade_report/          THE shared report — one implementation, used by
                            the Backtester AND both Optimizer drill-downs.
                            backend/ (pure): frame.py (the canonical trades
@@ -127,12 +140,19 @@ modules/
                            persist in settings.json ui_prefs (layout_dialog.py
                            is the gear); one file per section, plus
                            TradeActionsRow (Save Trades / Go to Analytics /
-                           Go to Monte Carlo). The root __init__ MUST stay
+                           Go to Monte Carlo). The equity section has the
+                           drawdown chart joined under it (ticks from a peak
+                           that starts at 0 — Max DD uses the same rule); the
+                           regime and market-exposure sections have an asset
+                           dropdown (default: the backtest asset, else its
+                           ASSET_INFO parent; window-scoped memory). The root __init__ MUST stay
                            Qt-free — importing anything under backend/ runs
                            it, and a Qt export would drag PySide6 into
                            optimizer pool workers.
   data_formatter/          backend/scan.py + window.py
-  backtester/              backend/{run,day_types}.py + window.py
+  backtester/              backend/{run,day_types}.py + window.py (Run /
+                           Cancel / Free cached data, Additional data rows,
+                           the EngineProgressPanel, warnings banner)
   analytics/               backend/{io,sizing,costs,metrics}.py +
                            instance_editor/results_view/window.py
   monte_carlo/             methods/ (plugin dir; has an __init__.py ONLY so
@@ -148,7 +168,15 @@ modules/
   optimizer/               backend/ = the former optimization/ package
                            (engine, param_space, metrics, buckets, io, loader,
                            combine/, + heatmap_model, run_setup) — pure,
-                           tested; UI: sweep_panel, new_run_tab, explore_tab,
+                           tested. Parallel runs SPLIT THE DATES: one
+                           contiguous chunk of days per worker (its own
+                           single-process pool), every combo on every chunk,
+                           rows joined in date order -> identical to serial;
+                           relies on process_day keeping no state across
+                           days. The New Run tab's memory readout is
+                           estimate_grid_memory (from the strategy's declared
+                           columns + parquet footers; no worker clamp — the
+                           data is split, not copied). UI: sweep_panel, new_run_tab, explore_tab,
                            combine_tab, window.py + cell_detail /
                            combine_detail — slicing and save names ONLY (both
                            Qt-free); the report itself is
@@ -165,13 +193,22 @@ modules/
                            never on date (module __init__ docstring).
 strategies/                strategy plugins (single-file or package):
                            ivb_model/, orb/, vwap_trend/
-data_transforms/           raw DBN -> enriched parquet plugins
+data_transforms/           raw DBN -> enriched parquet plugins (1m OHLCV:
+                           *_mixed_assets from monthly all-asset files,
+                           *_single_asset from one asset's daily files with
+                           the prev+curr splice — same output format)
 position_sizing/           fixed.py, kelly.py, risk_based.py
 scripts/                   quick-script plugins for the Scripts module
 regime_detectors/          regime-detector plugins (+ base.py: import-idiom
                            doc; scaffold `_scaffold_example.py`)
 forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
 orderbook_replay_cpp/      C++ (pybind11) L3 order-book replay kernel
+docs/                      SOURCES of the generated docs: strategy_guide/
+                           (GUIDE_TEMPLATE.md + build_guide.py -> STRATEGY_GUIDE.md
+                           + Strategy_Guide.pdf; build_pdf is the shared
+                           reportlab Markdown renderer) and app_documentation/
+                           (APP_DOCUMENTATION.md + build_app_doc.py ->
+                           Quant_app_documentation.pdf)
 tests/                     pytest suite (optimizer backend + metrics + Qt
                            smoke + the shared report: test_trade_report.py
                            pins that the Backtester's and the Optimizer's
@@ -227,6 +264,14 @@ column schema, not Python imports.
   caches it; it must NOT depend on params outside `PREPARE_PARAMS`), and never
   mutate cached frames/arrays. After changing a `prepare_day`, press "Free
   cached data" — the cache is keyed by files + prepare-params, NOT by code.
+  `process_day` must not carry state from one day to the next: a parallel
+  Optimizer run processes a combo's days in several processes (lookback goes
+  through `day.previous`, which crosses chunks).
+- **Engine timing / progress:** `run_strategy` times every stage into ONE
+  table (`bg ...` sections run on the read-ahead threads and overlap the main
+  thread), returned as `RunResult.timing` and shown in the Backtester's
+  "Engine timing" section; `on_progress` gets a 4-line text at EVERY step
+  (the UI must store-and-paint on a timer, never paint per call).
 - **Additional datasets are DATA slots, not folder-name params** (the old
   `indicators_folder` / `indicators_dataset` params are gone): each non-main
   slot is a required "Additional data" row, auto-picked by folder name; a day
@@ -293,8 +338,12 @@ fallback.
   `strategies/example_prev_day_levels/`) tested in
   tests/test_strategy_examples.py.
 
-- `Quant_app_documentation.pdf` — module contracts & schemas (Streamlit-era
-  UI sections outdated).
+- `Quant_app_documentation.pdf` — the platform documentation: module
+  contracts, data schemas, the engine (cache, reads, progress, timing), every
+  window, the Optimizer's date-split parallelism and measured performance.
+  Generated from `docs/app_documentation/APP_DOCUMENTATION.md` (run
+  `python docs/app_documentation/build_app_doc.py`; the asset table comes from
+  ASSET_INFO).
 - `IVB_Model_Documentation.pdf` + `strategies/ivb_model/CLAUDE.md` — the
   flagship strategy.
 - The pre-rebuild Streamlit frontend lives only in git history (main branch,

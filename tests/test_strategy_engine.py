@@ -381,12 +381,16 @@ def test_prepared_days_demote_their_raw_frames(tmp_path):
 
 def test_cache_sizes_frames_and_arrays():
     from modules.engine.cache import estimate_nbytes
+    from modules.engine.cache import _ARRAY_HEADER
     arr = np.zeros(1000)
-    assert estimate_nbytes(arr) == 8000
-    df = pd.DataFrame({"a": arr})
-    assert estimate_nbytes(df) >= 8000
-    obj = types.SimpleNamespace(x=arr, y=[arr, arr])
-    assert estimate_nbytes(obj) >= 24000
+    assert estimate_nbytes(arr) == 8000 + _ARRAY_HEADER      # data + the array object
+    df = pd.DataFrame({"a": arr, "s": pd.array(["x" * 50] * 1000, dtype="str"),
+                       "o": np.array([{"k": 1}] * 1000, dtype=object)},
+                      index=pd.date_range("2026-01-02", periods=1000, freq="1min", tz=TZ))
+    # the fast frame path is exactly pandas' deep memory usage
+    assert estimate_nbytes(df) == int(df.memory_usage(index=True, deep=True).sum())
+    obj = types.SimpleNamespace(x=arr, y=[arr, (arr, arr), None])
+    assert estimate_nbytes(obj) >= 32000
 
 
 # ── additional-data auto-pick ────────────────────────────────────────────────
@@ -417,3 +421,142 @@ def test_settings_cache_gb_round_trip_and_clamp(tmp_path):
     assert load_settings(path).cache_gb == 16.0
     assert Settings({}, [], cache_gb=10_000).cache_gb == 512.0
     assert Settings({}, [], cache_gb="junk").cache_gb == DEFAULT_CACHE_GB
+
+
+# ── progress text, summary, timing, read path ───────────────────────────────
+def test_progress_describes_every_step(tmp_path, monkeypatch):
+    import modules.engine.runner as runner
+    monkeypatch.setattr(runner._Progress, "DETAIL_EVERY", 0.0)   # counters exact at every step
+    main = write_dataset(tmp_path / "ES_1m")
+    ind = write_dataset(tmp_path / "ES_ind", days=DAYS[:4], columns=("vwap",))
+    calls = []
+    mod = strategy(DATA={"main": ["close"], "indicators": ["vwap"]},
+                   prepare_day=lambda date, data, p: float(data["main"]["close"].iloc[-1]),
+                   process_day=lambda day, p: Trade("long", ts(day.date, "09:30"),
+                                                    ts(day.date, "09:32"), 1.0, 2.0, "tp"))
+    cache = DayCache()
+    res = run(mod, main, extra_folders={"indicators": ind}, cache=cache,
+              on_progress=lambda c, t, text: calls.append((c, t, text)))
+    heads = [text.splitlines()[0] for _, _, text in calls]
+    assert heads[0].startswith("Checking toy's DATA declaration")
+    assert any(h.startswith("Listing the day files of ES_1m") for h in heads)
+    assert any(h.startswith("Found 5 days in range") for h in heads)
+    assert any(h == "Day 1 of 5 · 2026-01-02 — preparing the day (prepare_day)" for h in heads)
+    assert any(h == "Day 1 of 5 · 2026-01-02 — running the strategy (process_day)" for h in heads)
+    assert any("2026-01-08 — skipped: no indicators file" in h for h in heads)
+    assert heads[-1] == "Building the trades table from 4 trades…"
+    day_calls = [(c, t) for c, t, text in calls if text.startswith("Day ")]
+    assert all(t == 5 for _, t in day_calls)
+    assert [c for c, _ in day_calls] == sorted(c for c, _ in day_calls)   # never goes back
+    last_day = [text for _, _, text in calls if text.startswith("Day 5 of 5")][-1]
+    assert "So far: 4 trades · 4 days processed · 1 skipped" in last_day
+    assert "files read from disk: main 4, indicators 4" in last_day   # skipped day: nothing read
+    assert "prepared days: 4 built, 0 from RAM" in last_day
+    assert "RAM cache" in last_day.splitlines()[-1]
+    # the run summary and the timing table ride on the result
+    assert res.summary.startswith("toy: 5 days in range, 4 processed, 1 skipped, 4 trades")
+    assert "Files read from disk: 8 (main 4, indicators 4" in res.summary
+    assert "Prepared days: 4 built, 0 from RAM" in res.summary
+    for section in ("day:process", "day:prepare", "bg io:read:main", "engine:list_days",
+                    "build_output_df"):
+        assert section in res.timing, section
+    assert res.elapsed > 0
+    # warm: the prepared days come from RAM, counted once per day
+    again = run(mod, main, extra_folders={"indicators": ind}, cache=cache,
+                on_progress=lambda c, t, text: calls.append((c, t, text)))
+    assert "Prepared days: 0 built, 4 from RAM" in again.summary
+    assert any(text.splitlines()[0].endswith("prepared day found in RAM") for _, _, text in calls)
+
+
+def test_cancelling_inside_progress_stops_the_run(tmp_path):
+    main = write_dataset(tmp_path / "ES_1m")
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    def on_progress(c, t, text):
+        if text.startswith("Day 3 of 5"):
+            raise Stop
+
+    mod = strategy(process_day=lambda day, p: seen.append(day.date))
+    with pytest.raises(Stop):
+        run(mod, main, on_progress=on_progress)
+    assert len(seen) == 2
+
+
+def test_heavy_days_get_more_read_threads(tmp_path, monkeypatch):
+    import modules.engine.runner as runner
+    main = write_dataset(tmp_path / "ES_1m")
+    mod = strategy(process_day=lambda day, p: None)
+    assert "on 2 threads" in run(mod, main).summary
+    monkeypatch.setattr(runner, "HEAVY_DAY_BYTES", 1)        # every day is "heavy"
+    assert f"on {runner.HEAVY_READ_THREADS} threads" in run(mod, main).summary
+
+
+def test_read_day_file_equals_pandas(tmp_path):
+    from modules.engine.runner import read_day_file
+    idx = pd.date_range("2026-01-02 18:00", periods=50, freq="1min", tz=TZ)
+    df = pd.DataFrame({"open": np.arange(50.0), "volume": np.arange(50, dtype="uint32"),
+                       "tick_volume": ['{"1.0":[1,2]}'] * 50}, index=idx)
+    df.attrs = {"source": "test"}
+    path = tmp_path / "2026-01-02.parquet"
+    df.to_parquet(path)
+    for cols in (None, ("open",), ("tick_volume", "open")):
+        want = pd.read_parquet(path, columns=list(cols) if cols else None)
+        got = read_day_file(path, cols)
+        pd.testing.assert_frame_equal(got, want, check_exact=True)
+        assert got.attrs == want.attrs and str(got.index.dtype) == str(want.index.dtype)
+    with pytest.raises(EngineError, match=r"\['nope'\] declared in DATA\['main'\]"):
+        read_day_file(path, ("open", "nope"))
+
+
+def test_prepared_day_is_remeasured_after_its_first_process(tmp_path):
+    """A strategy that fills a lazy cache on its prepared object during
+    process_day (ivb parses JSON that way) is re-measured once."""
+    main = write_dataset(tmp_path / "ES_1m", days=DAYS[:1])
+
+    class Prepared:
+        def __init__(self):
+            self.lazy = None
+
+    def process_day(day, p):
+        day.prepared.lazy = np.zeros(100_000)       # 800 KB appear after the put
+
+    mod = strategy(prepare_day=lambda date, data, p: Prepared(), process_day=process_day)
+    cache = DayCache()
+    run(mod, main, cache=cache)
+    prep = [v for k, v in cache._items.items() if k[0] == "prep"]
+    assert len(prep) == 1 and prep[0][1] >= 800_000
+
+
+def test_estimate_run_memory_from_footers(tmp_path):
+    from modules.engine import estimate_run_memory
+    main = write_dataset(tmp_path / "ES_1m", columns=("open", "close"))
+    mod = strategy(DATA={"main": ["close"]}, process_day=lambda day, p: None)
+    est = estimate_run_memory(mod, main, "2026-01-01", "2026-12-31")
+    frame = pd.read_parquet(main / f"{DAYS[0]}.parquet", columns=["close"])
+    # 3 rows: close (8 B) + the stored index (8 B) per row, for every day
+    assert est["n_days"] == len(DAYS)
+    assert est["raw_bytes"] == len(DAYS) * int(frame.memory_usage(index=True, deep=True).sum())
+    assert est["prepared_bytes"] == 0 and est["total_bytes"] == est["raw_bytes"]
+    prep = strategy(DATA={"main": "*"}, prepare_day=lambda d, data, p: None,
+                    process_day=lambda day, p: None)
+    both = estimate_run_memory(prep, main, "2026-01-01", "2026-12-31")
+    assert both["raw_bytes"] > est["raw_bytes"] and both["prepared_bytes"] == both["raw_bytes"]
+    assert estimate_run_memory(mod, main, "2030-01-01", "2030-12-31")["n_days"] == 0
+
+
+def test_progress_counter_lines_are_throttled(tmp_path):
+    """Line 1 is exact at every call; the counter lines are rebuilt at most
+    every DETAIL_EVERY seconds (and always on setup / wrap-up steps)."""
+    main = write_dataset(tmp_path / "ES_1m")
+    calls = []
+    mod = strategy(process_day=lambda day, p: None)
+    run(mod, main, on_progress=lambda c, t, text: calls.append(text))
+    day_texts = [t for t in calls if t.startswith("Day ")]
+    firsts = [t.splitlines()[0] for t in day_texts]
+    assert "Day 5 of 5 · 2026-01-08 — running the strategy (process_day)" in firsts
+    # a sub-100 ms run: the counters come from the forced "Found N days" step
+    assert all("So far: 0 trades · 0 days processed" in t for t in day_texts)
+    assert "So far: 0 trades · 5 days processed" in calls[-1]      # wrap-up is forced

@@ -18,7 +18,8 @@ from .cache import (DEFAULT_BUDGET_GB, GB, DayCache, clear_cache, get_cache,
                     set_budget_gb)
 from .day import Day, DayData
 from .runner import (ALL_COLUMNS, MAIN_SLOT, EngineError, RunResult,
-                     StrategySpec, additional_slots, day_files, run_strategy,
+                     StrategySpec, additional_slots, day_files,
+                     estimate_run_memory, run_strategy, skipped_warnings,
                      strategy_spec)
 from .timing import timed
 from .trade import OUTPUT_COLUMNS, Trade, trades_to_frame
@@ -28,6 +29,7 @@ __all__ = [
     "Day", "DayData",
     "run_strategy", "RunResult", "EngineError", "StrategySpec",
     "strategy_spec", "additional_slots", "day_files", "MAIN_SLOT", "ALL_COLUMNS",
+    "estimate_run_memory", "skipped_warnings",
     "DayCache", "get_cache", "set_budget_gb", "clear_cache", "GB",
     "DEFAULT_BUDGET_GB",
 ]

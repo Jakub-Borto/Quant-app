@@ -49,8 +49,9 @@ def reset() -> None:
         _TIMES.clear()
 
 
-def report(title: str, wall: float) -> str:
-    """The table as text (also printed). Empty string when nothing was timed."""
+def report(title: str, wall: float, echo: bool = True) -> str:
+    """The table as text (printed too unless echo=False). Empty string when
+    nothing was timed."""
     with _LOCK:
         items = sorted(_TIMES.items(), key=lambda kv: kv[1][0], reverse=True)
     if not items:
@@ -62,5 +63,6 @@ def report(title: str, wall: float) -> str:
         lines.append(f"  {name:<32} {tot:>9.3f} {calls:>7} "
                      f"{tot / calls * 1e3:>9.3f} {tot / wall * 100:>6.1f}%")
     text = "\n".join(lines)
-    print(text + "\n", flush=True)
+    if echo:
+        print(text + "\n", flush=True)
     return text

@@ -126,14 +126,24 @@ exactly this, in this order:
       it. If `prepare_day` returns `None`, the day is skipped silently.
    3. It calls `process_day(day, params)` and collects the returned trades,
       stamping each with the day's date.
-   4. It reports progress (the Backtester's status line shows `day i/n`, and the
-      Optimizer's Cancel button works through this).
+   4. At **every step** (waiting for a disk read, preparing, running
+      `process_day`, skipping) it reports what it is doing. The Backtester shows
+      this live (see 14.1), and the **Cancel** buttons work through it: a
+      cancelled run stops at the next step.
 6. **Build the output.** The engine turns all `Trade` objects into one pandas
    DataFrame with exactly 12 columns
    ([section 11](#11-producing-trades-the-trade-class-and-the-output)).
-7. **Report.** It prints a summary line and a timing table to the console, and
-   returns the data warnings (skipped days) to the window, which shows them in a
-   yellow banner.
+7. **Report.** It returns a one-paragraph summary and a timing table (shown under
+   the Backtester's progress bar, and printed to the console), plus the data
+   warnings (skipped days), which the window shows in a yellow banner.
+
+**Days are independent.** Within one run the days are processed in date order,
+but a parallel Optimizer run splits the date range into chunks that run in
+**different processes** (14.2). So `process_day` must never depend on anything
+an earlier `process_day` call left behind (module variables, attributes you set
+on the module). Everything a day needs from the past comes from `day.previous` /
+`day.previous_days(n)` ([section 10](#10-the-day-object--reading-today-and-previous-days)), which work
+across chunk boundaries.
 
 After the engine returns, the **Backtester** adds `ticks = pnl_points ×
 ticks_per_point` and `cumulative_ticks`, tags each trade with a `day_type`
@@ -998,8 +1008,10 @@ Consequences:
   of each run.
 - **Optimizer with N parallel workers**: each worker is a separate process with
   its own cache. The **Memory budget (GB)** field of the Optimizer's New Run tab
-  is the **total** for all workers: each gets `budget ÷ N`. Worker caches
-  disappear when the run ends.
+  is the **total** for all workers: each gets `budget ÷ N`. That fits, because
+  each worker only ever holds its own `1/N` chunk of the days (14.2): the data is
+  split between the workers, never copied. Worker caches disappear when the run
+  ends.
 - When a cache is full, entries are dropped in this order:
   1. **raw frames whose day is already prepared and cached** (they're only
      needed to rebuild it, and they're about two thirds of the cached bytes);
@@ -1019,10 +1031,13 @@ Consequences:
   workers) or shorten the date range."* The same text is printed to the console,
   saved in an Optimizer run's `meta.json` as `cache_note`, and returned as
   `RunResult.cache_note` / `cache_rejected`.
-- Sizes are **estimates** (DataFrames exactly via pandas' deep memory usage;
+- Sizes are **estimates** (DataFrames exactly as pandas' deep memory usage;
   prepared objects by walking their numpy arrays, DataFrames, strings and
   containers). A prepared object can report its own size precisely by defining a
-  method `__cache_nbytes__(self) -> int`.
+  method `__cache_nbytes__(self) -> int`. A prepared day built during a run is
+  measured again **once, right after its first `process_day`**, so objects that
+  fill lazy caches on first use (ivb_model parses its JSON columns that way) are
+  counted at their real size.
 
 ### 13.4 "Free cached data"
 
@@ -1036,11 +1051,16 @@ freed. Use it:
 
 ### 13.5 Sizing tips
 
-Per trading day, roughly: a 1-minute OHLC day with 4 columns is ~0.06 MB; an
-`_1m_advanced` day with the JSON columns is several MB as raw strings. A prepared
-day holding parsed JSON (ivb_model) is ~0.3 MB. Declare only the columns you
-need (the JSON columns are by far the largest), and let `prepare_day` keep
-compact numpy arrays rather than DataFrames and strings.
+Per trading day, measured in RAM: a 1-minute Globex day with 4 OHLC columns is
+~0.06 MB; `ES_1m_advanced` with ivb_model's columns (incl. the `tick_volume` /
+`passive_orders` JSON) ~0.5 MB and `NQ_1m_advanced` ~2.2 MB; a prepared ivb_model
+day with its parsed JSON ~1.9 MB (NQ). The 1-second MBO datasets are in another
+league: 4 OHLC columns of `ES_1s_mbo_cropped` are ~3 MB per day, but **all**
+columns (`DATA = {"main": "*"}`, with the `bid_depth` / `ask_depth` book JSON) are
+**~225 MB per day** — 136 days need ~30 GB. Declare only the columns you need
+(the JSON columns are by far the largest), and let `prepare_day` keep compact
+numpy arrays rather than DataFrames and strings. The Optimizer's New Run tab
+shows an estimate for the selected strategy, dataset and dates.
 
 ---
 
@@ -1055,7 +1075,9 @@ compact numpy arrays rather than DataFrames and strings.
    `tick_size` greyed out.
 4. **Additional data** (only if your `DATA` has extra slots): check the
    auto-picked rows.
-5. **Run.** The status line shows `Running strategy… day i/n`. Errors appear in a
+5. **Run.** A progress bar (`day i / n`) appears with what the engine is doing
+   **right now**, updated live (see "The progress panel" below). **Cancel** (next
+   to Run while a run is going) stops after the current step. Errors appear in a
    red banner, and data warnings in a yellow one.
 6. **The report**: metrics, equity curve with drawdown, breakdowns by exit
    reason, by day type (holiday/FOMC/CPI/NFP/…), by regime, R:R distribution,
@@ -1072,6 +1094,25 @@ compact numpy arrays rather than DataFrames and strings.
 8. **Go to Analytics / Go to Monte Carlo** open those modules on the current
    trades (via a temporary file in `<data root>/temp/`).
 
+**The progress panel.** During a run, four lines under the progress bar say what
+the engine is doing, for example:
+
+```
+Day 123 of 372 · 2025-10-09 — preparing the day (prepare_day)
+Reading ahead on 2 background threads: 2025-10-10 … 2025-10-15
+So far: 57 trades · 122 days processed · files read from disk: main 126, indicators 126 · files from RAM: 0 · prepared days: 123 built, 0 from RAM
+RAM cache 0.11 / 4.00 GB · elapsed 2.1 s · about 4.3 s left
+```
+
+The step at the end of the first line is one of: `waiting for the disk: reading
+main + indicators`, `preparing the day (prepare_day)`, `prepared day found in
+RAM`, `running the strategy (process_day)`, or `skipped: no indicators file for
+this day`. Before and after the day loop the first line reads `Checking …`,
+`Listing the day files of …`, `Found N days in range …` and `Building the trades
+table from N trades…`. When the run ends, the panel shows the engine's summary
+(days, trades, files read from disk vs from RAM, prepared days built vs reused,
+cache fill) and a collapsible **Engine timing of the last run** table (14.3).
+
 ### 14.2 Optimizer basics
 
 The Optimizer runs your strategy once per **combination** of up to **4 swept
@@ -1082,13 +1123,23 @@ metric.
   other parameter stays at the value shown. `tick_size` can't be swept.
 - More than **2,000** combinations requires an extra confirmation.
 - **Parallel workers**: 1 = everything in the app process, sharing the
-  Backtester's cache. N > 1 = N processes, each loading the strategy once and
-  filling its own cache, capped at `Memory budget ÷ N`.
+  Backtester's cache; the log shows one line per combination (with where its
+  data came from) and, during a slow combination, one line a second saying which
+  day the engine is on. N > 1 = N processes, and the **date range is split
+  into N contiguous chunks of days**, one per worker. Every worker runs **every**
+  combination, but only on its own chunk. So each day file is read and prepared
+  exactly once, by one worker (plus up to a few `previous_days` at a chunk's
+  first day), and even a single combination runs N times faster. The workers'
+  results are joined in date order into exactly the table a 1-worker run
+  produces. Each worker's cache is capped at `Memory budget ÷ N`, which holds its
+  `1/N` of the days.
 - **Parallel workers start empty on every run.** They are new processes, so they
   can't see data the app already holds in RAM (from the Backtester or earlier
-  runs): each worker's first combination reads from disk, then its later
-  combinations run warm. With 1 worker, a grid reuses everything already in RAM,
-  so on small grids (tens of combinations) serial is often faster overall.
+  runs). The first combination therefore loads each worker's chunk from disk (the
+  log says `worker 3/8 (2025-09-02 … 2025-10-21, 46 days) loaded its data in
+  1.9s: 92 files read from disk, 46 days prepared`), and every later combination
+  runs from RAM. Because the chunks load in parallel, that first load takes
+  about `1/N` of a cold Backtester run.
 - Additional data rows work exactly as in the Backtester.
 - A saved run (`<data root>/optimizations/{run}/`) contains `trades.parquet` (all
   combinations' trades, with the swept parameters as extra columns) and
@@ -1098,16 +1149,43 @@ metric.
 
 ### 14.3 The console output
 
-Every run prints (in the terminal that started the app):
+Every Backtester run prints (in the terminal that started the app) the same
+summary and timing table the Backtester shows under **Engine timing of the last
+run**:
 
 ```
-[engine] ivb_model: 372 days in range, 372 processed, 176 trades | prepared days 0 from memory, 372 built | raw frames 0 from memory, 744 read | cache 0.29/4.00 GB
-[ivb_model timing] wall 7.812s
+[engine] ivb_model: 372 days in range, 372 processed, 176 trades in 4.5 s. Files read from disk: 744 (main 372, indicators 372; 5.10 s of reading on 2 threads), from RAM: 0. Prepared days: 372 built, 0 from RAM. RAM cache 0.37 / 4.00 GB.
+[ivb_model timing] wall 4.521s
   section                            total s   calls   ms/call  % wall
-  day:process                          3.120     372     8.387    39.9%
-  io:read:main                         2.905     372     7.809    37.2%
+  day:process                          2.790     372     7.500   61.7%
+  bg io:read:main                      3.210     372     8.629   71.0%
+  day:prepare                          1.180     372     3.172   26.1%
   ...
 ```
+
+The engine's own sections:
+
+| Section | Thread | What it measures |
+|---|---|---|
+| `engine:setup` | main | checking `DATA`, the folders and the params |
+| `engine:list_days` | main | listing the main dataset's day files |
+| `engine:read_plan` | main | deciding the read-ahead: reads the first day's parquet footers; days whose declared columns are bigger than 32 MB in RAM (full-book MBO) get 4 read threads and 6 days of read-ahead, everything else 2 and 4 |
+| `engine:schedule` | main | deciding which files a day needs read (includes `engine:file_stat`) |
+| `engine:file_stat` | main | looking up a file's size and modification time (once per file per run) |
+| `bg io:read:<slot>` | background | reading one day file of a slot (only the declared columns) |
+| `bg cache:store` | background | measuring and storing a frame that was just read |
+| `io:wait_for_read` | main | the day loop waiting for a background read to finish (the disk is the bottleneck when this is large) |
+| `io:read:<slot>` | main | a read on the main thread (a `day.previous` whose files were not read ahead) |
+| `cache:lookup` / `cache:store` | main | cache access for prepared days |
+| `cache:remeasure` | main | re-measuring a prepared day after its first `process_day` (13.3) |
+| `day:prepare` | main | your `prepare_day` |
+| `day:process` | main | your `process_day` (your own `timed` sections nest inside it) |
+| `engine:collect_trades` | main | checking and collecting the returned `Trade`s |
+| `engine:progress` | main | building the progress text (only when something shows it) |
+| `build_output_df` | main | building the 12-column trades table |
+
+Background (`bg`) sections run at the same time as the main thread, so the
+`% wall` column adds up to more than 100%.
 
 Use `timed` to add your own sections to the table (sections nest, so the
 percentages overlap):
@@ -1161,10 +1239,14 @@ if __name__ == "__main__":
 
 `run_strategy` returns a `RunResult` with: `trades` (the 12-column DataFrame),
 `warnings` (list of str), `days_in_range`, `days_run`, `skipped` (`{slot: [dates]}`),
-`files_read` (disk reads), `days_prepared` (`prepare_day` calls), and
-`cache_rejected` / `cache_note` (how many items the RAM cache was too full to keep). Useful keyword
-arguments: `cache=DayCache()` (a private cache, e.g. for tests), `verbose=False`
-(no console output), `on_progress=callback(i, n, msg)`.
+`files_read` (disk reads), `days_prepared` (`prepare_day` calls),
+`cache_rejected` / `cache_note` (how many items the RAM cache was too full to
+keep), `elapsed` (seconds), `summary` (the one-paragraph text), `timing` (the
+timing table as text) and `rows` (the `(date, Trade)` pairs behind `trades`).
+Useful keyword arguments: `cache=DayCache()` (a private cache, e.g. for tests),
+`verbose=False` (no console output), `on_progress=callback(day_i, n_days, text)`
+(called at every step; `text` is the four lines shown in 14.1, and raising an
+exception inside the callback cancels the run).
 
 ### 15.2 A test with synthetic data
 
@@ -1751,10 +1833,12 @@ sees its own day (and earlier days). Model overnight holds by entering and exiti
 within one day's data. A Globex day already spans the evening session of the
 previous calendar day (18:00 → 17:00).
 
-**Can I keep state from one day to the next (e.g. an open position)?** Don't use
-module variables: they reset whenever the strategy is reloaded, and the Optimizer
-runs combinations in separate processes. Derive what you need from earlier days
-with `day.previous` / `previous_days` instead; that's deterministic and cached.
+**Can I keep state from one day to the next (e.g. an open position)?** No. Don't
+use module variables: they reset whenever the strategy is reloaded, and a
+parallel Optimizer run gives each worker process its own chunk of the days, so
+the day before a chunk's first day was processed in another process. Derive what
+you need from earlier days with `day.previous` / `previous_days` instead; that's
+deterministic, cached, and works across chunks.
 
 **How do I use 5- or 15-minute bars?** Either pick a dataset with that bar size
 as the main data, or resample 1-minute bars inside `prepare_day` (cached):

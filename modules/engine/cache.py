@@ -42,27 +42,53 @@ DEFAULT_BUDGET_GB = 4.0
 _MISS = object()
 
 
+_ARRAY_HEADER = 112          # sys.getsizeof of an empty ndarray object
+_SCALARS = (int, float, bool, complex, np.generic)
+
+
+def _frame_nbytes(df: pd.DataFrame) -> int:
+    """== df.memory_usage(index=True, deep=True).sum(), ~40x faster: sums the
+    column arrays directly (arrow-backed strings report their buffer size;
+    only object columns need the per-element walk)."""
+    try:
+        idx = df.index
+        total = (int(idx.nbytes) if idx.dtype != object and not isinstance(idx, pd.MultiIndex)
+                 else int(idx.memory_usage(deep=True)))
+        for arr in df._mgr.arrays:
+            if isinstance(arr, np.ndarray) and arr.dtype == object:
+                total += int(pd.Series(arr, copy=False).memory_usage(deep=True, index=False))
+            else:
+                total += int(arr.nbytes)
+        return total
+    except Exception:  # noqa: BLE001 — pandas internals changed: the public, slower way
+        return int(df.memory_usage(index=True, deep=True).sum())
+
+
 def estimate_nbytes(obj, _depth: int = 0) -> int:
     """Approximate memory held by a cached value.
 
-    DataFrame/Series: pandas' deep memory_usage (counts string contents).
-    numpy arrays: nbytes. Objects may define __cache_nbytes__() to answer
-    precisely; otherwise their __dict__ / __slots__ are walked for arrays,
-    frames, strings and containers (4 levels deep)."""
+    DataFrame/Series: pandas' deep memory usage (counts string contents).
+    numpy arrays: nbytes + the array object itself. Objects may define
+    __cache_nbytes__() to answer precisely; otherwise their __dict__ /
+    __slots__ are walked for arrays, frames, strings and containers (4 levels
+    deep). Containers of numeric arrays (e.g. per-bar parsed JSON) take a
+    fast path — this runs for every cached entry."""
     if obj is None:
         return 0
+    t = type(obj)
+    if t is np.ndarray:
+        if obj.dtype == object and _depth < 4:
+            return _ARRAY_HEADER + int(obj.nbytes) + sum(estimate_nbytes(x, _depth + 1)
+                                                         for x in obj.flat)
+        return _ARRAY_HEADER + int(obj.nbytes)
+    if t is str or t is bytes:
+        return sys.getsizeof(obj)
+    if isinstance(obj, _SCALARS):
+        return 32
     if isinstance(obj, pd.DataFrame):
-        return int(obj.memory_usage(index=True, deep=True).sum())
+        return _frame_nbytes(obj)
     if isinstance(obj, (pd.Series, pd.Index)):
         return int(obj.memory_usage(deep=True))
-    if isinstance(obj, np.ndarray):
-        if obj.dtype == object and _depth < 4:
-            return int(obj.nbytes) + sum(estimate_nbytes(x, _depth + 1) for x in obj.flat)
-        return int(obj.nbytes)
-    if isinstance(obj, (str, bytes)):
-        return sys.getsizeof(obj)
-    if isinstance(obj, (int, float, bool)):
-        return 32
     custom = getattr(obj, "__cache_nbytes__", None)
     if callable(custom):
         return int(custom())
@@ -72,7 +98,23 @@ def estimate_nbytes(obj, _depth: int = 0) -> int:
         return sys.getsizeof(obj) + sum(estimate_nbytes(k, _depth + 1) + estimate_nbytes(v, _depth + 1)
                                         for k, v in obj.items())
     if isinstance(obj, (list, tuple, set, frozenset)):
-        return sys.getsizeof(obj) + sum(estimate_nbytes(x, _depth + 1) for x in obj)
+        total = sys.getsizeof(obj)
+        for x in obj:
+            tx = type(x)
+            if tx is np.ndarray and x.dtype != object:
+                total += _ARRAY_HEADER + x.nbytes
+            elif x is None:
+                continue
+            elif tx is tuple:              # e.g. (prices, sizes, counts) per bar
+                total += sys.getsizeof(x)
+                for y in x:
+                    if type(y) is np.ndarray and y.dtype != object:
+                        total += _ARRAY_HEADER + y.nbytes
+                    else:
+                        total += estimate_nbytes(y, _depth + 2)
+            else:
+                total += estimate_nbytes(x, _depth + 1)
+        return total
     total = sys.getsizeof(obj)
     fields = []
     if hasattr(obj, "__dict__"):
@@ -116,6 +158,10 @@ class DayCache:
     def budget_bytes(self) -> int:
         return self._budget
 
+    @property
+    def bytes_used(self) -> int:
+        return self._bytes
+
     def set_budget(self, budget_bytes: int) -> None:
         """Change the budget; shrinking evicts immediately (LRU)."""
         with self._lock:
@@ -158,6 +204,21 @@ class DayCache:
                 self._demoted.pop(key, None)
             self._items[key] = [value, size, self._epoch]
             self._bytes += size
+            kept = self._make_room_locked(incoming=key)
+            if not kept:
+                self.rejected += 1
+            return kept
+
+    def resize(self, key, nbytes: int) -> bool:
+        """Correct an entry's size after its value grew (e.g. a strategy filled
+        lazy caches on a prepared day). May evict like put(); False when the
+        entry itself had to go."""
+        with self._lock:
+            item = self._items.get(key)
+            if item is None:
+                return False
+            self._bytes += int(nbytes) - item[1]
+            item[1] = int(nbytes)
             kept = self._make_room_locked(incoming=key)
             if not kept:
                 self.rejected += 1

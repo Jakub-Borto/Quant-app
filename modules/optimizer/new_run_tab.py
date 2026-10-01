@@ -4,7 +4,8 @@ Optimizer "New Run" tab — configure and launch a grid run.
 The PySide6 port of render_setup / execute_grid_run's UI half: dataset/
 strategy/date controls, the SweepPanel, the live combo readout (sizes ×
 counts, degenerate-axis warnings), run settings (BE band / min-trades /
-workers / memory budget with the live per-worker estimate + clamp), the
+workers / memory budget with the live strategy-aware memory estimate —
+the day data is split across parallel workers, never copied), the
 >2000-combo confirmation gate, then Run on a worker with the throttled
 progress log and a working Cancel (the engine's pool shutdown fires through
 the on_progress exception).
@@ -32,8 +33,9 @@ from modules.common.ui.widgets import (Banner, Caption, ProgressLogPanel,
                                        pin_minimum_height, wrap_card)
 from modules.common.ui.workers import FunctionWorker
 from modules.engine import GB, additional_slots, clear_cache, set_budget_gb
-from modules.optimizer.backend.engine import (check_param_columns,
-                                              estimate_worker_memory)
+from modules.optimizer.backend.engine import (WORKER_BASELINE_MB,
+                                              check_param_columns,
+                                              estimate_grid_memory)
 from modules.optimizer.backend.heatmap_model import (COMBO_CONFIRM_THRESHOLD,
                                                      MIN_TRADES_DEFAULT,
                                                      NON_US_CALENDAR_ASSETS)
@@ -44,11 +46,12 @@ from modules.optimizer.sweep_panel import SweepPanel
 
 _SPEED_CAPTION = (
     "Serial runs use the app's engine cache (Settings → cache_gb), so data "
-    "read by earlier runs — here or in the Backtester — stays warm. With "
-    "parallel workers, each worker fills its own cache (the memory budget "
-    "above is split across them) and pays one cold start before running "
-    "warm — serial can beat parallel on small grids. Stopping a parallel run "
-    "waits for the in-flight combo on each worker before releasing."
+    "read by earlier runs — here or in the Backtester — stays warm. Parallel "
+    "runs split the DATES across the workers: each worker reads and prepares "
+    "only its own chunk of days, once, then runs every combo on it from RAM "
+    "(the memory budget above is the total of all workers' day caches — the "
+    "data is split between them, never copied). Stopping a parallel run "
+    "waits for the in-flight part on each worker before releasing."
 )
 
 
@@ -134,16 +137,19 @@ class NewRunTab(QWidget):
         self._workers.setValue(1)
         self._workers.setToolTip(
             f"1 = serial (in-process, reuses the warm day cache across runs). "
-            f">1 = separate processes, each building its OWN day cache — pays "
-            f"off from ~100s of combos. Capped at your {max_workers} logical "
+            f">1 = separate processes; the date range is split into one chunk "
+            f"of days per worker, so even a single combo runs in parallel and "
+            f"each day is loaded once. Each process costs ~{WORKER_BASELINE_MB:.0f} "
+            f"MB on top of the data. Capped at your {max_workers} logical "
             f"cores: backtests are CPU-bound, so extra processes only add "
             f"memory, not speed.")
         self._mem_budget = QDoubleSpinBox()
         self._mem_budget.setRange(0.5, 1e6)
         self._mem_budget.setSingleStep(0.5)
         self._mem_budget.setValue(4.0)
-        self._mem_budget.setToolTip("caps the parallel worker count via the "
-                                    "per-worker estimate")
+        self._mem_budget.setToolTip("total RAM for the parallel workers' day caches "
+                                    "(split evenly: each worker only holds its own "
+                                    "chunk of days)")
         for c, (label, w) in enumerate([("BE band (ticks)", self._be_band),
                                         ("Min trades default", self._min_trades),
                                         ("Parallel workers", self._workers),
@@ -363,29 +369,37 @@ class NewRunTab(QWidget):
                                 f"degenerate axis.")
         self._warnings.setText("\n".join(warnings))
 
-        # memory estimate + worker clamp (verbatim math)
+        # memory estimate: the day data is SPLIT across the workers (one chunk
+        # of days each), so the worker count no longer multiplies it
         ref: DatasetRef | None = self._dataset.currentData()
-        if ref is not None:
+        self._effective_workers = int(self._workers.value())
+        if ref is not None and self._strategy_module is not None:
             extra = self._additional.folders()
-            siblings = list(extra.values())
-            est = estimate_worker_memory(ref.path, self._start.date().toPython(),
-                                         self._end.date().toPython(),
-                                         extra_folders=siblings)
-            allowed = max(1, int(self._mem_budget.value() * 1024 // est["est_mb"])) \
-                if est["est_mb"] > 0 else 1
-            self._effective_workers = min(int(self._workers.value()), allowed)
-            datasets_desc = ref.dataset + "".join(f" + {p.name}" for p in siblings)
-            per_worker_gb = self._mem_budget.value() / max(1, self._effective_workers)
-            text = (f"≈ {est['est_mb']:.0f} MB/worker for {est['n_days']} days "
-                    f"({est['disk_mb']:.0f} MB on disk: {datasets_desc}) → "
-                    f"budget allows {allowed} worker(s). Rough estimate. "
-                    f"Parallel runs cap each worker's day cache at "
-                    f"{per_worker_gb:.2f} GB (the budget is the TOTAL across "
-                    f"workers).")
-            if self._effective_workers < int(self._workers.value()):
-                text += (f"  ⚠ Worker count clamped to "
-                         f"{self._effective_workers} by the memory budget.")
-            self._estimate.setText(text)
+            try:
+                est = estimate_grid_memory(self._strategy_module, ref.path,
+                                           self._start.date().toPython(),
+                                           self._end.date().toPython(),
+                                           extra_folders=extra)
+            except Exception as e:  # noqa: BLE001 — a hint, never a blocker
+                est = None
+                self._estimate.setText(f"(no memory estimate: {e})")
+            if est is not None:
+                workers = max(1, min(self._effective_workers, est["n_days"] or 1))
+                datasets_desc = ref.dataset + "".join(f" + {p.name}" for p in extra.values())
+                data_gb = est["data_mb"] / 1024
+                budget_gb = self._mem_budget.value()
+                text = (f"≈ {data_gb:.2f} GB of day data in RAM for {est['n_days']} days "
+                        f"({datasets_desc}; declared columns + prepared days, rough). ")
+                if workers > 1:
+                    text += (f"Split over {workers} workers: ≈ {data_gb / workers:.2f} GB "
+                             f"each (cache cap {budget_gb / workers:.2f} GB each) + "
+                             f"~{est['baseline_mb'] * workers / 1024:.1f} GB for the "
+                             f"worker processes themselves. ")
+                    if data_gb > budget_gb:
+                        text += (f"⚠ The {budget_gb:.1f} GB memory budget is smaller "
+                                 f"than the data: some days will be read again on "
+                                 f"every combo — raise it.")
+                self._estimate.setText(text)
 
         # combo guard
         if n_combos > COMBO_CONFIRM_THRESHOLD:

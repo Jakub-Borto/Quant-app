@@ -39,6 +39,7 @@ from modules.common.backend.data_roots import (DatasetRef, available_dates,
                                                resolve_ff_events,
                                                scan_structure)
 from modules.common.ui.additional_data import AdditionalDataPanel
+from modules.common.ui.engine_progress import EngineProgressPanel
 from modules.engine import GB, additional_slots, clear_cache, set_budget_gb
 from modules.common.backend.plugins import PluginRef, list_strategies, load_strategy
 from modules.common.trade_report.ui import (ReportContext, SaveTarget,
@@ -123,6 +124,11 @@ class BacktesterWindow(ModuleWindowBase):
         self._run_btn.setProperty("primary", True)
         self._run_btn.setMinimumWidth(200)
         self._run_btn.clicked.connect(self._on_run)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setToolTip("Stop the run after the current step.")
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        self._cancel_btn.setVisible(False)
+        self._worker: FunctionWorker | None = None
         self._status = Caption("")
         refresh_btn = QPushButton("Refresh folders")
         refresh_btn.clicked.connect(self._rescan)
@@ -133,11 +139,17 @@ class BacktesterWindow(ModuleWindowBase):
         free_btn.clicked.connect(self._on_free_cache)
         btn_row.addStretch()
         btn_row.addWidget(self._run_btn)
+        btn_row.addWidget(self._cancel_btn)
         btn_row.addWidget(refresh_btn)
         btn_row.addWidget(free_btn)
         btn_row.addStretch()
         self.content.addLayout(btn_row)
         self.content.addWidget(self._status)
+
+        # live engine progress: what it is doing right now + counters, then
+        # the run summary and the engine's timing table
+        self._progress = EngineProgressPanel()
+        self.content.addWidget(self._progress)
 
         self._banner = Banner()
         self.content.addWidget(self._banner)
@@ -294,29 +306,51 @@ class BacktesterWindow(ModuleWindowBase):
         self._run_ref = ref
         self._run_asset = asset
 
-        self._run_btn.setEnabled(False)
-        self._status.setText("Running strategy…")
+        self._set_running(True)
+        self._status.setText("")
+        self._progress.start(f"Starting {strategy_ref.name} on {ref.dataset} "
+                             f"({start_date} → {end_date})…")
         set_budget_gb(self.settings.cache_gb)
         worker = FunctionWorker(run_backtest, self._strategy_module, ref.path,
                                 start_date, end_date, params,
                                 info["tick_size"], info["ticks_per_point"],
                                 extra_folders=self._additional.folders(),
                                 needs_progress=True)
-        worker.signals.progress.connect(
-            lambda cur, total, _msg: self._status.setText(
-                f"Running strategy… day {cur}/{total}"))
+        worker.signals.progress.connect(self._progress.on_progress)
         worker.signals.finished.connect(self._on_run_finished)
         worker.signals.error.connect(self._on_run_error)
+        worker.signals.cancelled.connect(self._on_run_cancelled)
+        self._worker = worker
         self.track_worker(worker)
 
-    def _on_run_error(self, message: str, _tb: str) -> None:
-        self._run_btn.setEnabled(True)
+    def _set_running(self, running: bool) -> None:
+        self._run_btn.setEnabled(not running)
+        self._cancel_btn.setVisible(running)
+        self._cancel_btn.setEnabled(running)
+        if not running:
+            self._worker = None
+
+    def _on_cancel(self) -> None:
+        if self._worker is not None:
+            self._worker.cancel()
+            self._cancel_btn.setEnabled(False)
+            self._status.setText("Cancelling after the current step…")
+
+    def _on_run_cancelled(self) -> None:
+        self._set_running(False)
         self._status.setText("")
+        self._progress.fail("Cancelled — no trades were produced.")
+
+    def _on_run_error(self, message: str, _tb: str) -> None:
+        self._set_running(False)
+        self._status.setText("")
+        self._progress.fail("Stopped by an error (see the message below).")
         self._banner.show_message("error", message)
 
     def _on_run_finished(self, result) -> None:
-        self._run_btn.setEnabled(True)
+        self._set_running(False)
         self._status.setText("")
+        self._progress.finish(result.summary, result.timing)
         trades: pd.DataFrame = result.trades
         # data problems (e.g. days skipped for a missing additional-data file)
         # are shown loudly — a result computed on a subset of days must never
