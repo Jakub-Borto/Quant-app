@@ -9,12 +9,18 @@ exactly. Everything else mirrors the old surface too:
 - NaN/inf cells transparent (excluded from the scale);
 - diagonal hatch overlay on cells below the min-trades threshold (3 segments
   per cell, degrading to 1 on heavily masked grids — same 900-segment rule);
-- in-cell value labels with luminance-based contrast, shown/hidden and
-  font-sized from the REAL on-screen cell size (re-evaluated on resize and
-  zoom — the old fixed 1150-px width estimate hid labels on wide windows
-  where they easily fit);
+- in-cell value labels with luminance-based contrast. The font is FITTED:
+  every label's text width is measured once (at LABEL_REF_PT), and on every
+  resize / zoom the font is scaled so the WIDEST label fits inside one
+  on-screen cell (and its line height inside the cell's height), capped at
+  LABEL_MAX_PT. Labels hide only when even LABEL_MIN_PT would not fit.
+  (Before: an 8-15 pt font hidden below 30-px cells, so dense grids showed
+  no numbers, and long numbers could overflow their cell);
 - axis tick labels at cell centers via _fmt_axis_value;
-- square cells (aspect-locked viewbox);
+- square cells (aspect-locked viewbox). The widget height follows the
+  width, but grids with many rows may grow taller (MIN_CELL_PX per row, up to
+  MAX_HEIGHT_PX) instead of shrinking every cell below readable size — the
+  page around the chart scrolls;
 - hover info = the verbatim 8-metric text (heatmap_model.build_hover_texts)
   in a CUSTOM overlay panel, NOT QToolTip — Qt tooltips auto-hide on a
   text-length timeout and on mouse moves over a QGraphicsView, which made the
@@ -37,7 +43,7 @@ Z-order: image 0, hatch 2, hover pop 6, selection 7, in-cell labels 10.
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QEasingCurve, QEvent, QRectF, Qt, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QPainterPath
+from PySide6.QtGui import QColor, QFontMetricsF, QPainterPath
 from PySide6.QtWidgets import (QGraphicsPathItem, QGraphicsRectItem, QLabel,
                                QVBoxLayout, QWidget)
 
@@ -52,8 +58,15 @@ from .base import attach_lock_button
 
 HOVER_SCALE = 1.12    # how much the hovered cell grows
 POP_MS      = 150     # pop animation duration
-LABEL_MIN_CELL_PX = 30    # hide in-cell values below this on-screen cell size
+LABEL_REF_PT      = 10.0  # font size the label widths are measured at
+LABEL_MIN_PT      = 6.0   # below this a fitted label is unreadable -> hidden
+LABEL_MAX_PT      = 15.0  # big cells don't get huge numbers
+LABEL_FILL_W      = 0.88  # share of the cell width the widest label may use
+LABEL_FILL_H      = 0.80  # share of the cell height one text line may use
 LABEL_MAX_CELLS   = 2000  # don't build label items for absurdly large grids
+MIN_CELL_PX       = 36    # a tall grid may grow to keep rows about this high
+MAX_HEIGHT_PX     = 2400  # ... but never taller than this
+BASE_MAX_HEIGHT   = 900   # the height cap for grids that don't need more
 
 
 class HeatmapChart(QWidget):
@@ -78,7 +91,9 @@ class HeatmapChart(QWidget):
         self._rgba = None                          # cell colors (pop-rect fill)
         self._labels: list[pg.TextItem] = []       # in-cell value labels
         self._labels_visible: bool | None = None
-        self._label_font_pt: int | None = None
+        self._label_font_pt: float | None = None
+        self._label_max_w = 0.0                    # widest label, px at LABEL_REF_PT
+        self._label_line_h = 0.0                   # line height, px at LABEL_REF_PT
         self._hover_cell: tuple[int, int] | None = None
         self._selected: tuple[int, int] | None = None
         self._hover_item: QGraphicsRectItem | None = None
@@ -200,6 +215,7 @@ class HeatmapChart(QWidget):
         self._labels = []
         self._labels_visible = None                # force the first update
         self._label_font_pt = None
+        self._label_max_w = self._label_line_h = 0.0
         if nx * ny <= LABEL_MAX_CELLS:
             for j in range(ny):
                 for i in range(nx):
@@ -215,6 +231,14 @@ class HeatmapChart(QWidget):
                     item.setPos(i + 0.5, j + 0.5)
                     item.setZValue(10)             # stays readable over the pop
                     item.setVisible(False)         # _update_labels decides
+                    # no document margin: the measured width IS the drawn width
+                    item.textItem.document().setDocumentMargin(0)
+                    font = item.textItem.font()
+                    font.setPointSizeF(LABEL_REF_PT)
+                    metrics = QFontMetricsF(font)
+                    self._label_max_w = max(self._label_max_w,
+                                            metrics.horizontalAdvance(text))
+                    self._label_line_h = max(self._label_line_h, metrics.height())
                     plot.addItem(item)
                     self._labels.append(item)
 
@@ -262,22 +286,44 @@ class HeatmapChart(QWidget):
             return
         grid_w = max(200, self._glw.width() - 130)   # left axis + colorbar
         grid_h = grid_w * self._ny / self._nx        # aspect-locked cells
-        h = int(min(max(320, grid_h + 100), 900))    # + title + bottom axis
+        # many rows: grow so a row stays ~MIN_CELL_PX high (labels stay readable)
+        cap = min(MAX_HEIGHT_PX, max(BASE_MAX_HEIGHT, self._ny * MIN_CELL_PX + 100))
+        h = int(min(max(320, grid_h + 100), cap))    # + title + bottom axis
         if self.minimumHeight() != h or self.maximumHeight() != h:
             self.setFixedHeight(h)
+        self._sync_plot_size()
+
+    def _sync_plot_size(self) -> None:
+        """Make the plot fill the widget NOW. The Explore tab fills the chart
+        while it is hidden; the height set then was not applied to the inner
+        GraphicsLayoutWidget when the chart was shown, so the grid stayed
+        drawn at the old ~355-px size inside a 900-px widget (tiny cells, no
+        numbers) until something else resized it."""
+        lay = self.layout()
+        lay.invalidate()
+        lay.activate()
+        if self._glw.size() != self.size():
+            self._glw.resize(self.size())
+        self._update_labels()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._update_height()
 
     def _update_labels(self, *_args) -> None:
-        """Show/hide + font-size the in-cell labels from the REAL on-screen
-        cell size. Hooked to viewbox range changes and widget resizes."""
-        if not self._labels:
+        """Fit the in-cell labels to the REAL on-screen cell size: one font
+        size for all labels, the largest at which the widest label fits the
+        cell (hidden when that is below LABEL_MIN_PT). Hooked to viewbox range
+        changes and widget resizes."""
+        if not self._labels or not self._label_max_w:
             return
         vb = self._plot.getViewBox()
         px_w, px_h = vb.viewPixelSize()            # view units per screen pixel
         if not px_w or not px_h:
             return
-        cell_px = min(1.0 / px_w, 1.0 / px_h)      # cells are 1x1 view units
-        visible = cell_px >= LABEL_MIN_CELL_PX
-        font_pt = int(max(8, min(15, cell_px * 0.26)))
+        font_pt = label_font_pt(1.0 / px_w, 1.0 / px_h,     # cells are 1x1 view units
+                                self._label_max_w, self._label_line_h)
+        visible = font_pt is not None
         if visible == self._labels_visible and \
                 (not visible or font_pt == self._label_font_pt):
             return                                 # nothing changed — cheap out
@@ -286,7 +332,7 @@ class HeatmapChart(QWidget):
         for item in self._labels:
             if visible:
                 f = item.textItem.font()
-                f.setPointSize(font_pt)
+                f.setPointSizeF(font_pt)
                 item.textItem.setFont(f)
             item.setVisible(visible)
 
@@ -403,6 +449,17 @@ class HeatmapChart(QWidget):
         if obj is self._glw.viewport() and event.type() == QEvent.Leave:
             self._clear_hover()
         return False
+
+
+def label_font_pt(cell_w: float, cell_h: float, max_w: float, line_h: float):
+    """The in-cell label font size (pt, in 0.5 steps) for a cell of
+    cell_w x cell_h screen pixels, given the widest label and the line height
+    measured at LABEL_REF_PT; None when it would be below LABEL_MIN_PT."""
+    if max_w <= 0 or line_h <= 0:
+        return None
+    pt = LABEL_REF_PT * min(cell_w * LABEL_FILL_W / max_w, cell_h * LABEL_FILL_H / line_h)
+    pt = min(LABEL_MAX_PT, int(pt * 2) / 2)      # round DOWN to 0.5 pt: still fits
+    return pt if pt >= LABEL_MIN_PT else None
 
 
 def _rgba_to_qcolor(css: str):

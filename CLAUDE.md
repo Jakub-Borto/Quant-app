@@ -192,7 +192,9 @@ modules/
                            must join regimes AS-OF the trade's entry time,
                            never on date (module __init__ docstring).
 strategies/                strategy plugins (single-file or package):
-                           ivb_model/, orb/, vwap_trend/
+                           ivb_model/, orb/, vwap_trend/, delta_pct_signal/
+                           (volume_delta_pct imbalance -> time exits; tests/
+                           test_delta_pct_signal.py = its spec acceptance tests)
 data_transforms/           raw DBN -> enriched parquet plugins (1m OHLCV:
                            *_mixed_assets from monthly all-asset files,
                            *_single_asset from one asset's daily files with

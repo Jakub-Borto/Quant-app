@@ -492,3 +492,71 @@ def test_worker_import_chain_is_qt_free():
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert "CLEAN" in result.stdout
+
+
+def test_heatmap_label_font_fits_the_cell():
+    """In-cell numbers get the largest font at which the widest one fits the
+    cell (width and height); hidden only below the minimum readable size."""
+    from modules.common.ui.charts.heatmap import (LABEL_FILL_W, LABEL_MAX_PT, LABEL_MIN_PT,
+                                                  LABEL_REF_PT, label_font_pt)
+    # widest label 30 px at the reference size, line 15 px
+    pt = label_font_pt(36, 36, 30, 15)
+    assert LABEL_MIN_PT <= pt < LABEL_MAX_PT
+    assert 30 * pt / LABEL_REF_PT <= 36 * LABEL_FILL_W           # it really fits
+    assert pt * 2 == int(pt * 2)                                  # 0.5-pt steps
+    assert label_font_pt(500, 500, 30, 15) == LABEL_MAX_PT        # capped
+    assert label_font_pt(12, 12, 30, 15) is None                  # too small: hidden
+    assert label_font_pt(60, 10, 30, 15) is None                  # too flat: hidden
+    assert label_font_pt(36, 36, 0, 15) is None                   # no labels measured
+
+
+def test_heatmap_grows_for_many_rows(qtbot):
+    import numpy as np
+    from modules.common.ui.charts.heatmap import (BASE_MAX_HEIGHT, MAX_HEIGHT_PX,
+                                                  MIN_CELL_PX, HeatmapChart)
+    from modules.optimizer.backend.metrics import METRIC_ORDER
+
+    def build(nx, ny):
+        w = HeatmapChart()
+        qtbot.addWidget(w)
+        w.resize(1900, 600)
+        w.show()
+        qtbot.waitExposed(w)
+        arrays = {m: np.full((ny, nx), 100.0) for m in METRIC_ORDER}
+        w.set_data(arrays, "total_ticks", "Total Ticks", "x", list(range(nx)), "y",
+                   list(range(ny)), "", 0)
+        return w
+
+    assert build(15, 30).height() == 30 * MIN_CELL_PX + 100      # was capped at 900
+    assert build(6, 5).height() <= BASE_MAX_HEIGHT                # small grids unchanged
+    assert build(10, 200).height() == MAX_HEIGHT_PX
+
+
+def test_heatmap_filled_while_hidden_uses_its_full_size_when_shown(qtbot):
+    """The Explore tab fills the heatmap while it is hidden, then shows it.
+    The inner plot must then fill the whole widget (it used to stay at the
+    pre-show ~355 px, leaving tiny cells and no numbers)."""
+    import numpy as np
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+    from modules.common.ui.charts.heatmap import HeatmapChart
+    from modules.optimizer.backend.metrics import METRIC_ORDER
+    host = QWidget()
+    qtbot.addWidget(host)
+    lay = QVBoxLayout(host)
+    hm = HeatmapChart()
+    hm.setVisible(False)
+    lay.addWidget(hm)
+    host.resize(1900, 1000)
+    host.show()
+    qtbot.waitExposed(host)
+    nx, ny = 30, 15
+    arrays = {m: np.full((ny, nx), -2.53) for m in METRIC_ORDER}
+    arrays["total_trades"] = np.full((ny, nx), 300.0)
+    hm.set_data(arrays, "avg_trade", "Avg Trade (ticks)", "hold_bars", list(range(nx)),
+                "delta_threshold", list(range(ny)), "", 200)
+    hm.setVisible(True)
+    qtbot.wait(50)
+    assert hm._glw.height() == hm.height() > 600
+    px_w, _ = hm._plot.getViewBox().viewPixelSize()
+    assert 1 / px_w > 40                                  # cells, not ~18 px
+    assert hm._labels_visible

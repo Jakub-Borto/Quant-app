@@ -646,7 +646,7 @@ Section 9.1, and in full detail `STRATEGY_GUIDE.md`. The old contract
 `run(folder_path, start_date, end_date, params) -> DataFrame`, `PARAM_SPACE` and
 `HIDDEN_PARAMS` no longer exist. A strategy may be a single file or a package
 folder whose `__init__.py` exposes the contract (`strategies/ivb_model/`,
-`strategies/orb/`, `strategies/vwap_trend/`, `strategies/example_prev_day_levels/`).
+`strategies/orb/`, `strategies/vwap_trend/`, `strategies/example_prev_day_levels/`, `strategies/delta_pct_signal/` — a one-minute `volume_delta_pct` imbalance signal with time exits only, used to measure momentum vs reversal).
 
 ### 11.3 Position sizer
 
