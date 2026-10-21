@@ -1,0 +1,20 @@
+{
+  "components": {
+    "es_grid": {
+      "colors": true,
+      "curve_bad": -0.2,
+      "curve_good": -0.36,
+      "locked": true,
+      "metric": "total_ticks",
+      "min_trades": 30,
+      "run": "ES \u2013 demo (compact)",
+      "slices": {
+        "entry_mode": "breakout"
+      },
+      "split": 100.0,
+      "x": "stop_ticks",
+      "y": "target_r"
+    }
+  },
+  "version": 1
+}

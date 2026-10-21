@@ -49,7 +49,8 @@ from PySide6.QtWidgets import (QGraphicsPathItem, QGraphicsRectItem, QLabel,
 
 from modules.optimizer.backend.heatmap_model import (_cell_text_color,
                                                      _colorscale_rgb,
-                                                     _curved_colorscale,
+                                                     color_positions,
+                                                     two_curve_colorscale,
                                                      _fmt_axis_value,
                                                      _fmt_cell,
                                                      build_hover_texts)
@@ -128,10 +129,13 @@ class HeatmapChart(QWidget):
     def set_data(self, arrays: dict, metric: str, metric_label: str,
                  x_param: str, x_values: list, y_param, y_values: list,
                  slider_desc: str, min_trades: int,
-                 color_gamma: float = 1.0) -> dict:
+                 color_curves: tuple = (0.0, 0.0), pivot=None) -> dict:
         """
         Rebuild the surface. Returns {"no_finite": bool, "all_masked": bool}
         so the window can show the old info/warning banners.
+
+        color_curves = (good, bad): the curve exponents for the values above /
+        below `pivot` (heatmap_model.color_positions; (0, 0) = linear).
         """
         nx, ny = len(x_values), len(y_values)
         self._nx, self._ny = nx, ny
@@ -148,17 +152,16 @@ class HeatmapChart(QWidget):
         zmax = float(finite.max()) if finite.size else 1.0
         if zmin == zmax:
             zmin, zmax = zmin - 0.5, zmax + 0.5
-        span = zmax - zmin
+        good, bad = color_curves
+        norms = color_positions(z, zmin, zmax, pivot, good, bad)
 
-        # ── RGBA image (verbatim color math incl. the gamma curve) ────────────
+        # ── RGBA image (verbatim colorscale; the two-curve value mapping) ─────
         rgba = np.zeros((ny, nx, 4), dtype=np.uint8)
         for j in range(ny):
             for i in range(nx):
-                v = z[j, i]
-                if not np.isfinite(v):
+                if not np.isfinite(z[j, i]):
                     continue                          # transparent blank cell
-                norm = max(0.0, min(1.0, (v - zmin) / span)) ** color_gamma
-                r, g, b = _colorscale_rgb(norm)
+                r, g, b = _colorscale_rgb(float(norms[j, i]))
                 rgba[j, i] = (r, g, b, 255)
 
         plot = self._plot
@@ -225,7 +228,7 @@ class HeatmapChart(QWidget):
                         continue
                     color = ("rgba(150,150,150,0.85)" if not np.isfinite(raw)
                              else _cell_text_color(
-                                 max(0.0, (z[j, i] - zmin) / span) ** color_gamma))
+                                 float(norms[j, i])))
                     item = pg.TextItem(text, color=_rgba_to_qcolor(color),
                                        anchor=(0.5, 0.5))
                     item.setPos(i + 0.5, j + 0.5)
@@ -257,7 +260,7 @@ class HeatmapChart(QWidget):
                       size="12pt")
 
         # ── color bar ─────────────────────────────────────────────────────────
-        stops = _curved_colorscale(color_gamma)
+        stops = two_curve_colorscale(zmin, zmax, pivot, good, bad)
         cmap = pg.ColorMap(
             pos=[float(p) for p, _c in stops],
             color=[tuple(int(x) for x in c[4:-1].split(",")) for _p, c in stops])

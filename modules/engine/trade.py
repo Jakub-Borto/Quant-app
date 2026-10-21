@@ -17,6 +17,7 @@ import json
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 # The platform's trade schema, in order. Every run — empty or not — returns
@@ -83,6 +84,22 @@ class Trade:
         return self.entry_price - self.exit_price
 
 
+def _time_column(values: list):
+    """A list of tz-aware Timestamps -> the same column pandas infers from the
+    list, built from the raw values (pandas' per-object inference was ~1/3 of
+    building a trade-heavy frame). Falls back to the list itself whenever the
+    values are not uniform (another type, time zone or resolution)."""
+    first = values[0]
+    if type(first) is not pd.Timestamp or first.tz is None:
+        return values
+    tz, unit = first.tz, first.unit
+    for v in values:
+        if type(v) is not pd.Timestamp or v.tz is not tz or v.unit != unit:
+            return values
+    utc = np.array([v.asm8 for v in values], dtype=f"datetime64[{unit}]")
+    return pd.DatetimeIndex(utc, tz="UTC").tz_convert(tz)
+
+
 def trades_to_frame(rows: list) -> pd.DataFrame:
     """rows = [(date, Trade), ...] in output order -> the 12-column frame."""
     if not rows:
@@ -93,8 +110,8 @@ def trades_to_frame(rows: list) -> pd.DataFrame:
         "date":        dates,
         "direction":   [t.direction for t in trades],
         "trade_type":  [t.trade_type for t in trades],
-        "entry_time":  [t.entry_time for t in trades],
-        "exit_time":   [t.exit_time for t in trades],
+        "entry_time":  _time_column([t.entry_time for t in trades]),
+        "exit_time":   _time_column([t.exit_time for t in trades]),
         "entry_price": [t.entry_price for t in trades],
         "exit_price":  [t.exit_price for t in trades],
         "sl":          [t.sl for t in trades],

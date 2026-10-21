@@ -9,11 +9,19 @@ import numpy as np
 
 class DeltaDay:
     """One day file as positional numpy arrays (read-only once built)."""
-    __slots__ = ("date", "index", "open", "close", "volume", "delta", "median", "n")
+    __slots__ = ("date", "index", "open", "close", "volume", "delta", "median", "n",
+                 "stamps", "hhmm", "rth")
 
     def __init__(self, date, frame, lookback: int):
         self.date = date
         self.index = frame.index
+        # per-bar Timestamps / "HH:MM" / RTH flag as plain lists: the position
+        # walk reads them per trade, and indexing a DatetimeIndex costs ~10 us
+        self.stamps = list(frame.index)
+        minutes = frame.index.hour * 60 + frame.index.minute
+        self.hhmm = [f"{m // 60:02d}:{m % 60:02d}" for m in minutes]
+        on_date = frame.index.date == date
+        self.rth = (on_date & (minutes >= 9 * 60 + 30) & (minutes <= 15 * 60 + 59)).tolist()
         self.open = frame["open"].to_numpy(dtype=np.float64)
         self.close = frame["close"].to_numpy(dtype=np.float64)
         self.volume = frame["volume"].to_numpy(dtype=np.float64)

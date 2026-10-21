@@ -1116,8 +1116,10 @@ cache fill) and a collapsible **Engine timing of the last run** table (14.3).
 ### 14.2 Optimizer basics
 
 The Optimizer runs your strategy once per **combination** of up to **4 swept
-parameters** (roles: X axis, Y axis, slider, slider 2) and shows a heatmap of any
-metric.
+parameters** and shows a heatmap of any metric. Which swept parameter is the
+heatmap's X axis and which its Y axis is chosen on the **Explore** page (any
+swept parameter on either axis, changeable at any time; every other swept
+parameter becomes a slider there).
 
 - Tick **sweep** on a parameter to vary it (the widgets follow 8.1); every
   other parameter stays at the value shown. `tick_size` can't be swept.

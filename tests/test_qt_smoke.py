@@ -301,6 +301,16 @@ def test_scripts_window_constructs(qtbot, tmp_path):
     assert not win._instances    # constructing must not spawn processes
 
 
+def test_reports_window_three_tabs(qtbot, settings):
+    from modules.reports.window import ReportsWindow
+    win = ReportsWindow(settings)
+    qtbot.addWidget(win)
+    win.show()
+    labels = [win.tabs.tabText(i) for i in range(win.tabs.count())]
+    assert labels == ["Reports", "Archive", "Compress"]
+    assert not win._instances    # constructing must not spawn processes
+
+
 @needs_data
 def test_regime_detector_window_two_tabs(qtbot, settings):
     from modules.regime_detector.window import RegimeDetectorWindow
@@ -484,6 +494,15 @@ def test_worker_import_chain_is_qt_free():
         "import modules.common.trade_report.backend.layout; "
         "import modules.optimizer.cell_detail; "
         "import modules.optimizer.combine_detail; "
+        # the Reports backend + the kit that report processes import
+        "import modules.reports.backend.scan; "
+        "import modules.reports.backend.archive; "
+        "import modules.reports.backend.compact; "
+        "import modules.reports.backend.heatmap_view; "
+        "import modules.reports.backend.launch; "
+        "import modules.reports.backend.bootstrap; "
+        "import modules.reports.kit; "
+        "import modules.reports.kit.state; "
         "assert 'PySide6' not in sys.modules, 'engine import pulled in Qt'; "
         "assert 'pyqtgraph' not in sys.modules, 'engine import pulled in pyqtgraph'; "
         "print('CLEAN')"
@@ -560,3 +579,95 @@ def test_heatmap_filled_while_hidden_uses_its_full_size_when_shown(qtbot):
     px_w, _ = hm._plot.getViewBox().viewPixelSize()
     assert 1 / px_w > 40                                  # cells, not ~18 px
     assert hm._labels_visible
+
+
+def test_explore_axes_are_chosen_on_the_explore_page(qtbot, tmp_path):
+    """The run stores default roles by sweep order; Explore puts any swept
+    param on X or Y (picking the other axis's param swaps them), and every
+    other swept param becomes a slider that keeps its position."""
+    import types
+
+    import pandas as pd
+    from modules.common.backend.settings import Settings
+    from modules.engine import Trade
+    from modules.optimizer.backend.run_setup import run_grid_job
+    from modules.optimizer.window import OptimizerWindow
+
+    folder = tmp_path / "parquet" / "Futures" / "ES" / "ES_toy"
+    folder.mkdir(parents=True)
+    days = ["2026-01-05", "2026-01-06", "2026-01-07"]
+    for d in days:
+        idx = pd.date_range(f"{d} 09:30", periods=3, freq="1min", tz="America/New_York")
+        pd.DataFrame({"close": [1.0, 2.0, 3.0]}, index=idx).to_parquet(folder / f"{d}.parquet")
+
+    def process_day(day, p):
+        t0 = pd.Timestamp(f"{day.date} 10:00", tz="America/New_York")
+        return Trade("long", t0, t0, 100.0, 100.0 + p["a"] + 10 * p["b"] + 100 * p["c"], "tp")
+
+    strat = types.SimpleNamespace(__name__="toy3", PARAMS={"a": 1, "b": 1, "c": 1},
+                                  DATA={"main": ["close"]}, process_day=process_day)
+    axes = [{"param": "a", "values": [1, 2], "role": "x"},
+            {"param": "b", "values": [1, 2, 3], "role": "y"},
+            {"param": "c", "values": [5, 6], "role": "slider"}]
+    trades, meta = run_grid_job(strat, folder, "2026-01-01", "2026-12-31", fixed_params={},
+                                axes=axes, asset_type="Futures", asset="ES", dataset="ES_toy",
+                                strategy_name="toy3", tick_size=0.25, ticks_per_point=4,
+                                be_band_ticks=0.0, min_trades_default=0, n_workers=1,
+                                ff_events_path=None)
+    win = OptimizerWindow(Settings({}, [str(tmp_path)]))
+    qtbot.addWidget(win)
+    win.adopt_unsaved_run(trades, meta, tmp_path)
+    ex = win.explore
+
+    def layout():
+        x, y, sliders = ex._axes()
+        return x["param"], y["param"] if y else None, [s["param"] for s in sliders]
+
+    assert layout() == ("a", "b", ["c"])                       # the saved default
+    assert ex._heatmap._nx == 2 and ex._heatmap._ny == 3
+    ex._x_combo.setCurrentText("b")                            # Y's param -> swap
+    ex._on_axis_picked("x")
+    assert layout() == ("b", "a", ["c"])
+    assert ex._heatmap._nx == 3 and ex._heatmap._ny == 2
+    ex._slider_widgets[0][1].setValue(1)                       # c = 6
+    ex._y_combo.setCurrentText("c")                            # a becomes the slider
+    ex._on_axis_picked("y")
+    assert layout() == ("b", "c", ["a"])
+    assert ex._heatmap._ny == 2 and "a = 1" in ex._heatmap._plot.titleLabel.text
+    ex._on_swap_axes()
+    assert layout() == ("c", "b", ["a"])
+    ex._x_combo.setCurrentText("a")                            # c back to a slider
+    ex._on_axis_picked("x")
+    assert layout() == ("a", "b", ["c"])
+    assert ex._slider_values() == {"c": 6}                     # kept its position
+    assert "Sliders below: c." in ex._axes_note.text()
+
+    # coloring: the split starts at the metric's natural point (0 ticks) and
+    # moving it recolors; a new metric starts from its own natural point
+    import numpy as np
+    assert ex._split_value is None and ex._split.value() == 0.0
+    before = ex._heatmap._rgba.copy()
+    ex._split.slider.setValue(500)                             # middle of the range
+    ex._refresh_heatmap()
+    assert ex._split_value is not None and not np.array_equal(before, ex._heatmap._rgba)
+    ex._curve_good.set_value(2.5)
+    assert ex._curve_good.value() == 2.5 and ex._curve_good.slider.value() == 250
+    ex._metric.setCurrentIndex(ex._metric.findData("profit_factor"))
+    assert ex._split_value is None and ex._split.value() == 1.0
+    ex._reset_coloring()
+    assert (ex._curve_good.value(), ex._curve_bad.value()) == (0.0, 0.0)
+    assert ex._curve_good_label.text() == "Above split curve"
+
+
+def test_sweep_panel_has_no_role_picker_and_defaults_roles_by_order(qtbot):
+    import types
+    from PySide6.QtWidgets import QComboBox
+    from modules.optimizer.sweep_panel import SweepPanel
+    strat = types.SimpleNamespace(PARAMS={"a": 1, "b": 2.0, "c": "x"})
+    panel = SweepPanel(strat)
+    qtbot.addWidget(panel)
+    for p in ("b", "a", "c"):
+        panel._cells[p].check.setChecked(True)
+    assert panel.roles_by_param() == {"b": "x", "a": "y", "c": "slider"}
+    assert not [c for c in panel.findChildren(QComboBox)
+                if c.count() and c.itemText(0) in ("X", "X axis")]

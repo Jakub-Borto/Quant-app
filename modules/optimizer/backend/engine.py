@@ -34,8 +34,9 @@ the in-flight part per worker.
 """
 
 import os
+import queue
 import time
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
@@ -170,29 +171,73 @@ def _data_desc(files_read: int, days_prepared: int) -> str:
 # imports no Qt, so worker processes stay lean.
 
 _WORKER_STRATEGY = None
+_WORKER_BUCKETS: dict = {}
 
 
-def _init_worker(strategy_name: str, strategies_dir, cache_bytes) -> None:
+def _init_worker(strategy_name: str, strategies_dir, cache_bytes,
+                 bucket_map: dict | None = None) -> None:
     """Runs once per worker process: load the strategy, size this process's
-    engine cache to its share of the optimizer budget, keep both warm."""
-    global _WORKER_STRATEGY
+    engine cache to its share of the optimizer budget, keep both warm, and
+    keep the day-bucket map for tagging the worker's own trades."""
+    global _WORKER_STRATEGY, _WORKER_BUCKETS
     _WORKER_STRATEGY = load_strategy(strategy_name, strategies_dir)
+    _WORKER_BUCKETS = bucket_map or {}
     if cache_bytes:
         get_cache().set_budget(int(cache_bytes))
 
 
 def _run_part(index: int, chunk: int, folder_path: str, start_iso: str, end_iso: str,
-              params: dict, tick_size: float, extra_folders: dict) -> dict:
-    """One combo on one worker's date chunk: the (date, Trade) rows plus what
-    the engine did (for the progress log and the merge)."""
+              params: dict, tick_size: float, extra_folders: dict,
+              combo: dict, axis_names: list, ticks_per_point: float) -> dict:
+    """One combo on one worker's date chunk, returned as the FINISHED
+    (enriched) trades frame of those days — building and tagging the frame is
+    most of a combo's cost on trade-heavy grids, so it runs here in parallel
+    instead of serially in the parent — plus what the engine did (for the
+    progress log)."""
     t0 = time.perf_counter()
     result = run_strategy(_WORKER_STRATEGY, folder_path, start_iso, end_iso, params,
                           tick_size=tick_size, extra_folders=extra_folders,
                           verbose=False)
-    return {"index": index, "chunk": chunk, "rows": result.rows,
+    trades = result.trades if len(result.trades) else None
+    frame = _enrich(trades, combo, axis_names, ticks_per_point, _WORKER_BUCKETS)
+    return {"index": index, "chunk": chunk, "frame": frame, "n_trades": len(result.rows),
             "skipped": result.skipped, "cache_note": result.cache_note,
             "elapsed": time.perf_counter() - t0, "files_read": result.files_read,
             "days_prepared": result.days_prepared}
+
+
+def _run_parts(jobs: list) -> list:
+    """A batch of _run_part calls (one task = several combos on one chunk):
+    per-task inter-process overhead was larger than a small combo's work."""
+    return [_run_part(*job) for job in jobs]
+
+
+def _batch_size(n_combos: int) -> int:
+    """Combos per task: ~40 tasks per worker, at most 16 combos each — small
+    grids keep per-combo progress."""
+    return max(1, min(16, n_combos // 40))
+
+
+def _join_chunks(frames: list):
+    """One combo's enriched chunk frames (date order) -> the frame a serial run
+    builds for it. Concatenation is exact for every column whose dtype agrees
+    across chunks; a text column whose dtype differs (e.g. trade_type all None
+    in one chunk -> object, strings in another -> str) is re-inferred from its
+    original values, exactly as trades_to_frame infers it from the full list."""
+    frames = [f for f in frames if f is not None]
+    if not frames:
+        return None
+    if len(frames) == 1:
+        return frames[0]
+    out = pd.concat(frames, ignore_index=True)
+    first = frames[0].dtypes
+    mixed = {col for f in frames[1:] for col, dt in f.dtypes.items() if dt != first[col]}
+    for col in out.columns:
+        if col in mixed:
+            values = [None if isinstance(v, float) and v != v else v
+                      for f in frames for v in f[col].tolist()]
+            out[col] = pd.Series(values, index=out.index)
+    return out
 
 
 # ── grid runners ──────────────────────────────────────────────────────────────
@@ -328,6 +373,7 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
     skipped: dict = {}
     cache_note = None
     done = 0
+    busy = [0.0] * workers                 # seconds each worker spent in combos
     t_start = time.perf_counter()
 
     def log(msg: str) -> None:
@@ -345,63 +391,79 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
     # worker. One single-process pool per chunk = the chunk's days always hit
     # the same warm cache.
     pools = [ProcessPoolExecutor(max_workers=1, initializer=_init_worker,
-                                 initargs=(strategy_name, dir_arg, per_worker))
+                                 initargs=(strategy_name, dir_arg, per_worker, bucket_map))
              for _ in chunks]
     pending: set = set()
+    # finished futures arrive on a queue (done-callbacks) — wait() over
+    # thousands of pending futures re-registers a waiter on EVERY one per call,
+    # which made the parent the bottleneck of large grids
+    done_q: queue.SimpleQueue = queue.SimpleQueue()
     try:
         # combo-major submission: every worker starts on combo 0, so combos
         # complete (all chunks in) roughly in order
-        for i, combo in enumerate(combos):
-            params = {**base_params, **combo, "tick_size": tick_size}
+        batch = _batch_size(total)
+        for first in range(0, total, batch):
             for k, (lo, hi, _n) in enumerate(chunks):
-                pending.add(pools[k].submit(_run_part, i, k, folder, str(pd.Timestamp(lo)),
-                                            str(pd.Timestamp(hi)), params, tick_size, extras))
+                jobs = [(i, k, folder, str(pd.Timestamp(lo)), str(pd.Timestamp(hi)),
+                         {**base_params, **combos[i], "tick_size": tick_size}, tick_size,
+                         extras, combos[i], axis_names, ticks_per_point)
+                        for i in range(first, min(first + batch, total))]
+                fut = pools[k].submit(_run_parts, jobs)
+                pending.add(fut)
+                fut.add_done_callback(done_q.put)
 
         loaded = set()
         while pending:
-            finished, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
-            if not finished:
+            try:
+                finished = [done_q.get(timeout=0.5)]
+            except queue.Empty:
                 # idle tick — the caller's chance to raise Stop while workers grind
                 log("")
                 continue
+            while True:                                # drain whatever else is done
+                try:
+                    finished.append(done_q.get_nowait())
+                except queue.Empty:
+                    break
+            pending.difference_update(finished)
             for fut in finished:
                 try:
-                    part = fut.result()
+                    batch_parts = fut.result()
                 except BrokenProcessPool as e:
                     raise RuntimeError(
                         f"worker pool died while running '{strategy_name}' — "
                         f"usually the strategy failed to load in a worker or "
                         f"a worker ran out of memory ({e})"
                     ) from e
-                i, k = part["index"], part["chunk"]
-                parts[i][k] = part
-                cache_note = cache_note or part["cache_note"]
-                if k not in loaded:
-                    loaded.add(k)
-                    lo, hi, n = chunks[k]
-                    log(f"worker {k + 1}/{workers} ({lo} … {hi}, {n} days) loaded its data "
-                        f"in {part['elapsed']:.2f}s: "
-                        f"{_data_desc(part['files_read'], part['days_prepared'])}")
-                if len(parts[i]) < workers:
-                    continue
-                # every chunk of combo i is in: join them in date order and
-                # build ONE frame, exactly like a serial run
-                ordered = [parts[i][c] for c in range(workers)]
-                rows = [r for p in ordered for r in p["rows"]]
-                if not skipped:
-                    for p in ordered:
-                        for slot, dates in p["skipped"].items():
-                            skipped.setdefault(slot, []).extend(dates)
-                combo = combos[i]
-                trades = trades_to_frame(rows) if rows else None
-                results[i] = _enrich(trades, combo, axis_names, ticks_per_point,
-                                     bucket_map)
-                parts[i] = {}                          # free the rows
-                done += 1
-                slowest = max(p["elapsed"] for p in ordered)
-                log(f"[{done}/{total}] #{i + 1} {_combo_desc(combo)} -> {len(rows)} trades "
-                    f"(slowest worker {slowest:.2f}s; {time.perf_counter() - t_start:.1f}s "
-                    f"since start)")
+                for part in batch_parts:
+                    i, k = part["index"], part["chunk"]
+                    parts[i][k] = part
+                    busy[k] += part["elapsed"]
+                    cache_note = cache_note or part["cache_note"]
+                    if k not in loaded:
+                        loaded.add(k)
+                        lo, hi, n = chunks[k]
+                        log(f"worker {k + 1}/{workers} ({lo} … {hi}, {n} days) loaded its data "
+                            f"in {part['elapsed']:.2f}s: "
+                            f"{_data_desc(part['files_read'], part['days_prepared'])}")
+                    if len(parts[i]) < workers:
+                        continue
+                    # every chunk of combo i is in: join the workers' finished
+                    # frames in date order (== what a serial run builds)
+                    ordered = [parts[i][c] for c in range(workers)]
+                    if not skipped:
+                        for p in ordered:
+                            for slot, dates in p["skipped"].items():
+                                skipped.setdefault(slot, []).extend(dates)
+                    combo = combos[i]
+                    results[i] = _join_chunks([p["frame"] for p in ordered])
+                    n_trades = sum(p["n_trades"] for p in ordered)
+                    parts[i] = {}                          # free the chunk frames
+                    done += 1
+                    slowest = max(p["elapsed"] for p in ordered)
+                    log(f"[{done}/{total}] #{i + 1} {_combo_desc(combo)} -> {n_trades} trades "
+                        f"(slowest worker {slowest:.2f}s; {time.perf_counter() - t_start:.1f}s "
+                        f"since start)")
     finally:
         # cancel every queued part first (all pools at once), then wait for
         # each worker's in-flight part — they finish concurrently
@@ -410,6 +472,11 @@ def _run_grid_parallel(strategy_name, strategies_dir, folder_path, start_date,
         for pool in pools:
             pool.shutdown(wait=True, cancel_futures=True)
 
+    wall = time.perf_counter() - t_start
+    if done == total and wall > 0:
+        log(f"Done: {total} combos in {wall:.1f}s on {workers} workers — workers busy "
+            f"{min(busy) / wall:.0%}-{max(busy) / wall:.0%} of the time (the rest: "
+            f"process start-up, passing results back, joining tables)")
     return results, (skipped_warnings(skipped, names), cache_note)
 
 

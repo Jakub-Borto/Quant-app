@@ -13,12 +13,13 @@ cell drill-down.
 
 import json
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QGridLayout,
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDoubleSpinBox, QGridLayout,
                                QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
                                QPushButton, QRadioButton, QSlider, QSpinBox,
                                QVBoxLayout, QWidget)
 
+import numpy as np
 import pandas as pd
 
 from modules.common.backend.data_roots import optimizations_root
@@ -30,7 +31,8 @@ from modules.common.ui.widgets import (Banner, Caption, CollapsibleSection,
                                        wrap_card)
 from modules.optimizer.backend import io as opt_io
 from modules.optimizer.backend.buckets import BUCKET_ORDER
-from modules.optimizer.backend.heatmap_model import (MIN_TRADES_DEFAULT,
+from modules.optimizer.backend.heatmap_model import (CURVE_LIMIT, METRIC_PIVOTS,
+                                                     MIN_TRADES_DEFAULT,
                                                      _build_grid_arrays,
                                                      _fmt_axis_value)
 from modules.optimizer.backend.metrics import (METRIC_LABELS, METRIC_ORDER,
@@ -47,6 +49,111 @@ NO_FOLDER     = "(no folder)"
 # changes the scroll range and the view lurches. A tall run-out makes the
 # last sections behave like the ones above them.
 BOTTOM_PADDING = 900
+
+
+CURVE_STEPS = 100          # slider ticks per unit of curve exponent (0.01 precision)
+
+
+class _CurveControl(QObject):
+    """One color curve: a fine slider (-CURVE_LIMIT .. +CURVE_LIMIT in 0.01
+    steps) and a number box for exact values, kept in sync."""
+    changed = Signal()
+
+    def __init__(self, tooltip: str, parent=None):
+        super().__init__(parent)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(int(-CURVE_LIMIT * CURVE_STEPS), int(CURVE_LIMIT * CURVE_STEPS))
+        self.slider.setValue(0)
+        self.slider.setToolTip(tooltip)
+        self.box = QDoubleSpinBox()
+        self.box.setRange(-CURVE_LIMIT, CURVE_LIMIT)     # explicit range (CLAUDE.md)
+        self.box.setDecimals(2)
+        self.box.setSingleStep(0.05)
+        self.box.setValue(0.0)
+        self.box.setToolTip(tooltip)
+        self.box.setFixedWidth(80)
+        self.layout_row = QHBoxLayout()
+        self.layout_row.addWidget(self.slider, 1)
+        self.layout_row.addWidget(self.box)
+        self.slider.valueChanged.connect(self._from_slider)
+        self.box.valueChanged.connect(self._from_box)
+
+    def _from_slider(self, v: int) -> None:
+        self.box.blockSignals(True)
+        self.box.setValue(v / CURVE_STEPS)
+        self.box.blockSignals(False)
+        self.changed.emit()
+
+    def _from_box(self, v: float) -> None:
+        self.slider.blockSignals(True)
+        self.slider.setValue(round(v * CURVE_STEPS))
+        self.slider.blockSignals(False)
+        self.changed.emit()
+
+    def value(self) -> float:
+        return round(self.box.value(), 2)
+
+    def set_value(self, v: float) -> None:
+        self.box.setValue(v)            # syncs the slider and emits changed
+
+
+SPLIT_STEPS = 1000         # split slider positions across the value range
+
+
+class _SplitControl(QObject):
+    """The split value: a slider across the values on screen (zmin .. zmax)
+    and a number box for an exact value. set_range() never emits."""
+    changed = Signal()
+
+    def __init__(self, tooltip: str, parent=None):
+        super().__init__(parent)
+        self._lo, self._hi = 0.0, 1.0
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, SPLIT_STEPS)
+        self.slider.setToolTip(tooltip)
+        self.box = QDoubleSpinBox()
+        self.box.setRange(-1e12, 1e12)                    # explicit range (CLAUDE.md)
+        self.box.setToolTip(tooltip)
+        self.box.setFixedWidth(80)
+        self.layout_row = QHBoxLayout()
+        self.layout_row.addWidget(self.slider, 1)
+        self.layout_row.addWidget(self.box)
+        self.slider.valueChanged.connect(self._from_slider)
+        self.box.valueChanged.connect(self._from_box)
+
+    def set_range(self, lo: float, hi: float, value: float) -> None:
+        self._lo, self._hi = lo, hi
+        span = hi - lo
+        decimals = 0 if span >= 1000 else 1 if span >= 100 else 2 if span >= 1 else 4
+        for w in (self.slider, self.box):
+            w.blockSignals(True)
+        self.box.setDecimals(decimals)
+        self.box.setSingleStep(max(span / 100, 10 ** -decimals))
+        self.box.setValue(value)
+        self.slider.setValue(self._pos(value))
+        for w in (self.slider, self.box):
+            w.blockSignals(False)
+
+    def _pos(self, value: float) -> int:
+        span = self._hi - self._lo
+        f = 0.5 if span <= 0 else (value - self._lo) / span
+        return int(round(min(max(f, 0.0), 1.0) * SPLIT_STEPS))
+
+    def _from_slider(self, i: int) -> None:
+        value = self._lo + (self._hi - self._lo) * i / SPLIT_STEPS
+        self.box.blockSignals(True)
+        self.box.setValue(value)
+        self.box.blockSignals(False)
+        self.changed.emit()
+
+    def _from_box(self, v: float) -> None:
+        self.slider.blockSignals(True)
+        self.slider.setValue(self._pos(v))
+        self.slider.blockSignals(False)
+        self.changed.emit()
+
+    def value(self) -> float:
+        return float(self.box.value())
 
 
 class ExploreTab(QWidget):
@@ -126,6 +233,31 @@ class ExploreTab(QWidget):
         self._held.add_widget(self._held_json)
         lay.addWidget(self._held)
 
+        # ── axes: which swept param goes on X / Y (every other one -> slider) ──
+        axes_grid = QGridLayout()
+        axes_grid.setHorizontalSpacing(16)
+        self._x_combo = QComboBox()
+        self._y_combo = QComboBox()
+        self._swap_btn = QPushButton("⇄  Swap X / Y")
+        self._swap_btn.setToolTip("Put the X param on Y and the Y param on X")
+        axes_grid.addWidget(QLabel("X axis"), 0, 0)
+        axes_grid.addWidget(self._x_combo, 1, 0)
+        axes_grid.addWidget(QLabel("Y axis"), 0, 1)
+        axes_grid.addWidget(self._y_combo, 1, 1)
+        axes_grid.addWidget(self._swap_btn, 1, 2)
+        self._axes_note = Caption("")
+        axes_grid.addWidget(self._axes_note, 2, 0, 1, 4)
+        axes_grid.setColumnStretch(3, 1)
+        self._axes_card = wrap_card(axes_grid)
+        self._axes_card.setVisible(False)
+        lay.addWidget(self._axes_card)
+        self._axis_choice: tuple | None = None      # (x_param, y_param | None)
+        self._axis_run_key = None                   # resets the choice per run
+        self._slider_pos: dict = {}                 # param -> slider index
+        self._x_combo.activated.connect(lambda _=None: self._on_axis_picked("x"))
+        self._y_combo.activated.connect(lambda _=None: self._on_axis_picked("y"))
+        self._swap_btn.clicked.connect(self._on_swap_axes)
+
         # ── controls row ──────────────────────────────────────────────────────
         controls = QGridLayout()
         controls.setHorizontalSpacing(16)
@@ -158,20 +290,51 @@ class ExploreTab(QWidget):
         controls.addWidget(QLabel("Min trades"), 0, 2)
         controls.addWidget(self._min_trades, 1, 2)
 
-        curve_box = QHBoxLayout()
-        self._color_curve = QSlider(Qt.Horizontal)
-        self._color_curve.setRange(-8, 8)   # -2.0 .. 2.0 in 0.25 steps
-        self._color_curve.setValue(0)
-        self._color_curve.setToolTip(
-            "Bends the value→color mapping (recolor only, values unchanged). "
-            "0 = linear · < 0 = log-like, the yellow→red band arrives at lower "
-            "values · > 0 = exp-like, only the top cells go red.")
-        self._color_value = QLabel("0.0")
-        curve_box.addWidget(self._color_curve)
-        curve_box.addWidget(self._color_value)
-        controls.addWidget(QLabel("Color curve"), 0, 3)
-        controls.addLayout(curve_box, 1, 3)
+        # coloring: a split value and one curve on each side of it
+        curves = QGridLayout()
+        curves.setHorizontalSpacing(8)
+        curves.setVerticalSpacing(4)
+        self._split = _SplitControl(
+            "The value where the color scale changes sides. Starts at the "
+            "metric's natural point (0 ticks, profit factor 1, 50 % win rate, "
+            "the middle of the range for trade count); the cells on each side "
+            "are colored with their own curve. Recolor only.")
+        self._curve_good = _CurveControl(
+            "Bends the colors ABOVE the split — recolor only, values unchanged. "
+            "0 = linear · > 0 = exp-like, only the highest cells reach red · "
+            "< 0 = log-like, red already reaches cells just above the split.")
+        self._curve_bad = _CurveControl(
+            "Bends the colors BELOW the split — recolor only. 0 = linear · "
+            "> 0 = only the lowest cells reach dark blue · < 0 = dark blue "
+            "already reaches cells just below the split.")
+        self._split_label = QLabel("Split at")
+        self._curve_good_label = QLabel("Above split curve")
+        self._curve_bad_label = QLabel("Below split curve")
+        reset = QPushButton("Reset")
+        reset.setToolTip("Split back to the metric's natural point, both curves to 0")
+        reset.clicked.connect(self._reset_coloring)
+        curves.addWidget(self._split_label, 0, 0)
+        curves.addLayout(self._split.layout_row, 0, 1)
+        curves.addWidget(self._curve_good_label, 1, 0)
+        curves.addLayout(self._curve_good.layout_row, 1, 1)
+        curves.addWidget(self._curve_bad_label, 2, 0)
+        curves.addLayout(self._curve_bad.layout_row, 2, 1)
+        curves.addWidget(reset, 0, 2, 3, 1)
+        curves.setColumnStretch(1, 1)
+        self._split_value: float | None = None    # None = the metric's natural point
+        self._split_metric = None
+        controls.addWidget(QLabel("Coloring"), 0, 3)
+        controls.addLayout(curves, 1, 3)
+        controls.setColumnStretch(3, 1)
         lay.addWidget(wrap_card(controls))
+        # dragging a slider fires many changes: redraw once it settles
+        self._recolor_timer = QTimer(self)
+        self._recolor_timer.setSingleShot(True)
+        self._recolor_timer.setInterval(60)
+        self._recolor_timer.timeout.connect(self._refresh_heatmap)
+        for c in (self._curve_good, self._curve_bad):
+            c.changed.connect(self._recolor_timer.start)
+        self._split.changed.connect(self._on_split_changed)
 
         # slider axes + bucket filter
         self._sliders_holder = QVBoxLayout()
@@ -232,7 +395,6 @@ class ExploreTab(QWidget):
         for btn in self._half_buttons.values():
             btn.toggled.connect(lambda on: self._refresh_heatmap() if on else None)
         self._min_trades.valueChanged.connect(lambda _=None: self._refresh_heatmap())
-        self._color_curve.valueChanged.connect(self._on_color_changed)
         self._buckets.selectionChanged.connect(self._refresh_heatmap)
 
         self.refresh_run_list(select_unsaved=False)
@@ -337,7 +499,7 @@ class ExploreTab(QWidget):
         """Rebuild the caption/save-panel/controls for the current state."""
         self.cell_report.clear()
         if unsaved is None or self.state.trades is None:
-            for w in (self._caption, self._held, self._heatmap,
+            for w in (self._caption, self._held, self._heatmap, self._axes_card,
                       self._heatmap_caption, self._reading, self._save_panel):
                 w.setVisible(False)
             return
@@ -384,6 +546,7 @@ class ExploreTab(QWidget):
                                                 MIN_TRADES_DEFAULT)))
         self._min_trades.blockSignals(False)
 
+        self._sync_axes()
         self._rebuild_sliders()
         self._refresh_heatmap()
 
@@ -420,18 +583,101 @@ class ExploreTab(QWidget):
         self.refresh_run_list(select_unsaved=False)
 
     # ══ sliders / heatmap ═══════════════════════════════════════════════════════
-    def _axes(self):
+    def _swept_axes(self) -> list[dict]:
+        """The run's swept params ({"param", "values"}) in their saved role
+        order (x, y, slider, slider2) — the default layout."""
         axes = self.state.meta.get("axes", {}) if self.state.meta else {}
-        x_axis = axes.get("x")
-        y_axis = axes.get("y")
-        slider_axes = [ax for ax in (axes.get("slider"), axes.get("slider2")) if ax]
-        return x_axis, y_axis, slider_axes
+        return [axes[r] for r in ("x", "y", "slider", "slider2") if axes.get(r)]
+
+    def _axes(self):
+        """(x_axis, y_axis | None, slider_axes) for the CURRENT axis choice:
+        the user's X / Y pick, every other swept param as a slider (in the
+        saved order)."""
+        swept = self._swept_axes()
+        if not swept:
+            return None, None, []
+        by_param = {ax["param"]: ax for ax in swept}
+        x, y = self._axis_choice or (swept[0]["param"],
+                                     swept[1]["param"] if len(swept) > 1 else None)
+        if x not in by_param:                       # stale choice: fall back
+            x, y = swept[0]["param"], (swept[1]["param"] if len(swept) > 1 else None)
+        sliders = [ax for ax in swept if ax["param"] not in (x, y)]
+        return by_param[x], by_param.get(y), sliders
+
+    # ── axis selection ───────────────────────────────────────────────────────
+    def _sync_axes(self) -> None:
+        """Fill the X / Y pickers for the shown run. A different run starts
+        from its saved layout; re-showing the same run keeps the user's pick."""
+        meta = self.state.meta or {}
+        swept = self._swept_axes()
+        run_key = (meta.get("run_name"), meta.get("created_at"),
+                   tuple(ax["param"] for ax in swept))
+        if run_key != self._axis_run_key:
+            self._axis_run_key = run_key
+            self._axis_choice = None
+            self._slider_pos = {}
+        x_axis, y_axis, _sliders = self._axes()
+        if x_axis is None:
+            self._axes_card.setVisible(False)
+            return
+        self._axis_choice = (x_axis["param"], y_axis["param"] if y_axis else None)
+        params = [ax["param"] for ax in swept]
+        for combo, current in ((self._x_combo, x_axis["param"]),
+                               (self._y_combo, y_axis["param"] if y_axis else None)):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(params)
+            if current is None:
+                combo.addItem("—")
+                combo.setCurrentIndex(combo.count() - 1)
+            else:
+                combo.setCurrentIndex(params.index(current))
+            combo.blockSignals(False)
+        two = len(params) > 1
+        self._y_combo.setEnabled(two)
+        self._swap_btn.setEnabled(two)
+        others = [p for p in params if p not in self._axis_choice]
+        self._axes_note.setText(
+            "Only one param was swept — it is the X axis." if not two else
+            ("Sliders below: " + ", ".join(others) + "." if others else
+             "Pick any swept param for each axis — choosing the one already on the "
+             "other axis swaps them."))
+        self._axes_card.setVisible(True)
+
+    def _on_axis_picked(self, which: str) -> None:
+        x, y = self._axis_choice
+        combo = self._x_combo if which == "x" else self._y_combo
+        picked = combo.currentText()
+        if which == "x":
+            if picked == y:                    # taking Y's param: swap them
+                y = x
+            x = picked
+        else:
+            if picked == x:
+                x = y
+            y = picked
+        self._set_axis_choice((x, y))
+
+    def _on_swap_axes(self) -> None:
+        x, y = self._axis_choice
+        if y is not None:
+            self._set_axis_choice((y, x))
+
+    def _set_axis_choice(self, choice: tuple) -> None:
+        if choice == self._axis_choice:
+            return
+        self._axis_choice = choice
+        self.cell_report.clear()               # the open cell belongs to the old grid
+        self._sync_axes()
+        self._rebuild_sliders()
+        self._refresh_heatmap()
 
     def _rebuild_sliders(self) -> None:
         while self._sliders_holder.count():
             item = self._sliders_holder.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.hide()               # gone NOW, not when deleteLater runs
                 w.deleteLater()
         self._slider_widgets = []
         _x, _y, slider_axes = self._axes()
@@ -444,12 +690,16 @@ class ExploreTab(QWidget):
             if len(options) > 1:
                 slider = QSlider(Qt.Horizontal)
                 slider.setRange(0, len(options) - 1)
-                slider.setValue(0)
+                # a param that moves back from an axis to a slider keeps its
+                # last position
+                start = min(self._slider_pos.get(ax["param"], 0), len(options) - 1)
+                slider.setValue(start)
                 slider.setMaximumWidth(320)
-                value_label = QLabel(_fmt_axis_value(options[0]))
+                value_label = QLabel(_fmt_axis_value(options[start]))
                 slider.valueChanged.connect(
-                    lambda i, lab=value_label, opts=options:
-                    (lab.setText(_fmt_axis_value(opts[i])),
+                    lambda i, lab=value_label, opts=options, prm=ax["param"]:
+                    (self._slider_pos.__setitem__(prm, i),
+                     lab.setText(_fmt_axis_value(opts[i])),
                      self._refresh_heatmap()))
                 h.addWidget(slider)
                 h.addWidget(value_label)
@@ -475,8 +725,16 @@ class ExploreTab(QWidget):
                 return label
         return "both"
 
-    def _on_color_changed(self, v: int) -> None:
-        self._color_value.setText(f"{v * 0.25:g}")
+    def _on_split_changed(self) -> None:
+        self._split_value = self._split.value()
+        self._recolor_timer.start()
+
+    def _reset_coloring(self) -> None:
+        self._split_value = None                 # back to the metric's natural point
+        for c in (self._curve_good, self._curve_bad):
+            c.blockSignals(True)
+            c.set_value(0.0)
+            c.blockSignals(False)
         self._refresh_heatmap()
 
     def _refresh_heatmap(self) -> None:
@@ -504,6 +762,7 @@ class ExploreTab(QWidget):
         # re-mask / recolor the cached grid, no recompute. created_at
         # disambiguates successive unsaved runs (both have run_name None).
         grid_key = (meta.get("run_name"), meta.get("created_at"),
+                    x_axis["param"], y_axis["param"] if y_axis else None,
                     tuple(sorted(slider_values.items(), key=lambda kv: kv[0])),
                     tuple(selected_buckets), half, float(be_band))
         if self._grid_key != grid_key:
@@ -530,11 +789,26 @@ class ExploreTab(QWidget):
             f"{ax['param']} = {_fmt_axis_value(v)}"
             for ax, v in ((ax, slider_values[ax["param"]]) for ax in slider_axes))
         metric = self._metric.currentData()
-        color_gamma = 2.0 ** (self._color_curve.value() * 0.25)
+        if metric != self._split_metric:           # a new metric: its natural split
+            self._split_metric = metric
+            self._split_value = None
+        # the split slider spans the values on screen (the heatmap's own range)
+        z = arrays[metric]
+        finite = z[np.isfinite(z)]
+        zmin = float(finite.min()) if finite.size else 0.0
+        zmax = float(finite.max()) if finite.size else 1.0
+        if zmin == zmax:
+            zmin, zmax = zmin - 0.5, zmax + 0.5
+        pivot = self._split_value
+        if pivot is None:
+            natural = METRIC_PIVOTS.get(metric)
+            pivot = zmin + (zmax - zmin) / 2 if natural is None else natural
+        self._split.set_range(zmin, zmax, pivot)
         status = self._heatmap.set_data(
             arrays, metric, METRIC_LABELS[metric], x_axis["param"], x_values,
             y_param, y_values, slider_desc, int(self._min_trades.value()),
-            color_gamma=color_gamma)
+            color_curves=(self._curve_good.value(), self._curve_bad.value()),
+            pivot=pivot)
         self._heatmap.setVisible(True)
         self._heatmap_caption.setVisible(True)
         self._reading.setVisible(True)

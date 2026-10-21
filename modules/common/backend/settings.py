@@ -49,6 +49,7 @@ PLUGIN_CATEGORIES = {
     "position_sizing":  "position_sizing",
     "scripts":          "scripts",
     "regime_detectors": "regime_detectors",
+    "reports":          "reports",
 }
 
 # Human labels for the settings dialog.
@@ -58,6 +59,7 @@ CATEGORY_LABELS = {
     "position_sizing":  "Position-sizing folders",
     "scripts":          "Script folders",
     "regime_detectors": "Regime-detector folders",
+    "reports":          "Report folders",
 }
 
 # Default data root — the machine's dedicated data drive location (the data

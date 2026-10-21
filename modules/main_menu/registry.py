@@ -42,6 +42,9 @@ class ModuleSpec:
         if self.key == "regime_detector":
             from modules.regime_detector.window import RegimeDetectorWindow
             return RegimeDetectorWindow(settings)
+        if self.key == "reports":
+            from modules.reports.window import ReportsWindow
+            return ReportsWindow(settings)
         raise KeyError(f"Unknown module key: {self.key}")
 
 
@@ -62,4 +65,7 @@ MODULES = [
     ModuleSpec("regime_detector", "07", "Regime Detector",
                "Label each trading day's regime per snapshot — only from "
                "bars available at that moment — and explore it on a chart."),
+    ModuleSpec("reports", "08", "Reports",
+               "Write research reports as Streamlit apps — prose, math and live "
+               "optimizer heatmaps. Archive, restore and compress runs."),
 ]

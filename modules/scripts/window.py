@@ -20,8 +20,7 @@ kills every process it spawned (after confirmation).
 
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel,
                                QMessageBox, QPushButton, QVBoxLayout)
 
@@ -29,12 +28,11 @@ from modules.common.backend import plugins
 from modules.common.ui import theme
 from modules.common.ui.module_window import ModuleWindowBase
 from modules.common.ui.widgets import Caption, Card, SectionHeader, hline
-from .backend.browser import find_app_browser, launch_args
 from .backend.ports import find_free_port
 from .backend.scan import (folder_summary, is_streamlit_script, list_folder,
                            script_mtime)
 from .log_panel import STATE_COLORS, InstanceLogPanel
-from .process_manager import ScriptInstance
+from .process_manager import ScriptInstance, open_in_scripts_browser
 
 
 class _FolderRow(QFrame):
@@ -374,15 +372,7 @@ class ScriptsWindow(ModuleWindowBase):
 
     @staticmethod
     def _open_url(url: str) -> None:
-        """Open in the dedicated scripts browser: the first run opens its
-        own window, later runs land as new tabs in it — the user's own
-        browser (and its tabs) is never touched. Plain default-browser
-        fallback only if no Chrome/Edge exists."""
-        browser = find_app_browser()
-        if browser is not None:
-            QProcess.startDetached(str(browser), launch_args(url))
-        else:
-            QDesktopServices.openUrl(QUrl(url))
+        open_in_scripts_browser(url)
 
     def _dismiss(self, inst: ScriptInstance) -> None:
         if inst.is_alive():

@@ -327,11 +327,8 @@ class NewRunTab(QWidget):
         if any(swept.get(p) is None for p in order):
             self._readout.show_message("error", "Fix the sweep inputs flagged (⚠) above.")
             return None
+        # default roles by sweep order; the Explore tab re-assigns them freely
         roles = self._sweep_panel.roles_by_param()
-        if roles is None:
-            self._readout.show_message("error", "Each swept param needs a "
-                                                "distinct role.")
-            return None
         param_by_role = {role: p for p, role in roles.items()}
         axes = [{"param": param_by_role[role],
                  "values": swept[param_by_role[role]],
@@ -360,9 +357,6 @@ class NewRunTab(QWidget):
         if len(order) == 1:
             warnings.append("Only 1 swept param — the heatmap degenerates to a "
                             "single row.")
-        if len(order) < 3:
-            warnings.append("No sliders (the 3rd and 4th swept params become "
-                            "sliders).")
         for a in axes:
             if len(a["values"]) == 1:
                 warnings.append(f"Axis '{a['param']}' has a single value — "

@@ -13,15 +13,16 @@ render_role_assignment from legacy_streamlit/views/optimizer.py:
   params, a validated bitstring list for bit-flag params (parse_flags) —
   plus the live values-preview caption / inline error;
 - at most MAX_SWEPT params can be checked (others grey out at the cap);
-- sweep order = selection order (survivors keep their rank);
-- the role row assigns X / Y / Slider 1 / Slider 2 with distinct-role
-  validation.
+- sweep order = selection order (survivors keep their rank). There is no
+  axis-role picker here: the run stores DEFAULT roles by sweep order (1st ->
+  X, 2nd -> Y, then the sliders) and the Explore tab lets the user put any
+  swept param on any axis afterwards.
 
 Emits changed on any edit so the tab can refresh the live combo readout.
 """
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QSpinBox, QVBoxLayout, QWidget)
 
@@ -30,8 +31,8 @@ from modules.common.ui import theme
 from modules.common.ui.params_form import make_param_widget, set_widget_value
 from modules.common.ui.widgets import Caption, CollapsibleSection
 from modules.optimizer.backend.param_space import (BOOL_SWEEP_VALUES,
-                                                   MAX_SWEPT, ROLE_LABELS,
-                                                   ROLES, build_range,
+                                                   MAX_SWEPT, ROLES,
+                                                   build_range,
                                                    parse_flags, parse_values,
                                                    sweep_kind)
 
@@ -297,14 +298,9 @@ class SweepPanel(QWidget):
             section.add_widget(box_widget)
             lay.addWidget(section)
 
-        # role assignment row
-        lay.addWidget(Caption("Axis roles"))
-        self._roles_row = QHBoxLayout()
-        lay.addLayout(self._roles_row)
-        self._role_combos: dict[str, QComboBox] = {}
-        self._role_error = Caption("")
-        lay.addWidget(self._role_error)
-        self._rebuild_roles()
+        lay.addWidget(Caption("Which swept param goes on the heatmap's X / Y axis "
+                              "(the others become sliders) is chosen on the "
+                              "Explore page, and can be changed there at any time."))
 
     @staticmethod
     def _param_layout(strategy, visible: dict) -> list:
@@ -332,33 +328,7 @@ class SweepPanel(QWidget):
         for p, cell in self._cells.items():
             if cell.check is not None and p not in checked:
                 cell.check.setEnabled(not cap_reached)
-        self._rebuild_roles()
         self.changed.emit()
-
-    def _rebuild_roles(self) -> None:
-        while self._roles_row.count():
-            item = self._roles_row.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-        self._role_combos = {}
-        order = self._sweep_order
-        available = ROLES[:max(len(order), 1)]
-        for i, param in enumerate(order):
-            box = QVBoxLayout()
-            box.setSpacing(0)
-            box.addWidget(QLabel(param))
-            combo = QComboBox()
-            for role in available:
-                combo.addItem(ROLE_LABELS.get(role, role), role)
-            combo.setCurrentIndex(min(i, len(available) - 1))
-            combo.currentIndexChanged.connect(lambda _=None: self.changed.emit())
-            box.addWidget(combo)
-            holder = QWidget()
-            holder.setLayout(box)
-            self._roles_row.addWidget(holder)
-            self._role_combos[param] = combo
-        self._roles_row.addStretch()
 
     # ── outputs (mirror the old return values) ────────────────────────────────
     def sweep_order(self) -> list[str]:
@@ -380,14 +350,8 @@ class SweepPanel(QWidget):
     def swept_values(self) -> dict:
         return {p: self._cells[p].swept_values() for p in self._sweep_order}
 
-    def roles_by_param(self) -> dict | None:
-        """{param: role}; None when roles collide (error caption shown)."""
-        roles = {p: combo.currentData()
-                 for p, combo in self._role_combos.items()}
-        if roles and len(set(roles.values())) != len(roles):
-            self._role_error.setText("Each swept param needs a distinct role "
-                                     "(X / Y / Slider 1 / Slider 2).")
-            self._role_error.setStyleSheet(f"color: {theme.BAD}; font-size: 12px;")
-            return None
-        self._role_error.setText("")
-        return roles
+    def roles_by_param(self) -> dict:
+        """{param: role} — the DEFAULT roles stored with a run, by sweep order
+        (1st -> x, 2nd -> y, 3rd -> slider, 4th -> slider2). The Explore tab
+        can put any swept param on any axis."""
+        return {p: ROLES[i] for i, p in enumerate(self._sweep_order)}

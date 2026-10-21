@@ -13,7 +13,8 @@ A modular **intraday futures research platform**, now a native **PySide6
 desktop app** (rebuilt from Streamlit in July 2026, zero logic changes) for
 30+ instruments. It turns raw Databento market data into enriched candle
 datasets, runs vectorized backtests, applies position sizing, runs
-Monte-Carlo stress tests, and sweeps strategy parameter grids.
+Monte-Carlo stress tests, sweeps strategy parameter grids, and keeps
+research reports (Streamlit apps with live Optimizer heatmaps).
 
 Run it:
 
@@ -52,6 +53,7 @@ the Optimizer) is the docstring of `modules/common/ui/params_form.py`.
 | `position_sizing/` | Analytics, Monte Carlo | `apply(trades, params) -> pd.DataFrame` (+ `PARAMS`) |
 | `modules/monte_carlo/methods/` | Monte Carlo | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`; a method needing more than a params form sets a panel flag — `PROP_FIRM = True` → prop-firm UI, `REGIME_PANEL = True` → regime-switching UI — and the window swaps the whole generic branch for it) |
 | `scripts/` | Scripts | no Python contract — any quick one-off script. A `# app: streamlit` comment (or `STREAMLIT = True`) in the first 30 lines → launched as `streamlit run` on a free port + opened in the dedicated scripts browser (Chrome/Edge with a private `--user-data-dir` profile — first run opens its window, later runs add tabs there; Opera ignores the flags, so it's never a candidate); otherwise run as `python -u` with output in the module's console. cwd is the script's own folder (NOT repo root — root `inspect.py` shadowing); repo imports via the sys.path.append idiom in `scripts/example_hello.py` |
+| `reports/` | Reports | no Python contract — one report = one DIRECT subfolder holding `report.py` (a Streamlit script); folder name = display name; `_`/`.` folders (incl. `_archive/`) ignored. Launched through `modules/reports/backend/bootstrap.py` (repo root APPENDED to sys.path — never PYTHONPATH, which prepends and lets root `inspect.py` shadow stdlib; shared dark theme on the command line; wide layout default), cwd = the report folder. Reports import `modules.reports.kit` (`style.chart`, `heatmap(key=…, runs={label: path})`); author conventions in `reports/README.md` |
 | `regime_detectors/` | Regime Detector | `run_all(input_folder, output_folder, skip_existing, on_progress, params) -> None` + required `PARAMS` (must include `rth_start`, `rth_end`, `snapshot_minutes`, `lookback_days`), `REGIME_STATES`, `COLUMN_TIERS`, `SCRIPT_VERSION` (optional `PARAMS_OPTIONS`). Import the helper as `from modules.regime_detector.backend.runner import RegimeContext, SHARED_PARAMS` — NEVER `from base import ...`: several plugin folders own a `base.py` and the first one loaded wins `sys.modules['base']` (details in `regime_detectors/base.py`) |
 
 Every folder above except MC methods is **configurable in Settings**
@@ -108,7 +110,9 @@ modules/
                            timing.py (timed + the per-run table)
   main_menu/               launcher window (cards, settings gear)
   common/
-    backend/               pure, Qt-free: settings, asset_info (THE single
+    backend/               pure, Qt-free: settings, palette (THE colours +
+                           fonts — ui/theme.py and the reports kit both read
+                           it), asset_info (THE single
                            ASSET_INFO + AUTO_PARAMS), plugins (multi-folder
                            discovery/loading), data_roots (multi-root scans,
                            output routing, ff-events resolution), trade_files
@@ -170,10 +174,20 @@ modules/
                            combine/, + heatmap_model, run_setup) — pure,
                            tested. Parallel runs SPLIT THE DATES: one
                            contiguous chunk of days per worker (its own
-                           single-process pool), every combo on every chunk,
-                           rows joined in date order -> identical to serial;
-                           relies on process_day keeping no state across
-                           days. The New Run tab's memory readout is
+                           single-process pool), every combo on every chunk;
+                           workers return FINISHED (enriched) chunk frames in
+                           batched tasks and the parent only joins them in
+                           date order (_join_chunks re-infers a text column
+                           whose dtype differs between chunks) -> identical
+                           to serial; relies on process_day keeping no state
+                           across days. Axes are chosen on the Explore tab
+                           (X/Y pickers; the rest become sliders); runs store
+                           default roles by sweep order. Coloring: a split
+                           value (middle color) + one curve per side
+                           (heatmap_model.color_positions; natural split =
+                           METRIC_PIVOTS, 2**curve each). Finished futures arrive via
+                           done-callbacks on a queue (never wait() over
+                           thousands of futures). The New Run tab's memory readout is
                            estimate_grid_memory (from the strategy's declared
                            columns + parquet footers; no worker clamp — the
                            data is split, not copied). UI: sweep_panel, new_run_tab, explore_tab,
@@ -183,7 +197,26 @@ modules/
                            modules.common.trade_report
   scripts/                 quick-script launcher: backend/{ports,scan,browser}.py
                            (pure) + process_manager.py (QProcess per script
-                           instance) + log_panel.py + window.py
+                           instance — launch_args() is overridable; also
+                           open_in_scripts_browser) + log_panel.py + window.py
+  reports/                 research reports (sibling of Scripts, reuses its
+                           process/console/browser): backend/ (pure) scan
+                           (discovery + _archive listing), archive (zip ->
+                           verify -> rename -> remove; restore with path
+                           guards; typed-code delete), compact (load full OR
+                           compact runs, the per-combination summary =
+                           compute_metrics_by_cell over ALL swept params —
+                           bit-identical to Explore, pinned by
+                           tests/test_reports_compact.py — slice_grid, the
+                           Compress tool), heatmap_view (Explore grid/colour/
+                           hatch code -> cells; report default split: Sharpe
+                           1.0), launch (theme flags + command), bootstrap
+                           (the report-process entry point). kit/ (Qt-free,
+                           imported BY report scripts): style, heatmap (the
+                           Streamlit component), state (.report_state.json
+                           saved views + lock, keyed by the required `key`).
+                           window.py (Reports / Archive / Compress tabs) +
+                           delete_dialog.py
   regime_detector/         backend/{schema,io,runner}.py (pure: contract +
                            run persistence + RegimeContext day walk) — the
                            strict-before snapshot rule and never-stale
@@ -201,6 +234,9 @@ data_transforms/           raw DBN -> enriched parquet plugins (1m OHLCV:
                            the prev+curr splice — same output format)
 position_sizing/           fixed.py, kelly.py, risk_based.py
 scripts/                   quick-script plugins for the Scripts module
+reports/                   research reports (README.md = author conventions;
+                           example_report/ uses every kit piece on SYNTHETIC
+                           demo data)
 regime_detectors/          regime-detector plugins (+ base.py: import-idiom
                            doc; scaffold `_scaffold_example.py`)
 forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
@@ -234,6 +270,8 @@ trades/   --(Analytics + a sizer)------------>  sized equity curve + $ metrics
 trades/   --(Monte Carlo + a sizer)---------->  equity_matrix -> fan chart + stats
 parquet/  --(Regime Detector + a detector)--->  regimes/{ASSET}/{run}/  (per-snapshot labels, one file per day)
 regimes/  --(Backtester/Optimizer regime section)-->  trades sliced by regime state
+optimizations/{run}/ --(copied by hand into a report)--(Compress)-->  compact run (summary.parquet, no trades)
+reports/<report>/report.py --(Reports, streamlit)-->  prose + kit heatmaps in the scripts browser
 ```
 
 **Regime consumers join AS-OF the trade's entry**, never on date — the final

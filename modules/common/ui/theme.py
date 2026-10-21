@@ -21,25 +21,11 @@ import pyqtgraph as pg
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-# ── palette ───────────────────────────────────────────────────────────────────
-ACCENT        = "#273fc4"
-ACCENT_HOVER  = "#3450e0"
-ACCENT_ACTIVE = "#1d329f"
-ACCENT_SOFT   = "#8fa2ff"   # accent-tinted text (card numbers, links)
-BG            = "#10131A"   # window background (page behind the cards)
-SURFACE       = "#151924"   # cards / inputs
-SURFACE_2     = "#1c2130"   # hover / headers
-SURFACE_3     = "#262c3d"   # pressed / stronger hover
-BORDER        = "#262c39"
-BORDER_LIGHT  = "#3a4358"   # hover borders, checkbox boxes
-TEXT          = "#e8eaf0"
-TEXT_MUTED    = "#96a0b5"
-GOOD          = "#2ca02c"
-BAD           = "#d64545"
-WARN          = "#d9a441"
-
-CHART_BG = "#11141c"
-CHART_FG = "#c8cdd8"
+# ── palette (Qt-free source of truth: the Reports kit reads it too) ───────────
+from modules.common.backend.palette import (  # noqa: E402,F401
+    ACCENT, ACCENT_ACTIVE, ACCENT_HOVER, ACCENT_SOFT, BAD, BG, BORDER,
+    BORDER_LIGHT, CHART_BG, CHART_FG, FONT_FAMILY, GOOD, SURFACE, SURFACE_2,
+    SURFACE_3, TEXT, TEXT_MUTED, WARN)
 
 _ASSETS  = Path(__file__).resolve().parent / "assets"
 _CHECK   = (_ASSETS / "check.svg").as_posix()
@@ -51,7 +37,7 @@ _QSS = f"""
 QWidget {{
     background-color: {BG};
     color: {TEXT};
-    font-family: "Segoe UI", "Inter", sans-serif;
+    font-family: {FONT_FAMILY};
     font-size: 13px;
 }}
 QLabel {{ background: transparent; }}
@@ -390,7 +376,15 @@ QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
 def apply_theme(app: QApplication) -> None:
     """Fusion style + dark palette + QSS + pyqtgraph global config + the
     app-wide wheel guard (scrolling must scroll the page, not edit whatever
-    combo/spinbox the cursor passes over)."""
+    combo/spinbox the cursor passes over).
+
+    Idempotent: a second call on the same app does nothing. Re-applying swaps
+    in a NEW style object and re-polishes every live widget — the Qt test
+    fixture did that before every test, and widgets left half torn down by
+    earlier tests made it crash the whole pytest process now and then
+    (access violation / heap corruption inside setStyle)."""
+    if app.property("quant_theme_applied"):
+        return
     from .wheel_guard import install_wheel_guard
     install_wheel_guard(app)
 
@@ -414,3 +408,4 @@ def apply_theme(app: QApplication) -> None:
     app.setStyleSheet(_QSS)
 
     pg.setConfigOptions(antialias=True, background=CHART_BG, foreground=CHART_FG)
+    app.setProperty("quant_theme_applied", True)

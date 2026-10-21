@@ -1,0 +1,59 @@
+{
+  "strategy": "demo_breakout",
+  "dataset": "futures/ES/ES_1m (synthetic)",
+  "ticker": "ES",
+  "tick_size": 0.25,
+  "ticks_per_point": 4,
+  "start_date": "2024-01-02",
+  "end_date": "2025-06-30",
+  "axes": {
+    "x": {
+      "param": "stop_ticks",
+      "values": [
+        8,
+        12,
+        16,
+        20,
+        24,
+        28
+      ]
+    },
+    "y": {
+      "param": "target_r",
+      "values": [
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+        2.5,
+        3.0
+      ]
+    },
+    "slider": {
+      "param": "entry_mode",
+      "values": [
+        "breakout",
+        "retest"
+      ]
+    },
+    "slider2": null
+  },
+  "fixed_params": {
+    "session": "RTH",
+    "max_trades_per_day": 1
+  },
+  "min_trades_default": 30,
+  "be_band_ticks": 0.0,
+  "split_date": "2024-10-01",
+  "n_combos": 72,
+  "n_trades": 5980,
+  "created_at": "2026-10-21T12:00:00",
+  "synthetic": true,
+  "run_name": "es_demo_full",
+  "compact": {
+    "format_version": 1,
+    "source": "example_report/data/es_demo_full",
+    "created_at": "2026-10-21T15:21:10",
+    "n_combinations": 72
+  }
+}

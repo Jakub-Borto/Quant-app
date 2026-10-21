@@ -560,3 +560,26 @@ def test_progress_counter_lines_are_throttled(tmp_path):
     # a sub-100 ms run: the counters come from the forced "Found N days" step
     assert all("So far: 0 trades · 0 days processed" in t for t in day_texts)
     assert "So far: 0 trades · 5 days processed" in calls[-1]      # wrap-up is forced
+
+
+def test_day_listing_cache_sees_added_and_removed_files(tmp_path):
+    """day_files is cached per folder until the folder changes."""
+    main = write_dataset(tmp_path / "ES_1m", days=DAYS[:3])
+    mod = strategy(process_day=lambda day, p: None)
+    assert run(mod, main).days_in_range == 3
+    assert run(mod, main).days_in_range == 3                 # served from the cache
+    write_dataset(tmp_path / "ES_1m", days=DAYS[3:])         # two new day files
+    assert run(mod, main).days_in_range == 5
+    (main / f"{DAYS[0]}.parquet").unlink()
+    assert run(mod, main).days_in_range == 4
+
+
+def test_time_columns_match_pandas_inference():
+    from modules.engine.trade import _time_column
+    for unit in ("ns", "us"):
+        vals = list(pd.date_range("2026-03-07 18:00", periods=500, freq="7min", tz=TZ).as_unit(unit))
+        want = pd.DataFrame({"t": vals})["t"]
+        got = pd.DataFrame({"t": _time_column(vals)})["t"]
+        pd.testing.assert_series_equal(want, got, check_exact=True)
+    mixed = [ts(DAYS[0], "10:00").as_unit("ns"), ts(DAYS[0], "10:01").as_unit("us")]
+    assert _time_column(mixed) is mixed                       # not uniform: pandas decides

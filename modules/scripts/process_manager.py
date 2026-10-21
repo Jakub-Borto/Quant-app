@@ -18,7 +18,22 @@ import sys
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, Signal
+from PySide6.QtCore import QObject, QProcess, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+
+from .backend.browser import find_app_browser, launch_args
+
+
+def open_in_scripts_browser(url: str) -> None:
+    """Open in the dedicated scripts browser: the first run opens its own
+    window, later runs land as new tabs in it — the user's own browser (and
+    its tabs) is never touched. Plain default-browser fallback only if no
+    Chrome/Edge exists. (Shared by the Scripts and Reports windows.)"""
+    browser = find_app_browser()
+    if browser is not None:
+        QProcess.startDetached(str(browser), launch_args(url))
+    else:
+        QDesktopServices.openUrl(QUrl(url))
 
 
 class ScriptInstance(QObject):
@@ -57,18 +72,22 @@ class ScriptInstance(QObject):
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def start(self) -> None:
+        self._proc.start(sys.executable, self.launch_args())
+
+    def launch_args(self) -> list[str]:
+        """The interpreter arguments (subclasses — the Reports module's
+        ReportInstance — override this to launch through their own
+        bootstrap)."""
         # -u in BOTH modes: stdout is a pipe, so without it Python
         # block-buffers (~8 KB) and print() from the script only shows at
         # process exit instead of live in the console.
         if self.kind == "streamlit":
-            args = ["-u", "-m", "streamlit", "run", str(self.script_path),
+            return ["-u", "-m", "streamlit", "run", str(self.script_path),
                     "--server.port", str(self.port),
                     "--server.headless", "true",
                     "--server.runOnSave", "true",   # saving the file reruns
                     "--browser.gatherUsageStats", "false"]
-        else:
-            args = ["-u", str(self.script_path)]
-        self._proc.start(sys.executable, args)
+        return ["-u", str(self.script_path)]
 
     def is_alive(self) -> bool:
         return self._proc.state() != QProcess.NotRunning

@@ -133,10 +133,32 @@ def additional_slots(module) -> list[str]:
     return [s for s in raw if s != MAIN_SLOT]
 
 
+_LISTINGS: dict = {}          # folder -> (dir mtime_ns, listing)
+_READ_PLANS: dict = {}        # (first day's file identities, DATA) -> its bytes in RAM
+
+
 def day_files(folder) -> list[tuple[datetime.date, Path]]:
-    """Every YYYY-MM-DD.parquet in `folder`, oldest first (other files ignored)."""
-    out = []
+    """Every YYYY-MM-DD.parquet in `folder`, oldest first (other files ignored).
+
+    Cached per folder until the folder's modification time changes (adding,
+    removing or renaming a file updates it): an optimizer worker runs the
+    engine once per combo, and re-listing hundreds of files was a third of a
+    small run. Returns a new list each call (callers may modify it)."""
     folder = Path(folder)
+    try:
+        mtime = os.stat(folder).st_mtime_ns
+    except OSError:
+        return []
+    hit = _LISTINGS.get(str(folder))
+    if hit is not None and hit[0] == mtime:
+        return list(hit[1])
+    out = _list_day_files(folder)
+    _LISTINGS[str(folder)] = (mtime, tuple(out))
+    return out
+
+
+def _list_day_files(folder: Path) -> list[tuple[datetime.date, Path]]:
+    out = []
     if not folder.is_dir():
         return out
     for f in folder.glob("*.parquet"):
@@ -655,7 +677,16 @@ def run_strategy(module, main_folder, start_date, end_date, params: dict, *,
         return {s: ctx.read(s, i, background=True) for s in slots}
 
     with timed("engine:read_plan"):
-        heavy = bool(run_idx) and ctx.day_bytes(run_idx[0]) > HEAVY_DAY_BYTES
+        heavy = False
+        if run_idx:
+            # cached per first-day files + columns: the footer read is the
+            # same answer on every combo of an optimizer grid
+            plan_key = (tuple(ctx.ident(s, run_idx[0]) for s in ctx.slots),
+                        tuple(spec.data.items()))
+            size = _READ_PLANS.get(plan_key)
+            if size is None:
+                size = _READ_PLANS[plan_key] = ctx.day_bytes(run_idx[0])
+            heavy = size > HEAVY_DAY_BYTES
     ctx.read_threads = HEAVY_READ_THREADS if heavy else READ_THREADS
     prefetch_days = HEAVY_PREFETCH_DAYS if heavy else PREFETCH_DAYS
     pool = ThreadPoolExecutor(max_workers=ctx.read_threads)

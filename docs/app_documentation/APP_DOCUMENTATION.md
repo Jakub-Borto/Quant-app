@@ -1,7 +1,7 @@
 # Quant Research Platform — Platform Documentation
 
 Module contracts, data schemas and data flow of the desktop app. Updated
-2026-10-01. Generated: edit `docs/app_documentation/APP_DOCUMENTATION.md`, then
+2026-10-21. Generated: edit `docs/app_documentation/APP_DOCUMENTATION.md`, then
 run `python docs/app_documentation/build_app_doc.py` to rebuild
 `Quant_app_documentation.pdf`.
 
@@ -36,12 +36,14 @@ Python as a native **PySide6 desktop app** (rebuilt from Streamlit in July 2026
 with no logic changes). It converts raw Databento market data into enriched
 candle datasets, runs backtests through one shared **strategy engine**, sweeps
 parameter grids in the **Optimizer**, applies position sizing, runs Monte-Carlo
-stress tests, and labels market regimes. A C++ (pybind11) extension replays L3
+stress tests, labels market regimes, and keeps **research reports** (Streamlit
+apps with prose, math and live Optimizer heatmaps). A C++ (pybind11) extension replays L3
 order-book data, and a Forex Factory parser tags trades by news and holidays.
 
 **Extensibility (plugin drop):** adding a data transform, strategy, position
 sizer, Monte-Carlo method, regime detector or quick script means dropping a file
-(or a package folder, for strategies) into the right folder. There is no
+(or a package folder, for strategies) into the right folder; a report is a
+folder holding a `report.py`. There is no
 registration: folders are scanned and modules loaded dynamically
 (`importlib.util.spec_from_file_location` + `exec_module`), and the file name
 becomes the name shown in the UI. Every plugin category except Monte-Carlo
@@ -89,11 +91,15 @@ modules/
                              combine/, ...; UI tabs Run / Explore / Combine)
   scripts/                   Scripts launcher
   regime_detector/           Regime Detector
+  reports/                   Reports (backend/ scan, archive, compact,
+                             heatmap_view, launch, bootstrap; kit/ for report
+                             scripts; window + delete dialog) - section 10.9
 strategies/                  strategy plugins (file or package)
 data_transforms/             raw DBN -> parquet plugins
 position_sizing/             fixed.py, kelly.py, risk_based.py
 regime_detectors/            regime-detector plugins
 scripts/                     quick-script plugins
+reports/                     research reports (one folder + report.py each)
 forex_factory_scraper/       FF calendar text -> ff_usd_events.parquet
 orderbook_replay_cpp/        C++ (pybind11) L3 order-book replay kernel
 docs/                        sources of the generated guide and this document
@@ -133,7 +139,7 @@ Market data lives **outside the repository** in one or more **data roots**
 | Key | Meaning |
 |---|---|
 | `version` | schema version (1) |
-| `extra_plugin_dirs` | extra folders per plugin category: `strategies`, `data_transforms`, `position_sizing`, `scripts`, `regime_detectors` (each also searches its in-repo default folder) |
+| `extra_plugin_dirs` | extra folders per plugin category: `strategies`, `data_transforms`, `position_sizing`, `scripts`, `regime_detectors`, `reports` (each also searches its in-repo default folder) |
 | `data_roots` | list of data roots (section 3) |
 | `cache_gb` | **the engine's RAM day-cache budget** in GB for the app process (default 4.0, range 0.5–512). Shown in Settings as "Engine day cache". Used by the Backtester and by serial Optimizer runs (section 9.4) |
 | `ui_prefs` | per-module UI preferences, e.g. the trade report's section order and visibility |
@@ -387,6 +393,14 @@ as fast for small files, because it skips pandas' per-call overhead. The engine
 also memoizes pyarrow's time-zone lookup: without `pytz` installed, pyarrow
 retried a failing `import pytz` (a full `sys.path` scan) on every file read.
 
+**Per-run overhead** matters when one process runs the engine hundreds of times
+(an Optimizer worker runs it once per combination on its chunk): the list of a
+folder's day files is cached until the folder's modification time changes (a
+file added, removed or renamed), the read-ahead plan is cached per first-day
+files, and the trades table builds its two timestamp columns from the raw values
+instead of pandas' per-object inference (identical result; falls back when the
+timestamps are not uniform).
+
 ### 9.3 Results: `RunResult`
 
 `trades` (the 12 columns), `warnings`, `days_in_range`, `days_run`, `skipped`
@@ -484,6 +498,15 @@ empty; total time and (in brackets) when the first combination was complete:
 | ivb_model ES, serial | 14.5 s | 13.1 s |
 | ES MBO full book, serial | 7.2 s | 5.0 s |
 
+A trade-heavy grid — delta_pct_signal on ES 1m advanced, `hold_bars` 1–30 ×
+`delta_threshold` 10–80 (450 combinations, 652,963 trades) — exposed the next
+bottleneck, the main process building every combination's table (October 5):
+
+| Version | 8 workers | Serial |
+|---|---|---|
+| date split, parent builds the tables | 25.7 s | 53.7 s |
+| workers build their own tables, batched tasks, faster trade tables and per-run overhead | 9–11 s | 26–29 s |
+
 Every strategy produced byte-identical trades before and after (13 reference
 configurations, and every grid old/new and serial/parallel).
 
@@ -553,10 +576,38 @@ the median trade day) and **Combine** (pick a small, diverse set of entry-varian
 trade streams from saved runs and evaluate them merged under a
 one-position-at-a-time rule, without re-running backtests).
 
-The Run tab sweeps up to 4 parameters (X axis, Y axis, two sliders): int/float
-over min/max/step, str over a value list, bool over [False, True], dropdowns over
-a subset of their choices, bit-flag groups over a bitstring list. `tick_size`
-can't be swept. More than 2,000 combinations needs a confirmation.
+The Run tab sweeps up to 4 parameters: int/float over min/max/step, str over a
+value list, bool over [False, True], dropdowns over a subset of their choices,
+bit-flag groups over a bitstring list. `tick_size` can't be swept. More than
+2,000 combinations needs a confirmation. The Run tab does **not** assign axes:
+the run stores default roles by sweep order (1st swept → X, 2nd → Y, 3rd and
+4th → sliders; `meta.json` keeps that `axes` layout, so older runs and Combine
+are unchanged). The **Explore** tab has an **Axes** row: X and Y dropdowns listing
+every swept parameter (picking the one already on the other axis swaps them) and
+a Swap button; every swept parameter not on an axis becomes a slider, which
+remembers its position when a parameter moves between axis and slider. A
+different run starts from its saved layout.
+
+**Coloring** (Explore), three controls, each a slider plus a number box:
+
+- **Split at** — the value that gets the scale's middle color (yellow). Cells
+  above it run yellow → orange → red, cells below it yellow → blue → dark blue.
+  It starts at the metric's natural point (0 for total / average ticks and both
+  Sharpes, 1 for profit factor, 50 % for the win rates, the middle of the range
+  for the trade count) and goes back to it when the metric changes. The slider
+  spans the values currently shown (1,000 steps); the box takes any value. A
+  split outside the shown values leaves every cell on one side, so only that
+  half of the colors is used (e.g. all cells profitable → all yellow to red).
+- **Above split curve** / **Below split curve** — −4 to +4 in 0.01 steps (the
+  curve strength is 2^value, 1/16× to 16×). On each side, the distance from the
+  split (as a share of the way to that side's extreme) is raised to 2^value:
+  0 = linear, > 0 = only the most extreme cells get the strongest color,
+  < 0 = strong colors reach cells close to the split.
+
+With the split in the middle of the range and both curves at 0 this is the
+plain linear scale of earlier versions. Only the colors and the colorbar
+change, never the values. **Reset** restores the natural split and both
+curves to 0.
 
 **Execution:**
 
@@ -569,13 +620,27 @@ can't be swept. More than 2,000 combinations needs a confirmation.
   per worker (each worker is its own single-process pool). Every worker runs
   **every** combination on **its own** chunk: each day file is read and prepared
   once, by one worker, and every later combination runs from that worker's RAM.
-  Even a single combination runs N× in parallel. The workers return their
-  `(date, Trade)` rows and the parent joins each combination's chunks in date
-  order into **exactly** the table a serial run builds. Before, every worker ran
-  a share of the combinations over all the days, so all of them loaded the whole
-  dataset at once and the first round took as long as a cold backtest (see the
-  table in 9.6). The log shows a start line, one "worker k/N (dates, days) loaded
-  its data in X s" line per worker, and one line per finished combination.
+  Even a single combination runs N× in parallel. Each worker also **builds and
+  tags its own chunk's finished trades table** (the 12 columns + `pnl_ticks`,
+  `day_bucket` and the swept parameters), and tasks carry a batch of up to 16
+  combinations, so the main process only joins each combination's chunks in
+  date order — into **exactly** the table a serial run builds (a text column that
+  is empty in one chunk and filled in another is re-inferred from its values).
+  Before, the main process built and tagged every combination's table itself
+  from the workers' raw trades, one combination at a time, and on trade-heavy
+  grids that — not the data — was the bottleneck: the workers sat idle while
+  combinations came out one after another. Before the date split, every worker
+  ran a share of the combinations over all the days, so all of them loaded the
+  whole dataset at once (see the tables in 9.6). The log shows a start line, one
+  "worker k/N (dates, days) loaded its data in X s" line per worker, one line
+  per finished combination and a closing "Done: … workers busy X–Y% of the time"
+  line.
+- **Why not load the data once and copy it to every worker?** Loading is
+  already done once: each day is read and prepared by exactly one worker (about
+  0.3 s for a year of ES 1-minute data split 8 ways). Copying the data to every
+  worker would cost as much as reading it and put N copies in RAM. On a laptop
+  the CPU also slows down when all cores are busy, so 8 workers give roughly
+  3–5×, not 8×.
 - **Memory budget** is the total for all workers' caches, split evenly — each
   worker only holds its 1/N share of the days, so the data is never duplicated.
   The tab shows an estimate from the strategy's declared columns and the parquet
@@ -629,6 +694,97 @@ Lists quick one-off scripts from `scripts/`. A script with `# app: streamlit`
 (or `STREAMLIT = True`) in its first 30 lines runs as `streamlit run` in a
 dedicated private browser profile; others run as `python -u` with output in the
 window's console. The working directory is the script's own folder.
+
+### 10.9 Reports
+
+A place to write and keep **research reports**: prose, math and conclusions
+plus interactive displays of saved results (first of all Optimizer heatmaps).
+Every report is a Streamlit app; the module is a sibling of Scripts and reuses
+its process, port, console and dedicated-browser machinery.
+
+**Folders and discovery.** Settings category *Report folders* (in-repo default
+`reports/` + extra folders). One report = one **direct** subfolder containing
+`report.py`; its folder name is its display name. Folders starting with `_` or
+`.` (incl. `_archive/`) and folders without `report.py` are ignored.
+Everything inside a report is managed by hand (`data/`, helper modules, `.md`
+prose, images); only the Compress tab (into the destination picked) and the
+kit's saved views (`.report_state.json`) ever write there. `reports/README.md`
+holds the author conventions (math with `$…$` / `$$…$$` + `\tag{n}`, money as
+`\$5.76`, callouts, the kit).
+
+**Launch.** `python -u modules/reports/backend/bootstrap.py <report.py>
+--server.port N … --theme.*` with cwd = the report folder, opened as a new tab
+in the scripts browser. The bootstrap **appends** the repo root to `sys.path`
+(PYTHONPATH would prepend it, letting the repo root's scratch `inspect.py`
+shadow the standard library), so `modules.reports.kit` and the pure backend
+import with no per-report boilerplate; Streamlit puts the report folder at
+`sys.path[0]` for helper modules. The shared dark theme (palette + fonts from
+`modules/common/backend/palette.py`, the same values the Qt theme uses) is
+passed on the command line, so it beats any `.streamlit/config.toml` in a
+report folder. A script-start hook makes **wide** the default layout (a
+report's own `st.set_page_config` wins) and sets a corrupt state file aside.
+
+**Window.** *Reports* tab: name, source folder, last modified (newest file),
+running state + port; Run / Stop / Restart / Open / Log (the Scripts console),
+Open folder, **Archive** and **Delete** (both disabled while the report runs).
+Refreshes on tab focus and window activation. *Archive* tab: every zip across
+the folders' `_archive/` - Restore, Delete, Open archive folder. *Compress*
+tab (below). Archive / restore / delete / compress run on worker threads.
+
+**Archive / restore / delete** (`backend/archive.py`). Archive writes
+`<reports folder>/_archive/<report>__<YYYY-MM-DD_HHMMSS>.zip` (the report
+folder itself inside, deflated): temporary name → verify (integrity test,
+file count, total uncompressed size) → rename → move the folder aside (fails
+cleanly on Windows while a file is open) → delete. An unreadable/locked file
+aborts with its name; a failure removes the partial zip and leaves the folder.
+Restore extracts into a hidden temporary folder in the same reports folder
+(entries with absolute paths / `..` / several top folders are rejected; CRCs
+checked), verifies, renames into place and only then deletes the zip; it
+refuses when a folder of that name exists. Delete (both tabs) is permanent and
+needs a freshly generated 6-character code (no O/0, I/1, L) typed exactly.
+
+**Compress** (`backend/compact.py`). A full Optimizer run inside a reports
+folder (`trades.parquet` + `meta.json`) becomes `<destination>/<run name>/`
+with `summary.parquet` - one row per parameter combination: the swept values +
+the eight Explore metrics (pre-cost), zero-trade combinations as all-NaN rows -
+and the source `meta.json` plus a `compact` block (`format_version`, `source`
+relative to its reports folder, `created_at`, `n_combinations`). The metrics
+are `compute_metrics_by_cell(trades, all swept params, be_band)`, the Explore
+function itself; grouping by every swept param and slicing gives the same
+groups over the same rows as Explore's filter-then-group, so every cell is
+identical (tested bit for bit for 1-4-parameter runs). Written to a hidden
+temporary folder, verified (row count, every combination present), renamed;
+cancel or failure leaves nothing. Source and destination must be inside a
+reports folder (not `_archive/`); compact sources are refused; an existing
+target is replaced only after asking. The source is never touched.
+
+**The kit** (`modules/reports/kit`, Qt-free). `style` - the palette, fonts,
+the heatmap colour scale and one Altair chart template (`style.chart(chart)`).
+`heatmap(key=…, runs={label: path}, title=…, default_metric=…)` - a full or
+compact run (paths relative to the report folder) shown as the Explore heatmap:
+Run, Metric, X/Y axis (X ≠ Y, picking the other axis' param swaps), one value
+per remaining swept param, Min trades (hatching), Colouring (split value +
+the two curves - `heatmap_model.color_positions`, so a setting gives the same
+colours as the Optimizer), Colours on/off (neutral cells, hatching kept) and
+Lock. Cells come from `backend/heatmap_view.py`: `_build_grid_arrays`, the
+Explore range rule, HeatmapChart's hatch rule (`total_trades < min trades`),
+`_fmt_cell` labels and an all-metrics hover. Default split per metric: 0 for
+total ticks / avg trade, 1.0 for profit factor **and both Sharpes** (the
+Optimizer uses 0 for Sharpe), 50 for win rates, mid-range for trade count
+(the Optimizer has no Calmar / realised-RR metric). Loaded runs are cached per
+(path, file mtimes/sizes); a missing or malformed run shows an error box naming
+the label and path while the rest of the page renders.
+
+**Saved views + lock** (`kit/state.py`, applies to every kit component).
+Every component call takes a required, page-unique `key` (duplicates are an
+error in the page); every user-changeable setting is saved on change to
+`.report_state.json` (atomic write, one entry per key; unknown keys kept). A
+fresh session starts from the saved view. A saved value that is no longer
+valid (label removed, param not swept, metric renamed) falls back to its
+default with a notice; the other fields keep theirs. Lock disables every
+control of that component and is saved; while locked nothing is written. A
+corrupt state file → defaults + one warning at the top of the page, the file
+kept as `.report_state.json.bad`. The file travels with archive / restore.
 
 ## 11. Plugin contracts
 
@@ -706,6 +862,8 @@ parquet/{type}/{ASSET}/{dataset}/YYYY-MM-DD.parquet
    |-- Backtester + strategy (engine) ----> trades/{name}.parquet (+ day_type)
    |-- Optimizer + strategy grid (engine) -> optimizations/{run}/ -> Combine -> optimizations/{container}/_combined/{run}/
    |-- Regime Detector + detector -------> regimes/{ASSET}/{run}/ -> report regime section
+optimizations/{run}/ --(copy by hand)--> reports/<report>/... --(Compress)--> compact run
+reports/<report>/report.py --(Reports, Streamlit)--> prose + kit heatmaps in the browser
 trades/ --> Analytics + sizer    --> sized equity curve + $ metrics
 trades/ --> Monte Carlo + sizer  --> equity_matrix -> fan chart + statistics
 ```
@@ -742,6 +900,8 @@ DataFrames; the contract between stages is the parquet column schema.
 | Forex Factory news / holiday tagging | DONE |
 | Trailing stop (ivb_model `vwap_trailing_risk`) | DONE |
 | Prop-firm and regime-switching Monte Carlo | DONE |
+| Reports module: Streamlit reports, archive/restore, Compress, kit heatmap with saved views | DONE |
+| Report extras: cost adjustments (via the Optimizer), PDF export, "send to report" buttons | TODO |
 | Per-asset session times for every strategy | TODO |
 | Walk-forward validation (needs multi-year enriched data) | TODO |
 | Keep Optimizer workers alive between runs (warm start) | TODO (optional) |
@@ -770,3 +930,9 @@ Compared with the June 2026 edition (which still described the Streamlit app):
   strategy-aware memory estimate, richer progress log, `additional_data` /
   `data_warnings` / `cache_note` in `meta.json` (10.4).
 - Plugin contracts updated (11); measured performance (9.6).
+- **Reports module** (10.9): Streamlit research reports launched with the
+  shared theme, archive / restore / typed-code delete, the Compress tool
+  (full Optimizer run → per-combination summary) and the report kit (chart
+  template + the Explore heatmap with saved views and lock). New Settings
+  category `reports`; the palette moved to the Qt-free
+  `modules/common/backend/palette.py`.

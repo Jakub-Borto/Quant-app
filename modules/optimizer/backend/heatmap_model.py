@@ -87,6 +87,60 @@ def _cell_text_color(v_norm: float) -> str:
     return "rgba(20,20,20,0.9)" if luminance > 140 else "rgba(255,255,255,0.92)"
 
 
+# The natural split value per metric (the default of the Explore tab's "Split at"; all eight are higher-is-better).
+# None = no natural split -> the middle of the value range.
+METRIC_PIVOTS = {
+    "total_ticks": 0.0, "avg_trade": 0.0, "sharpe_trade": 0.0, "sharpe_daily": 0.0,
+    "profit_factor": 1.0, "win_rate": 50.0, "win_rate_be": 50.0, "total_trades": None,
+}
+CURVE_LIMIT = 4.0          # curve exponent e in [-4, 4] -> gamma = 2**e (1/16 .. 16)
+
+
+def color_positions(z, zmin: float, zmax: float, pivot, good: float = 0.0,
+                    bad: float = 0.0):
+    """Value(s) -> position on the colorscale [0, 1]: a SPLIT value and one
+    curve per side.
+
+    The split (`pivot`; METRIC_PIVOTS gives the natural one: 0 ticks, PF 1,
+    50 % win rate; None = the range's middle) gets the scale's MIDDLE color
+    (0.5, yellow). Values above it run 0.5 -> 1 (orange, red), values below it
+    0.5 -> 0 (blue, dark blue): u = distance from the split as a share of the
+    way to that side's extreme, shaped as u ** 2**curve (`good` above, `bad`
+    below). curve 0 = linear; > 0 = exp-like, the strongest colors only at the
+    most extreme cells; < 0 = log-like, strong colors reach cells close to the
+    split. A split outside [zmin, zmax] leaves every cell on one side: only
+    that half of the colors is used. With the split at the range's middle and
+    both curves 0 this is the plain linear scale."""
+    z = np.asarray(z, dtype=float)
+    span = zmax - zmin
+    if span <= 0:
+        return np.full(z.shape, 0.5)
+    if pivot is None:
+        pivot = zmin + span / 2
+    out = np.empty(z.shape)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        hi = z >= pivot
+        up = zmax - pivot
+        u = np.clip((z - pivot) / up, 0.0, 1.0) if up > 0 else np.zeros(z.shape)
+        out[hi] = 0.5 + 0.5 * u[hi] ** (2.0 ** good)
+        down = pivot - zmin
+        d = np.clip((pivot - z) / down, 0.0, 1.0) if down > 0 else np.zeros(z.shape)
+        out[~hi] = 0.5 - 0.5 * d[~hi] ** (2.0 ** bad)
+    return np.clip(out, 0.0, 1.0)
+
+
+def two_curve_colorscale(zmin: float, zmax: float, pivot, good: float = 0.0,
+                         bad: float = 0.0, n: int = 129) -> list:
+    """Colorbar stops ([value fraction, "rgb(..)"]) for color_positions."""
+    if good == 0.0 and bad == 0.0 and (pivot is None or pivot == zmin + (zmax - zmin) / 2):
+        return HEATMAP_COLORSCALE                      # the plain linear scale
+    fractions = np.linspace(0.0, 1.0, n)
+    positions = color_positions(zmin + fractions * (zmax - zmin), zmin, zmax, pivot,
+                                good, bad)
+    return [[float(f), "rgb({},{},{})".format(*_colorscale_rgb(v))]
+            for f, v in zip(fractions, positions)]
+
+
 def _curved_colorscale(gamma: float) -> list:
     """
     HEATMAP_COLORSCALE with a gamma curve bent into the value->color mapping

@@ -4,6 +4,7 @@ Spec sections referenced as §n (delta_pct_signal_spec.md v1).
 """
 
 import datetime
+import functools
 import math
 
 import numpy as np
@@ -13,7 +14,6 @@ from modules.engine import Trade
 
 SESSION_START_MIN = 18 * 60          # 18:00 NY opens the Globex session
 NO_SESSION = (17 * 60, 18 * 60)      # 17:00-17:59: no bars
-RTH_FIRST, RTH_LAST = 9 * 60 + 30, 15 * 60 + 59
 
 DIRECTION_MODES = ("follow", "fade")
 PRICE_FILTERS = ("any", "with", "against")
@@ -84,6 +84,7 @@ def config(params) -> dict:
 
 
 # ══ session anchoring (§6) ═════════════════════════════════════════════════════
+@functools.lru_cache(maxsize=65536)   # pure: (date, minute, tz) -> Timestamp
 def anchor(date: datetime.date, minute: int, tz) -> pd.Timestamp:
     """HH:MM -> timestamp: >= 18:00 is the evening of D-1, else D."""
     day = date - datetime.timedelta(days=1) if minute >= SESSION_START_MIN else date
@@ -130,24 +131,21 @@ def signals(core, cfg):
 # ══ the position walk (§5) ═════════════════════════════════════════════════════
 def _notes(core, cfg, t, e, bars_held, extensions):
     vol = float(core.volume[t])
-    med = core.median[t]
+    med = float(core.median[t])
     ratio = None
     if cfg["mult"] > 0 and not math.isnan(med) and med != 0:
-        ratio = round(vol / med, 2)
-    entry_ts = core.index[e]
-    minute = entry_ts.hour * 60 + entry_ts.minute
-    rth = entry_ts.date() == core.date and RTH_FIRST <= minute <= RTH_LAST
-    return {"signal_time": core.index[t].strftime("%H:%M"),
+        ratio = float(np.round(vol / med, 2))     # numpy rounding, as since v1
+    return {"signal_time": core.hhmm[t],
             "signal_delta_pct": float(core.delta[t]),
             "signal_volume": int(vol),
             "volume_ratio": ratio,
             "bars_held": int(bars_held),
             "extensions": int(extensions),
-            "session": "rth" if rth else "eth"}
+            "session": "rth" if core.rth[e] else "eth"}
 
 
 def walk(core, cfg, pos, dirs, flat_bar) -> list:
-    hold, mode, idx = cfg["hold"], cfg["mode"], core.index
+    hold, mode, idx = cfg["hold"], cfg["mode"], core.stamps
     trades = []
     cur = None          # [t, e, direction(+1/-1), x, x_uncapped, extensions]
 
