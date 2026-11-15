@@ -1,7 +1,7 @@
 # CLAUDE.md — Quant Research Platform
 
 Orientation for Claude Code working in this repo. The companion PDF
-(`docs/Quant_app_documentation.pdf`) is the long-form platform documentation
+(`docs/app_documentation/Quant_app_documentation.pdf`) is the long-form platform documentation
 (module contracts, data schemas, the engine, every window, measured
 performance). It is GENERATED: edit `docs/app_documentation/APP_DOCUMENTATION.md`
 and run `python docs/app_documentation/build_app_doc.py` — keep it in sync
@@ -37,7 +37,7 @@ No registration. The filename stem becomes the UI display name;
 `__init__.py` / `base.py` are excluded. Strategies may also be **packages**
 (folder with `__init__.py` exposing the strategy contract) — see
 `strategies/ivb_model/`, `strategies/orb/`, `strategies/vwap_trend/`.
-**`STRATEGY_GUIDE.md` (repo root) / `docs/Strategy_Guide.pdf` is the complete
+**`docs/strategy/STRATEGY_GUIDE.md` / `docs/strategy/Strategy_Guide.pdf` is the complete
 strategy-author reference** — keep it in sync with `modules/engine/`.
 
 Any plugin may also declare `PARAMS_OPTIONS = {param: [choice, ...]}`:
@@ -49,7 +49,7 @@ the Optimizer) is the docstring of `modules/common/ui/params_form.py`.
 | Folder | Used by | Contract |
 |---|---|---|
 | `data_transforms/` | Data Formatter | `run_all(input_folder, output_folder, skip_existing, on_progress[, params]) -> None` (a transform MAY declare `PARAMS` like a strategy — the UI renders widgets from it and passes the values as `params`; transforms without `PARAMS` get the plain 4-arg call) |
-| `strategies/` | Backtester, Optimizer (through `modules.engine.run_strategy`) | `DATA = {"main": [cols], "slot": [cols]}` + `process_day(day, params) -> Trade \| list[Trade] \| None` (optional `prepare_day(date, data, params)` + `PREPARE_PARAMS`; `PARAMS`, optional `PARAM_SECTIONS` / `PARAMS_OPTIONS`; the Optimizer sweeps int/float params over min/max/step, str params over a value list, bool params over [False, True], dropdown params over a subset of their choices, bit-flag params over a bitstring list). The ENGINE owns the day loop, reads, RAM cache, lookback (`day.previous`), timing and the 12-column output; see `STRATEGY_GUIDE.md` |
+| `strategies/` | Backtester, Optimizer (through `modules.engine.run_strategy`) | `DATA = {"main": [cols], "slot": [cols]}` + `process_day(day, params) -> Trade \| list[Trade] \| None` (optional `prepare_day(date, data, params)` + `PREPARE_PARAMS`; `PARAMS`, optional `PARAM_SECTIONS` / `PARAMS_OPTIONS`; the Optimizer sweeps int/float params over min/max/step, str params over a value list, bool params over [False, True], dropdown params over a subset of their choices, bit-flag params over a bitstring list). The ENGINE owns the day loop, reads, RAM cache, lookback (`day.previous`), timing and the 12-column output; see `docs/strategy/STRATEGY_GUIDE.md` |
 | `position_sizing/` | Analytics, Monte Carlo | `apply(trades, params) -> pd.DataFrame` (+ `PARAMS`) |
 | `modules/monte_carlo/methods/` | Monte Carlo | `run(trades, sizer_module, sizer_params, params) -> dict` (+ `PARAMS`; a method needing more than a params form sets a panel flag — `PROP_FIRM = True` → prop-firm UI, `REGIME_PANEL = True` → regime-switching UI — and the window swaps the whole generic branch for it) |
 | `scripts/` | Scripts | no Python contract — any quick one-off script. A `# app: streamlit` comment (or `STREAMLIT = True`) in the first 30 lines → launched as `streamlit run` on a free port + opened in the dedicated scripts browser (Chrome/Edge with a private `--user-data-dir` profile — first run opens its window, later runs add tabs there; Opera ignores the flags, so it's never a candidate); otherwise run as `python -u` with output in the module's console. cwd is the script's own folder (NOT repo root — root `inspect.py` shadowing); repo imports via the sys.path.append idiom in `scripts/example_hello.py` |
@@ -241,12 +241,14 @@ regime_detectors/          regime-detector plugins (+ base.py: import-idiom
                            doc; scaffold `_scaffold_example.py`)
 forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
 orderbook_replay_cpp/      C++ (pybind11) L3 order-book replay kernel
-docs/                      SOURCES of the generated docs: strategy_guide/
-                           (GUIDE_TEMPLATE.md + build_guide.py -> STRATEGY_GUIDE.md
-                           + docs/Strategy_Guide.pdf; build_pdf is the shared
-                           reportlab Markdown renderer) and app_documentation/
-                           (APP_DOCUMENTATION.md + build_app_doc.py ->
-                           docs/Quant_app_documentation.pdf)
+docs/                      all documentation. strategy_guide/ = SOURCES of the
+                           strategy guide (GUIDE_TEMPLATE.md + build_guide.py ->
+                           strategy/STRATEGY_GUIDE.md + strategy/Strategy_Guide.pdf;
+                           build_pdf is the shared reportlab Markdown renderer).
+                           app_documentation/ (APP_DOCUMENTATION.md +
+                           build_app_doc.py -> Quant_app_documentation.pdf, same
+                           folder). strategy/ = the generated guide + the IVB
+                           PDFs. To_do_and_notes.txt = working notes
 tests/                     pytest suite (optimizer backend + metrics + Qt
                            smoke + the shared report: test_trade_report.py
                            pins that the Backtester's and the Optimizer's
@@ -369,7 +371,7 @@ fallback.
 
 ## Where to read more
 
-- `STRATEGY_GUIDE.md` / `docs/Strategy_Guide.pdf` — the complete strategy-author
+- `docs/strategy/STRATEGY_GUIDE.md` / `docs/strategy/Strategy_Guide.pdf` — the complete strategy-author
   reference (engine contract, data, caching, examples). Generated: edit
   `docs/strategy_guide/GUIDE_TEMPLATE.md`, then run
   `python docs/strategy_guide/build_guide.py` (tests/test_strategy_guide.py
@@ -378,13 +380,13 @@ fallback.
   `strategies/example_prev_day_levels/`) tested in
   tests/test_strategy_examples.py.
 
-- `docs/Quant_app_documentation.pdf` — the platform documentation: module
+- `docs/app_documentation/Quant_app_documentation.pdf` — the platform documentation: module
   contracts, data schemas, the engine (cache, reads, progress, timing), every
   window, the Optimizer's date-split parallelism and measured performance.
   Generated from `docs/app_documentation/APP_DOCUMENTATION.md` (run
   `python docs/app_documentation/build_app_doc.py`; the asset table comes from
   ASSET_INFO).
-- `docs/IVB_Model_Documentation.pdf` (+ `docs/IVB_Model_Optimized_Documentation.pdf`)
+- `docs/strategy/IVB_Model_Documentation.pdf` (+ `docs/strategy/IVB_Model_Optimized_Documentation.pdf`)
   + `strategies/ivb_model/CLAUDE.md` — the flagship strategy.
 - The pre-rebuild Streamlit frontend lives only in git history (main branch,
   commit 468c843 and earlier).

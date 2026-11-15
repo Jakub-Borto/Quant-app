@@ -1,5 +1,5 @@
 """
-STRATEGY_GUIDE.md must be exactly what docs/strategy_guide/build_guide.py
+docs/strategy/STRATEGY_GUIDE.md must be exactly what docs/strategy_guide/build_guide.py
 renders from the template — so its example code is always the tested code in
 strategies/ (tests/test_strategy_examples.py). If this fails, run:
 
@@ -22,13 +22,13 @@ def _builder():
 
 def test_committed_guide_is_up_to_date():
     rendered = _builder().render_markdown()
-    committed = (REPO / "STRATEGY_GUIDE.md").read_text(encoding="utf-8")
+    committed = (REPO / "docs" / "strategy" / "STRATEGY_GUIDE.md").read_text(encoding="utf-8")
     assert committed == rendered, ("STRATEGY_GUIDE.md is stale — run "
                                    "python docs/strategy_guide/build_guide.py")
 
 
 def test_guide_contains_the_example_files_verbatim():
-    guide = (REPO / "STRATEGY_GUIDE.md").read_text(encoding="utf-8")
+    guide = (REPO / "docs" / "strategy" / "STRATEGY_GUIDE.md").read_text(encoding="utf-8")
     examples = [REPO / "strategies" / "example_first_hour_breakout.py",
                 *sorted((REPO / "strategies" / "example_prev_day_levels").glob("*.py"))]
     for f in examples:
@@ -37,12 +37,12 @@ def test_guide_contains_the_example_files_verbatim():
 
 
 def test_guide_pdf_exists():
-    pdf = REPO / "docs" / "Strategy_Guide.pdf"
+    pdf = REPO / "docs" / "strategy" / "Strategy_Guide.pdf"
     assert pdf.exists() and pdf.read_bytes()[:5] == b"%PDF-"
 
 
 def test_platform_documentation_builds_from_its_source():
-    """docs/Quant_app_documentation.pdf is generated from
+    """docs/app_documentation/Quant_app_documentation.pdf is generated from
     docs/app_documentation/APP_DOCUMENTATION.md (+ the ASSET_INFO table)."""
     path = REPO / "docs" / "app_documentation" / "build_app_doc.py"
     spec = importlib.util.spec_from_file_location("build_app_doc", path)
@@ -50,5 +50,5 @@ def test_platform_documentation_builds_from_its_source():
     spec.loader.exec_module(mod)
     md = mod.render_markdown()
     assert "<<ASSET_TABLE>>" not in md and "| NNQ |" in md
-    pdf = REPO / "docs" / "Quant_app_documentation.pdf"
+    pdf = REPO / "docs" / "app_documentation" / "Quant_app_documentation.pdf"
     assert pdf.exists() and pdf.read_bytes()[:5] == b"%PDF-"

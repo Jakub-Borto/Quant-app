@@ -1,9 +1,9 @@
 # CLAUDE.md — IVB Model (modular, vectorized package)
 
 Strategy-package guide for `strategies/ivb_model/`. Long-form rationale and the trade logic
-live in `docs/IVB_Model_Documentation.pdf`; this file is the code map and the contract. The engine
+live in `docs/strategy/IVB_Model_Documentation.pdf`; this file is the code map and the contract. The engine
 contract every strategy follows (DATA, prepare_day, process_day, Trade, caching, lookback) is
-documented in full in `STRATEGY_GUIDE.md` at the repo root.
+documented in full in `docs/strategy/STRATEGY_GUIDE.md`.
 
 ## Engine contract (September 2026 migration)
 
