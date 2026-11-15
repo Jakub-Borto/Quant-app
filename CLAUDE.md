@@ -1,7 +1,7 @@
 # CLAUDE.md — Quant Research Platform
 
 Orientation for Claude Code working in this repo. The companion PDF
-(`Quant_app_documentation.pdf`) is the long-form platform documentation
+(`docs/Quant_app_documentation.pdf`) is the long-form platform documentation
 (module contracts, data schemas, the engine, every window, measured
 performance). It is GENERATED: edit `docs/app_documentation/APP_DOCUMENTATION.md`
 and run `python docs/app_documentation/build_app_doc.py` — keep it in sync
@@ -37,7 +37,7 @@ No registration. The filename stem becomes the UI display name;
 `__init__.py` / `base.py` are excluded. Strategies may also be **packages**
 (folder with `__init__.py` exposing the strategy contract) — see
 `strategies/ivb_model/`, `strategies/orb/`, `strategies/vwap_trend/`.
-**`STRATEGY_GUIDE.md` / `Strategy_Guide.pdf` (repo root) is the complete
+**`STRATEGY_GUIDE.md` (repo root) / `docs/Strategy_Guide.pdf` is the complete
 strategy-author reference** — keep it in sync with `modules/engine/`.
 
 Any plugin may also declare `PARAMS_OPTIONS = {param: [choice, ...]}`:
@@ -243,10 +243,10 @@ forex_factory_scraper/     FF calendar text -> ff_usd_events.parquet
 orderbook_replay_cpp/      C++ (pybind11) L3 order-book replay kernel
 docs/                      SOURCES of the generated docs: strategy_guide/
                            (GUIDE_TEMPLATE.md + build_guide.py -> STRATEGY_GUIDE.md
-                           + Strategy_Guide.pdf; build_pdf is the shared
+                           + docs/Strategy_Guide.pdf; build_pdf is the shared
                            reportlab Markdown renderer) and app_documentation/
                            (APP_DOCUMENTATION.md + build_app_doc.py ->
-                           Quant_app_documentation.pdf)
+                           docs/Quant_app_documentation.pdf)
 tests/                     pytest suite (optimizer backend + metrics + Qt
                            smoke + the shared report: test_trade_report.py
                            pins that the Backtester's and the Optimizer's
@@ -369,7 +369,7 @@ fallback.
 
 ## Where to read more
 
-- `STRATEGY_GUIDE.md` / `Strategy_Guide.pdf` — the complete strategy-author
+- `STRATEGY_GUIDE.md` / `docs/Strategy_Guide.pdf` — the complete strategy-author
   reference (engine contract, data, caching, examples). Generated: edit
   `docs/strategy_guide/GUIDE_TEMPLATE.md`, then run
   `python docs/strategy_guide/build_guide.py` (tests/test_strategy_guide.py
@@ -378,13 +378,13 @@ fallback.
   `strategies/example_prev_day_levels/`) tested in
   tests/test_strategy_examples.py.
 
-- `Quant_app_documentation.pdf` — the platform documentation: module
+- `docs/Quant_app_documentation.pdf` — the platform documentation: module
   contracts, data schemas, the engine (cache, reads, progress, timing), every
   window, the Optimizer's date-split parallelism and measured performance.
   Generated from `docs/app_documentation/APP_DOCUMENTATION.md` (run
   `python docs/app_documentation/build_app_doc.py`; the asset table comes from
   ASSET_INFO).
-- `IVB_Model_Documentation.pdf` + `strategies/ivb_model/CLAUDE.md` — the
-  flagship strategy.
+- `docs/IVB_Model_Documentation.pdf` (+ `docs/IVB_Model_Optimized_Documentation.pdf`)
+  + `strategies/ivb_model/CLAUDE.md` — the flagship strategy.
 - The pre-rebuild Streamlit frontend lives only in git history (main branch,
   commit 468c843 and earlier).

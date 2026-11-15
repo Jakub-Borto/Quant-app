@@ -36,13 +36,13 @@ def test_guide_contains_the_example_files_verbatim():
     assert "<<FILE:" not in guide and "<<ASSET_TABLE>>" not in guide
 
 
-def test_pdf_exists_next_to_the_guide():
-    pdf = REPO / "Strategy_Guide.pdf"
+def test_guide_pdf_exists():
+    pdf = REPO / "docs" / "Strategy_Guide.pdf"
     assert pdf.exists() and pdf.read_bytes()[:5] == b"%PDF-"
 
 
 def test_platform_documentation_builds_from_its_source():
-    """Quant_app_documentation.pdf is generated from
+    """docs/Quant_app_documentation.pdf is generated from
     docs/app_documentation/APP_DOCUMENTATION.md (+ the ASSET_INFO table)."""
     path = REPO / "docs" / "app_documentation" / "build_app_doc.py"
     spec = importlib.util.spec_from_file_location("build_app_doc", path)
@@ -50,5 +50,5 @@ def test_platform_documentation_builds_from_its_source():
     spec.loader.exec_module(mod)
     md = mod.render_markdown()
     assert "<<ASSET_TABLE>>" not in md and "| NNQ |" in md
-    pdf = REPO / "Quant_app_documentation.pdf"
+    pdf = REPO / "docs" / "Quant_app_documentation.pdf"
     assert pdf.exists() and pdf.read_bytes()[:5] == b"%PDF-"
