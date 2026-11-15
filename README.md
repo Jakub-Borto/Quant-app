@@ -141,9 +141,9 @@ Market data comes from [Databento](https://databento.com/) and is not included i
 
 ## Documentation
 
-- [`Quant_app_documentation.pdf`](Quant_app_documentation.pdf): module contracts, data schemas, engine internals and measured performance
-- [`STRATEGY_GUIDE.md`](STRATEGY_GUIDE.md) / [`Strategy_Guide.pdf`](Strategy_Guide.pdf): how to write a strategy plugin
-- [`IVB_Model_Optimized_Documentation.pdf`](IVB_Model_Optimized_Documentation.pdf): the flagship order-flow strategy and its vectorized rewrite
+- [`Quant_app_documentation.pdf`](docs/Quant_app_documentation.pdf): module contracts, data schemas, engine internals and measured performance
+- [`STRATEGY_GUIDE.md`](STRATEGY_GUIDE.md) / [`Strategy_Guide.pdf`](docs/Strategy_Guide.pdf): how to write a strategy plugin
+- [`IVB_Model_Optimized_Documentation.pdf`](docs/IVB_Model_Optimized_Documentation.pdf): the flagship order-flow strategy and its vectorized rewrite
 
 ---
 

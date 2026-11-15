@@ -1,5 +1,5 @@
 """
-Build Quant_app_documentation.pdf (repo root) from APP_DOCUMENTATION.md.
+Build docs/Quant_app_documentation.pdf from APP_DOCUMENTATION.md.
 
     python docs/app_documentation/build_app_doc.py
 
@@ -15,7 +15,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 SOURCE = HERE / "APP_DOCUMENTATION.md"
-OUT_PDF = REPO / "Quant_app_documentation.pdf"
+OUT_PDF = REPO / "docs" / "Quant_app_documentation.pdf"
 
 
 def _guide_builder():
