@@ -8,7 +8,7 @@ Strategies import what they need from here:
 and the app runs them with run_strategy(). The engine owns the day loop, the
 column-limited parquet reads with background prefetch, the RAM day cache, the
 timing table and the output frame; a strategy only declares its data and
-writes prepare_day() / process_day(). STRATEGY_GUIDE.md (repo root) is the
+writes prepare_day() / process_day(). docs/strategy/STRATEGY_GUIDE.md is the
 complete reference for strategy authors.
 
 Pure Python, NO Qt — optimizer worker processes import this package.

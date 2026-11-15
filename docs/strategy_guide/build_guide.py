@@ -3,12 +3,12 @@ Build the strategy-author guide from its template.
 
     python docs/strategy_guide/build_guide.py
 
-1. STRATEGY_GUIDE.md (repo root) = GUIDE_TEMPLATE.md with
+1. docs/strategy/STRATEGY_GUIDE.md = GUIDE_TEMPLATE.md with
      <<FILE:relative/path.py>>  replaced by that file's exact content, and
      <<ASSET_TABLE>>            replaced by a table generated from ASSET_INFO,
    so the guide's example code is ALWAYS the tested code
    (tests/test_strategy_guide.py fails when the committed .md is stale).
-2. docs/Strategy_Guide.pdf rendered from that Markdown with reportlab —
+2. docs/strategy/Strategy_Guide.pdf rendered from that Markdown with reportlab —
    a small renderer for exactly the Markdown subset the guide uses: headings
    (with internal-link anchors), paragraphs, bullet / numbered / checkbox
    lists, tables, fenced code blocks, block quotes, rules, inline code, bold,
@@ -24,8 +24,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 TEMPLATE = Path(__file__).with_name("GUIDE_TEMPLATE.md")
-OUT_MD = REPO / "STRATEGY_GUIDE.md"
-OUT_PDF = REPO / "docs" / "Strategy_Guide.pdf"
+OUT_MD = REPO / "docs" / "strategy" / "STRATEGY_GUIDE.md"
+OUT_PDF = REPO / "docs" / "strategy" / "Strategy_Guide.pdf"
 
 
 # ══ Markdown assembly ═════════════════════════════════════════════════════════
