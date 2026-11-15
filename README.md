@@ -4,7 +4,6 @@ A modular, plugin-based desktop platform for researching intraday strategies on 
 
 Built in Python (PySide6, NumPy, pandas, pyarrow), with a C++ (pybind11) kernel for L3 order-book replay.
 
-<!-- SCREENSHOT: main menu / card launcher (all modules visible) -->
 ![Main menu](docs/images/main_menu.png)
 
 ---
@@ -49,7 +48,6 @@ Strategies only declare the columns they need and write a `process_day` function
 - Per-day precomputation (`prepare_day`) cached and reused across parameter sets
 - **Trade report:** performance statistics, equity and drawdown, α/β regression against a benchmark, regime and news-day exposure, and a filter chain
 
-<!-- SCREENSHOT: Backtester trade report (stats + equity/drawdown) -->
 ![Backtester trade report](docs/images/backtest_report.png)
 
 ### Position sizing
@@ -63,7 +61,6 @@ Vectorized simulations across thousands of equity paths:
 - **Path-dependent position sizing:** the sizer is re-applied along every simulated path, with commissions feeding back into the size
 - Output: fan chart with confidence bands, probability of ruin, drawdown tails, median Sharpe
 
-<!-- SCREENSHOT: Monte Carlo fan chart + statistics table -->
 ![Monte Carlo](docs/images/monte_carlo.png)
 
 ### Parallel optimizer
@@ -74,13 +71,11 @@ Grid search over up to 4 parameters (number ranges, value lists, booleans, dropd
 - **Drill-down:** clicking a cell opens the full trade report for that parameter combination
 - **Combine:** merge entry variants from saved runs without re-running backtests
 
-<!-- SCREENSHOT or GIF: optimizer heatmap, ideally moving the sliders -->
 ![Optimizer heatmap](docs/images/optimizer_heatmap.gif)
 
 ### Regime detector
 Pluggable detectors (e.g. realized-volatility z-score, multi-factor mean reversion) that label each intraday snapshot with a market regime. Backtests join these labels **as-of each trade's entry time**, never by date, so no trade can see how its day ended.
 
-<!-- SCREENSHOT: regime detector chart -->
 ![Regime detector](docs/images/regime_detector.png)
 
 ### Reports and scripts

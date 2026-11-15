@@ -248,7 +248,8 @@ docs/                      all documentation. strategy_guide/ = SOURCES of the
                            app_documentation/ (APP_DOCUMENTATION.md +
                            build_app_doc.py -> Quant_app_documentation.pdf, same
                            folder). strategy/ = the generated guide + the IVB
-                           PDFs. To_do_and_notes.txt = working notes
+                           PDFs. images/ = README screenshots. To_do_and_notes.txt
+                           = working notes
 tests/                     pytest suite (optimizer backend + metrics + Qt
                            smoke + the shared report: test_trade_report.py
                            pins that the Backtester's and the Optimizer's
